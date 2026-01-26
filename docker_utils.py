@@ -1,12 +1,14 @@
 import docker
+import os
+import sys
+import shutil
 import json
 import subprocess
-import os
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any, List, Type
-
-here = os.path.abspath(os.path.dirname(__file__))
+from pathlib import Path
+here = Path(os.path.abspath(os.path.dirname(__file__)))
 
 # if colima is installed, point socket to that
 colima_socket_path = f"unix://{os.path.expanduser('~')}/.colima/default/docker.sock"
@@ -522,5 +524,106 @@ def pullModels(models_to_pull, network):
         else:
             print(f"Model {model_name} already exists locally")
 
+def writeViteEnv(env, output_file=os.path.join(here, "web", ".env")):
+    print("Writing environment file for web app")
+    # Open the file for writing
+    envstring = ""
+    for key, value in env.items():
+        if not key.startswith("__") and isinstance(value, (str, int, float)):
+            envstring += f"{key}={value}\n"
+
+    with open(output_file, "w") as f:
+        f.write(envstring)
+
+    print(f"Environment variables have been written to {output_file}")
+
+    pyoutfile = os.path.join(here, "users", "env.py")
+
+    envstring = ""
+    for key, value in env.items():
+        if not key.startswith("__") and isinstance(value, (str, int, float)):
+            envstring += f'{key}="{value}"\n'
+    with open(pyoutfile, "w+") as f:
+        f.write(envstring)
+
+    print(f"Environment variables have been written to {pyoutfile}")
+
+
+def substitutions(currdir, env): 
+    if os.path.isdir(currdir):
+        try:
+            for file in os.listdir(currdir):
+                substitutions(os.path.join(currdir, file), env)
+        except:
+            print(f"Couldn't process {currdir}")
+    else:
+        if currdir.endswith(".template"):
+            print("Applying substitutions to " + currdir)
+            newFile = currdir.replace(".template","")
+            with open(currdir, 'r') as f:
+                templateText = f.read()
+            for k, v in vars(env).items():
+                templateText = templateText.replace("$"+k, str(v))
+                newFile = newFile.replace("$"+k, str(v)) # also templetize the filename (!)
+            print(f"Writing to {newFile}")
+            with open(newFile, 'w+') as f:
+                f.write(templateText)
+
+        if currdir.endswith(".default"):
+            newFile = currdir.replace(".default","")
+            if os.path.exists(newFile):
+                return
+            print("Applying substitutions to " + currdir)
+            with open(currdir, 'r') as f:
+                templateText = f.read()
+            for k, v in vars(env).items():
+                templateText = templateText.replace("$"+k, str(v))
+                newFile = newFile.replace("$"+k, str(v)) # also templetize the filename (!)
+            print(f"Writing to {newFile}")
+            with open(newFile, 'w+') as f:
+                f.write(templateText)
+
+        if currdir.endswith(".copy"):
+            newFile = currdir.replace(".copy","")
+            if not os.path.exists(newFile):
+                print(f"Copying {currdir} to {newFile}")
+                shutil.copy(currdir, newFile)
+
+def initializeFiles(srcdir = here):
+    # Check if we are in a GitHub Actions environment
+    in_github_actions = os.getenv("GITHUB_ACTIONS") == "true"
+    print(in_github_actions)
+    envFile = os.path.join(srcdir, "editme.py")
+    envExampleFile = os.path.join(srcdir, "editme.example.py")
+    if not os.path.isfile(envFile):
+        shutil.copy(envExampleFile, envFile)
+        print("env.py file did not exist and has been created. Please edit it to update the necessary values, then re-run this script.")
+        
+        # Exit only if not in GitHub Actions
+        if not in_github_actions:
+            sys.exit(1)
+        else:
+            print("Running in GitHub Actions, continuing without exiting.")
+
+def check_nvidia_gpu():
+    print("NVIDIA GPU Detected on system")
+    try:
+        # Try nvidia-smi command
+        subprocess.run(["nvidia-smi"], check=True, capture_output=True)
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+    
+def check_amd_gpu():
+    print("AMD GPU Detected on system")
+    try:
+        # Try rocm-smi command
+        subprocess.run(["rocm-smi"], check=True, capture_output=True)
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
 if __name__ == "__main__":
     generateDevKeys('test')
+
