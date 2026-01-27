@@ -8,7 +8,11 @@ class Settings(BaseSettings):
     env: str = "dev"
     secret_key: str
     access_token_expire_minutes: int = 60
-    token_algorithm: str = "HS256"
+    token_algorithm: str = "RS256"
+    jwt_private_key: str | None = None
+    jwt_public_key: str | None = None
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
     database_url: str
     auto_create_tables: bool = False
     allowed_origins: str = ""
@@ -20,6 +24,12 @@ class Settings(BaseSettings):
     github_client_id: str | None = None
     github_client_secret: str | None = None
     github_redirect_uri: str | None = None
+    frontend_redirect_url: str | None = None
+    minio_endpoint: str | None = None
+    minio_access_key: str | None = None
+    minio_secret_key: str | None = None
+    minio_bucket: str = "pidp-avatars"
+    minio_public_base_url: str = "/s3"
 
     class Config:
         env_file = ".env"

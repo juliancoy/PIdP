@@ -3,8 +3,12 @@ uvicorn[standard]
 sqlalchemy[asyncio]
 asyncpg
 pydantic-settings
+email-validator
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt<4
 python-multipart
 authlib
+httpx
 itsdangerous
+boto3

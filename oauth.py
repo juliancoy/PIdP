@@ -5,7 +5,7 @@ from typing import Any
 from authlib.integrations.starlette_client import OAuth
 from fastapi import HTTPException
 
-from app.config import settings
+from config import settings
 
 
 def build_oauth() -> OAuth:

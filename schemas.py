@@ -8,7 +8,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str
     full_name: str | None = None
 
 
@@ -17,6 +17,7 @@ class UserPublic(BaseModel):
     email: EmailStr
     full_name: str | None = None
     provider: str | None = None
+    identity_data: dict | None = None
     is_active: bool
     created_at: datetime
 
@@ -32,3 +33,25 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     sub: str
     email: EmailStr | None = None
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: str | None = None
+    display_name: str | None = None
+    bio: str | None = None
+    avatar_url: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    address_line1: str | None = None
+    address_line2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
+    organizations: list[str] | None = None
+
+
+class UserPublicProfile(BaseModel):
+    id: UUID
+    full_name: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
