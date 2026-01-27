@@ -7,5 +7,5 @@ dict(
     MINIO_ACCESS_KEY = "minio",
     MINIO_SECRET_KEY = "changeme",
     MINIO_BUCKET = "pidp-avatars",
-    MINIO_PUBLIC_BASE_URL = "https://ballot-vm.local/s3",
+    MINIO_PUBLIC_BASE_URL = "https://ballot.arkavo.org/s3",
 )

@@ -97,7 +97,10 @@ async def jwks() -> dict:
 async def register_user(payload: UserCreate, session: AsyncSession = Depends(get_session)) -> UserPublic:
     result = await session.execute(select(User).where(User.email == payload.email))
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Account already exists. Please log in.",
+        )
 
     user = User(
         email=payload.email,
