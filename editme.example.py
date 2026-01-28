@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import os
 
 BASE_ADDR = os.getenv("BASE_ADDR", "https://ballot-vm.local/")
@@ -21,3 +22,16 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minio")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "changeme")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "pidp-avatars")
 MINIO_PUBLIC_BASE_URL = os.getenv("MINIO_PUBLIC_BASE_URL", BASE_ADDR + "s3")
+=======
+dict(
+    PIDP_POSTGRES_PASSWORD = "changeme",
+    PIDP_POSTGRES_USER = "PIdP",
+    PIDP_SECRET_KEY = "changeme",
+    PIDP_FRONTEND_REDIRECT_URL = "https://ballot-vm.local/auth/callback",
+    MINIO_ENDPOINT = "http://minio:9000",
+    MINIO_ACCESS_KEY = "minio",
+    MINIO_SECRET_KEY = "changeme",
+    MINIO_BUCKET = "pidp-avatars",
+    MINIO_PUBLIC_BASE_URL = "https://ballot.arkavo.org/s3",
+)
+>>>>>>> e97ab800d4ffecc5ea76d9974b1e6d8eb8abcf58
