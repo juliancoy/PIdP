@@ -10,9 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
 from urllib.parse import urlencode
+import httpx
 
 from config import settings
 from db import engine, get_session
@@ -23,6 +25,14 @@ from security import authenticate_user, create_access_token, hash_password, safe
 
 
 app = FastAPI(title=settings.app_name)
+
+
+def _load_pidp_editme():
+    try:
+        import pidp_editme
+        return pidp_editme
+    except Exception:
+        return None
 
 if settings.origins_list:
     app.add_middleware(
@@ -76,6 +86,46 @@ def _ensure_bucket(client) -> None:
         pass
 
 
+async def _store_social_avatar(
+    user_id: str,
+    provider: str,
+    avatar_url: str,
+) -> dict | None:
+    if not avatar_url:
+        return None
+    client = _get_s3_client()
+    if not client:
+        return None
+    await run_in_threadpool(_ensure_bucket, client)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10) as http:
+        resp = await http.get(avatar_url)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        ext = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/gif": "gif",
+            "image/webp": "webp",
+        }.get(content_type, "jpg")
+        object_key = f"avatars/{user_id}/{uuid4().hex}.{ext}"
+        await run_in_threadpool(
+            client.put_object,
+            Bucket=settings.minio_bucket,
+            Key=object_key,
+            Body=resp.content,
+            ContentType=content_type,
+        )
+    public_endpoint = (settings.minio_public_base_url or "").rstrip("/")
+    if not public_endpoint:
+        return None
+    return {
+        "avatar_url": f"{public_endpoint}/{settings.minio_bucket}/{object_key}",
+        "avatar_object_key": object_key,
+        "avatar_source": provider,
+    }
+
+
 @app.on_event("startup")
 async def startup() -> None:
     if settings.auto_create_tables:
@@ -91,6 +141,24 @@ async def health() -> dict:
 @app.get("/.well-known/jwks.json")
 async def jwks() -> dict:
     return get_jwks()
+
+
+@app.get("/configuration")
+async def configuration() -> dict:
+    config = _load_pidp_editme()
+    if config is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="pidp_editme unavailable")
+    return {
+        "base_addr": getattr(config, "BASE_ADDR", None),
+        "google_client_id": getattr(config, "PIDP_GOOGLE_CLIENT_ID", None),
+        "google_redirect_uri": getattr(config, "PIDP_GOOGLE_REDIRECT_URI", None),
+        "github_client_id": getattr(config, "PIDP_GITHUB_CLIENT_ID", None),
+        "github_redirect_uri": getattr(config, "PIDP_GITHUB_REDIRECT_URI", None),
+        "frontend_redirect_url": getattr(config, "PIDP_FRONTEND_REDIRECT_URL", None),
+        "minio_endpoint": getattr(config, "MINIO_ENDPOINT", None),
+        "minio_bucket": getattr(config, "MINIO_BUCKET", None),
+        "minio_public_base_url": getattr(config, "MINIO_PUBLIC_BASE_URL", None),
+    }
 
 
 @app.post("/auth/register", response_model=UserPublic)
@@ -245,14 +313,15 @@ async def create_avatar_upload_url(token: str = Depends(oauth2_scheme)) -> JSONR
 
 @app.get("/auth/{provider}/login")
 async def social_login(provider: str, request: Request):
-    if provider not in oauth:
+    client = oauth.create_client(provider)
+    if client is None:
         raise HTTPException(status_code=400, detail="Provider not enabled")
 
     redirect_uri = settings.google_redirect_uri if provider == "google" else settings.github_redirect_uri
     if not redirect_uri:
         raise HTTPException(status_code=400, detail="Redirect URI not configured")
 
-    return await oauth[provider].authorize_redirect(request, redirect_uri)
+    return await client.authorize_redirect(request, redirect_uri)
 
 
 @app.get("/auth/{provider}/callback")
@@ -288,7 +357,25 @@ async def social_callback(
     else:
         user.provider = provider
         user.provider_account_id = profile.get("provider_account_id")
-        user.identity_data = profile.get("raw", {})
+
+    identity = dict(user.identity_data or {})
+    existing_avatar_url = identity.get("avatar_url")
+    existing_avatar_key = identity.get("avatar_object_key")
+    raw_profile = dict(profile.get("raw", {}) or {})
+    raw_profile.pop("picture", None)
+    raw_profile.pop("avatar_url", None)
+    identity.update(raw_profile)
+    if existing_avatar_key:
+        identity["avatar_object_key"] = existing_avatar_key
+    if existing_avatar_url:
+        identity["avatar_url"] = existing_avatar_url
+    if not existing_avatar_url and not existing_avatar_key and profile.get("avatar_url"):
+        if not user.id:
+            user.id = uuid4()
+        stored = await _store_social_avatar(str(user.id), provider, profile["avatar_url"])
+        if stored:
+            identity.update(stored)
+    user.identity_data = identity
 
     await session.commit()
     await session.refresh(user)

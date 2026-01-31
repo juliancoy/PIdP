@@ -40,18 +40,19 @@ oauth = build_oauth()
 
 
 async def fetch_social_profile(provider: str, request) -> dict[str, Any]:
-    if provider not in oauth:
+    client = oauth.create_client(provider)
+    if client is None:
         raise HTTPException(status_code=400, detail="Provider not enabled")
-
-    client = oauth[provider]
     token = await client.authorize_access_token(request)
 
     if provider == "google":
-        userinfo = await client.parse_id_token(request, token)
+        resp = await client.get("https://openidconnect.googleapis.com/v1/userinfo", token=token)
+        userinfo = resp.json()
         return {
             "email": userinfo.get("email"),
             "full_name": userinfo.get("name"),
             "provider_account_id": userinfo.get("sub"),
+            "avatar_url": userinfo.get("picture"),
             "raw": userinfo,
         }
 
@@ -68,6 +69,7 @@ async def fetch_social_profile(provider: str, request) -> dict[str, Any]:
             "email": email,
             "full_name": profile.get("name") or profile.get("login"),
             "provider_account_id": str(profile.get("id")),
+            "avatar_url": profile.get("avatar_url"),
             "raw": profile,
         }
 

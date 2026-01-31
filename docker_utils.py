@@ -593,17 +593,20 @@ def initializeFiles(srcdir = here):
     # Check if we are in a GitHub Actions environment
     in_github_actions = os.getenv("GITHUB_ACTIONS") == "true"
     print(in_github_actions)
-    envFile = os.path.join(srcdir, "editme.py")
-    envExampleFile = os.path.join(srcdir, "editme.example.py")
-    if not os.path.isfile(envFile):
-        shutil.copy(envExampleFile, envFile)
-        print("env.py file did not exist and has been created. Please edit it to update the necessary values, then re-run this script.")
-        
-        # Exit only if not in GitHub Actions
-        if not in_github_actions:
-            sys.exit(1)
-        else:
-            print("Running in GitHub Actions, continuing without exiting.")
+    for file in os.listdir(srcdir):
+        fullfile = os.path.join(srcdir, file)
+        if fullfile.endswith("editme.example.py"):
+            envFile = fullfile.replace(".example","")
+            if os.path.exists(envFile):
+                continue
+            shutil.copy(fullfile, envFile)
+            print("env.py file did not exist and has been created. Please edit it to update the necessary values, then re-run this script.")
+            
+            # Exit only if not in GitHub Actions
+            if not in_github_actions:
+                sys.exit(1)
+            else:
+                print("Running in GitHub Actions, continuing without exiting.")
 
 def check_nvidia_gpu():
     print("NVIDIA GPU Detected on system")
