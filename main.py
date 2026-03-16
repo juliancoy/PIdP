@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 import httpx
 
 from config import settings
@@ -321,6 +321,9 @@ async def social_login(provider: str, request: Request):
     if not redirect_uri:
         raise HTTPException(status_code=400, detail="Redirect URI not configured")
 
+    next_url = request.query_params.get("next")
+    if next_url:
+        request.session["frontend_redirect_url"] = next_url
     return await client.authorize_redirect(request, redirect_uri)
 
 
@@ -381,7 +384,14 @@ async def social_callback(
     await session.refresh(user)
 
     token = create_access_token(subject=str(user.id), email=user.email)
+    params = urlencode({"token": token, "token_type": "bearer"})
+    redirect_target = request.session.pop("frontend_redirect_url", None)
+    if redirect_target:
+        parsed = urlparse(redirect_target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            redirect_target = None
+    if redirect_target:
+        return RedirectResponse(f"{redirect_target}#{params}")
     if settings.frontend_redirect_url:
-        params = urlencode({"token": token, "token_type": "bearer"})
         return RedirectResponse(f"{settings.frontend_redirect_url}#{params}")
     return JSONResponse({"access_token": token, "token_type": "bearer"})
