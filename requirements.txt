@@ -12,3 +12,4 @@ authlib
 httpx
 itsdangerous
 boto3
+jinja2

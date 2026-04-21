@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+{% set identity = viewer.identity_data or {} %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Profile</p>
+        <h1>Your basic fields</h1>
+        <p class="lede">This page is rendered on the server from the currently authenticated owner account.</p>
+    </div>
+</section>
+
+<section class="grid two-up">
+    <article class="panel">
+        <div class="stack">
+            <h2>Current profile</h2>
+            <div class="identity-card">
+                <div class="identity-top">
+                    {% if identity.avatar_url %}
+                        <img
+                            class="avatar avatar-large"
+                            id="profile-avatar-preview"
+                            src="{{ identity.avatar_url }}"
+                            alt="{{ identity.display_name or viewer.full_name or viewer.email }} avatar"
+                        >
+                    {% else %}
+                        <div class="avatar avatar-large" id="profile-avatar-preview" aria-hidden="true"></div>
+                    {% endif %}
+                    <div>
+                        <div class="identity-name">{{ identity.display_name or viewer.full_name or viewer.email }}</div>
+                        <div class="muted">{{ viewer.email }}</div>
+                        <div class="button-row compact-row">
+                            <button class="secondary-button" type="button" id="open-avatar-modal">Upload avatar</button>
+                            <form method="post" action="/session/logout">
+                                <button class="ghost-button" type="submit">Sign out</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="data-grid">
+                <div class="data-item"><span class="label">Email</span>{{ viewer.email }}</div>
+                <div class="data-item"><span class="label">Full Name</span>{{ viewer.full_name or "Not set" }}</div>
+                <div class="data-item"><span class="label">Display Name</span>{{ identity.display_name or "Not set" }}</div>
+                <div class="data-item"><span class="label">First Name</span>{{ identity.first_name or "Not set" }}</div>
+                <div class="data-item"><span class="label">Last Name</span>{{ identity.last_name or "Not set" }}</div>
+                <div class="data-item"><span class="label">City</span>{{ identity.city or "Not set" }}</div>
+                <div class="data-item"><span class="label">State</span>{{ identity.state or "Not set" }}</div>
+                <div class="data-item"><span class="label">Organizations</span>{{ (identity.organizations or [])|join(", ") or "None" }}</div>
+            </div>
+        </div>
+    </article>
+
+    <article class="panel">
+        <form method="post" action="/profile" class="stack">
+            <div class="section-header">
+                <h2>Edit profile</h2>
+            </div>
+            <div class="field-grid">
+                <div class="field">
+                    <label for="full_name">Full Name</label>
+                    <input id="full_name" name="full_name" type="text" value="{{ profile_fields.full_name }}">
+                </div>
+                <div class="field">
+                    <label for="display_name">Display Name</label>
+                    <input id="display_name" name="display_name" type="text" value="{{ profile_fields.display_name }}">
+                </div>
+                <div class="field">
+                    <label for="first_name">First Name</label>
+                    <input id="first_name" name="first_name" type="text" value="{{ profile_fields.first_name }}">
+                </div>
+                <div class="field">
+                    <label for="last_name">Last Name</label>
+                    <input id="last_name" name="last_name" type="text" value="{{ profile_fields.last_name }}">
+                </div>
+                <div class="field">
+                    <label for="city">City</label>
+                    <input id="city" name="city" type="text" value="{{ profile_fields.city }}">
+                </div>
+                <div class="field">
+                    <label for="state">State</label>
+                    <input id="state" name="state" type="text" value="{{ profile_fields.state }}">
+                </div>
+                <div class="field">
+                    <label for="avatar_url">Avatar URL</label>
+                    <input id="avatar_url" name="avatar_url" type="url" value="{{ profile_fields.avatar_url }}">
+                </div>
+                <div class="field">
+                    <label for="organizations">Organizations</label>
+                    <input id="organizations" name="organizations" type="text" value="{{ profile_fields.organizations }}">
+                </div>
+            </div>
+            <div class="field">
+                <label for="bio">Bio</label>
+                <textarea id="bio" name="bio">{{ profile_fields.bio }}</textarea>
+            </div>
+            <div class="button-row">
+                <button class="primary-button" type="submit">Save profile</button>
+            </div>
+        </form>
+    </article>
+</section>
+
+<div class="modal-shell hidden" id="avatar-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-avatar-modal></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="avatar-modal-title">
+        <div class="section-header">
+            <div>
+                <p class="eyebrow">Avatar</p>
+                <h2 id="avatar-modal-title">Align and zoom your image</h2>
+            </div>
+            <button class="ghost-button" type="button" data-close-avatar-modal>Close</button>
+        </div>
+        <div class="stack">
+            <input id="avatar-file-input" type="file" accept="image/*" class="hidden">
+            <div class="avatar-editor-layout">
+                <div class="avatar-stage-wrap">
+                    <canvas id="avatar-editor-canvas" class="avatar-editor-canvas" width="420" height="420"></canvas>
+                    <div class="avatar-crop-guide" aria-hidden="true"></div>
+                </div>
+                <div class="stack">
+                    <div class="field">
+                        <label for="avatar-zoom">Zoom</label>
+                        <input id="avatar-zoom" type="range" min="1" max="3" step="0.01" value="1">
+                    </div>
+                    <div class="callout">
+                        Drag the image to reposition it inside the crop frame, then upload the result.
+                    </div>
+                    <div id="avatar-upload-status"></div>
+                </div>
+            </div>
+            <div class="button-row">
+                <button class="secondary-button" type="button" id="choose-avatar-image">Choose image</button>
+                <button class="primary-button" type="button" id="upload-avatar-image">Upload avatar</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="/assets/js/avatar-editor.js"></script>
+{% endblock %}

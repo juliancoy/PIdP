@@ -60,11 +60,13 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(subject: str, email: str | None = None) -> str:
+def create_access_token(subject: str, email: str | None = None, extra_claims: dict | None = None) -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {"sub": subject, "exp": expire}
     if email:
         payload["email"] = email
+    if extra_claims:
+        payload.update(extra_claims)
     if settings.jwt_issuer:
         payload["iss"] = settings.jwt_issuer
     if settings.jwt_audience:

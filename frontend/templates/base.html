@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_title }}</title>
+    <script>
+        (function () {
+            var storageKey = "pidp-theme-mode";
+            var mode = localStorage.getItem(storageKey) || "system";
+            var root = document.documentElement;
+            var media = window.matchMedia("(prefers-color-scheme: dark)");
+            var hour = new Date().getHours();
+            var autoDark = hour < 7 || hour >= 19;
+            var resolved = mode === "dark"
+                ? "dark"
+                : mode === "light"
+                    ? "light"
+                    : mode === "auto"
+                        ? (autoDark ? "dark" : "light")
+                        : (media.matches ? "dark" : "light");
+            root.dataset.themeMode = mode;
+            root.dataset.theme = resolved;
+        }());
+    </script>
+    <link rel="stylesheet" href="/assets/css/app.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <a class="brand" href="/">PIdP</a>
+            </div>
+            <nav class="sidebar-nav">
+                <label class="theme-switcher" for="theme-mode">
+                    <span>Theme</span>
+                    <select id="theme-mode" class="theme-select" aria-label="Theme mode">
+                        <option value="system">System</option>
+                        <option value="light">Light</option>
+                        <option value="dark">Dark</option>
+                        <option value="auto">Auto</option>
+                    </select>
+                </label>
+                {% if viewer %}
+                    {% set nav_identity = viewer.identity_data or {} %}
+                    <a class="nav-link {% if active_page == 'home' %}active{% endif %}" href="/">Dashboard</a>
+                    <a class="nav-link {% if active_page == 'sites' %}active{% endif %}" href="/sites">Clients</a>
+                    <a class="nav-link {% if active_page == 'billing' %}active{% endif %}" href="/billing">Billing</a>
+                    <a class="profile-panel {% if active_page == 'profile' %}active{% endif %}" href="/profile">
+                        {% if nav_identity.avatar_url %}
+                            <img
+                                class="profile-chip-avatar"
+                                src="{{ nav_identity.avatar_url }}"
+                                alt="{{ nav_identity.display_name or viewer.full_name or viewer.email }} avatar"
+                            >
+                        {% else %}
+                            <span class="profile-chip-fallback">
+                                {{ (nav_identity.display_name or viewer.full_name or viewer.email)[0]|upper }}
+                            </span>
+                        {% endif %}
+                        <span class="profile-panel-text">
+                            <strong>{{ nav_identity.display_name or viewer.full_name or "Profile" }}</strong>
+                            <span>{{ viewer.email }}</span>
+                        </span>
+                    </a>
+                {% else %}
+                    <a class="nav-link active" href="/">Home</a>
+                {% endif %}
+            </nav>
+        </aside>
+
+        <main class="page page-content">
+            {% if flash_error %}
+                <div class="status error">{{ flash_error }}</div>
+            {% endif %}
+            {% if flash_message %}
+                <div class="status success">{{ flash_message }}</div>
+            {% endif %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    <script src="/assets/js/theme.js"></script>
+</body>
+</html>

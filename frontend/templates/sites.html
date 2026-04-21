@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Clients</p>
+        <h1>Your registered clients</h1>
+        <p class="lede">Create new clients and inspect the user roster for each one.</p>
+    </div>
+</section>
+
+<section class="grid two-up">
+    <article class="panel">
+        <div class="section-block">
+            <div>
+                <h2>Create client</h2>
+                <p class="muted">Start a new client space and define its user identity records later.</p>
+            </div>
+            <form method="post" action="/sites" class="stack">
+                <div class="field">
+                    <label for="name">Name</label>
+                    <input id="name" name="name" type="text" required>
+                </div>
+                <div class="field">
+                    <label for="source_url">Source URL</label>
+                    <input id="source_url" name="source_url" type="url" placeholder="https://your-app.com" required>
+                </div>
+                <div class="field">
+                    <label for="callback_url">Callback URL</label>
+                    <input id="callback_url" name="callback_url" type="url" placeholder="https://your-app.com/auth/callback" required>
+                </div>
+                <div class="field">
+                    <label for="description">Description</label>
+                    <textarea id="description" name="description" placeholder="Short description for your client"></textarea>
+                </div>
+                <div class="button-row">
+                    <button class="primary-button" type="submit">Create client</button>
+                </div>
+            </form>
+        </div>
+    </article>
+
+    <article class="panel">
+        <div class="section-block">
+            <div>
+                <h2>Portfolio summary</h2>
+                <p class="muted">A quick account-level view of what this PIdP owner is managing.</p>
+            </div>
+            <div class="metric-grid">
+                <div class="metric">
+                    <div class="metric-label">Clients</div>
+                    <div class="metric-value">{{ websites|length }}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Registered users</div>
+                    <div class="metric-value">{{ website_counts.values()|sum }}</div>
+                </div>
+            </div>
+        </div>
+    </article>
+</section>
+
+<section class="panel">
+    <div class="section-header">
+        <h2>Owned clients</h2>
+        <span class="muted">{{ websites|length }} total</span>
+    </div>
+    <div class="stack">
+        {% if websites %}
+            {% for website in websites %}
+                <article class="site-card">
+                    <div class="section-header">
+                        <div>
+                            <h3>{{ website.name }}</h3>
+                            <p class="muted">{{ website.description or "No description provided." }}</p>
+                        </div>
+                        <a class="secondary-button" href="/sites/{{ website.id }}">Open client</a>
+                    </div>
+                    <div class="data-grid">
+                        <div class="data-item"><span class="label">Slug</span><span class="mono">{{ website.slug }}</span></div>
+                        <div class="data-item"><span class="label">Created</span>{{ website.created_at.strftime("%b %d, %Y") }}</div>
+                        <div class="data-item"><span class="label">User limit</span>{{ website.max_users }}</div>
+                        <div class="data-item"><span class="label">Registered users</span>{{ website_counts.get(website.id|string, 0) }}</div>
+                    </div>
+                </article>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">No clients registered yet.</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

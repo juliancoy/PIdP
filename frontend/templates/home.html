@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading landing-heading">
+    <div>
+        <p class="eyebrow">People's Identity Provider</p>
+        <h1>Simple identity for your account and websites.</h1>
+        <p class="lede">
+            Sign in to view your profile, manage your websites, and inspect the users registered under each one.
+        </p>
+    </div>
+</section>
+
+<section class="grid two-up landing-grid">
+    <article class="panel">
+        <div class="stack">
+            <h2>Login</h2>
+            <form method="post" action="/session/login" class="stack">
+                <div class="field">
+                    <label for="login-email">Email</label>
+                    <input id="login-email" name="email" type="email" autocomplete="email" required>
+                </div>
+                <div class="field">
+                    <label for="login-password">Password</label>
+                    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+                </div>
+                <div class="button-row">
+                    <button class="primary-button" type="submit">Login</button>
+                </div>
+            </form>
+            <div class="social-login-row">
+                {% if configuration.google_enabled %}
+                    <a class="social-login-button" href="/auth/google/login?next=/" aria-label="Login with Google" title="Login with Google">
+                        <svg class="social-logo" viewBox="0 0 24 24" aria-hidden="true">
+                            <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.3-1.5 3.9-5.5 3.9-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.2.8 3.9 1.5l2.7-2.6C16.9 3.3 14.7 2.4 12 2.4 6.9 2.4 2.8 6.5 2.8 11.6S6.9 20.8 12 20.8c6.9 0 8.6-4.8 8.6-7.2 0-.5 0-.9-.1-1.3z"/>
+                            <path fill="#34A853" d="M2.8 11.6c0 1.6.4 3.1 1.2 4.4l3.3-2.6c-.2-.5-.4-1.1-.4-1.8s.1-1.2.4-1.8L4 7.2c-.8 1.3-1.2 2.8-1.2 4.4z"/>
+                            <path fill="#FBBC05" d="M12 20.8c2.7 0 5-.9 6.6-2.4L15.4 16c-.9.6-2 .9-3.4.9-2.6 0-4.9-1.8-5.7-4.1L3 15.4c1.8 3.2 5.1 5.4 9 5.4z"/>
+                            <path fill="#4285F4" d="M18.6 18.4c1.7-1.6 2.8-4 2.8-6.8 0-.5 0-.9-.1-1.3H12v3.9h5.5c-.2 1.1-.8 2.8-2.1 3.8z"/>
+                        </svg>
+                        <span>Google</span>
+                    </a>
+                {% endif %}
+                {% if configuration.github_enabled %}
+                    <a class="social-login-button" href="/auth/github/login?next=/" aria-label="Login with GitHub" title="Login with GitHub">
+                        <svg class="social-logo" viewBox="0 0 24 24" aria-hidden="true">
+                            <path fill="currentColor" d="M12 .5C5.7.5.6 5.6.6 11.9c0 5 3.2 9.2 7.6 10.7.6.1.8-.3.8-.6v-2.1c-3.1.7-3.8-1.3-3.8-1.3-.5-1.3-1.2-1.7-1.2-1.7-1-.7.1-.7.1-.7 1.1.1 1.8 1.2 1.8 1.2 1 .1 1.5 2 1.5 2 .9 1.4 2.4 1 3 .7.1-.7.4-1.1.7-1.4-2.5-.3-5.2-1.3-5.2-5.7 0-1.2.4-2.2 1.1-3-.1-.3-.5-1.5.1-3.1 0 0 .9-.3 3 .1.9-.2 1.8-.3 2.7-.3s1.9.1 2.7.3c2.1-.4 3-.1 3-.1.6 1.6.2 2.8.1 3.1.7.8 1.1 1.8 1.1 3 0 4.4-2.7 5.4-5.3 5.7.4.3.8 1 .8 2v2.9c0 .3.2.7.8.6 4.4-1.5 7.6-5.7 7.6-10.7C23.4 5.6 18.3.5 12 .5z"/>
+                        </svg>
+                        <span>GitHub</span>
+                    </a>
+                {% endif %}
+            </div>
+        </div>
+    </article>
+
+    <article class="panel">
+        <div class="stack">
+            <h2>Create account</h2>
+            <form method="post" action="/session/register" class="stack">
+                <div class="field-grid">
+                    <div class="field">
+                        <label for="register-name">Full name</label>
+                        <input id="register-name" name="full_name" type="text" autocomplete="name">
+                    </div>
+                    <div class="field">
+                        <label for="register-email">Email</label>
+                        <input id="register-email" name="email" type="email" autocomplete="email" required>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="register-password">Password</label>
+                    <input id="register-password" name="password" type="password" autocomplete="new-password" required>
+                </div>
+                <div class="button-row">
+                    <button class="secondary-button" type="submit">Create account</button>
+                </div>
+            </form>
+        </div>
+    </article>
+</section>
+{% endblock %}

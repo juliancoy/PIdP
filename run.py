@@ -40,6 +40,11 @@ def run(prefix, NETWORK_NAME):
     PIDP_RUNDICT = dict(
         image="pidp",
         name=prefix+"pidp",
+        build={
+            "context": str(current_dir),
+            "dockerfile": "Dockerfile",
+        },
+        rebuild_image_on_restart=True,
         volumes={
             str(current_dir): {"bind": container_app_dir, "mode": "rw"},
         },
@@ -83,3 +88,14 @@ def run(prefix, NETWORK_NAME):
     docker_utils.run_container(PIDP_DB)
     docker_utils.wait_for_db(NETWORK_NAME,db_url=PIDP_DB_URL,db_user=pidp_editme.PIDP_POSTGRES_USER)
     docker_utils.run_container(PIDP_RUNDICT)
+
+
+if __name__ == "__main__":
+    # Called from master run.py with arguments: distinguisher NETWORK_NAME
+    if len(sys.argv) >= 3:
+        prefix = sys.argv[1]
+        network_name = sys.argv[2]
+    else:
+        prefix = ""
+        network_name = "arkavo"
+    run(prefix, network_name)

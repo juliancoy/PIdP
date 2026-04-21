@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any, List, Type
 from pathlib import Path
+from urllib.parse import urlparse
 here = Path(os.path.abspath(os.path.dirname(__file__)))
 
 # if colima is installed, point socket to that
@@ -177,9 +178,30 @@ def stop_container(container_name):
     except:
         print("Couldn't stop container {container_name}. Maybe its not running")
 
+def rebuild_image(config):
+    build_config = config.get("build")
+    if not build_config:
+        raise ValueError(f"Container {config['name']} requested rebuild without a build configuration")
+
+    image_name = config["image"]
+    context = build_config["context"]
+    dockerfile = build_config.get("dockerfile")
+
+    cmd = ["docker", "build", "-t", image_name]
+    if dockerfile:
+        cmd.extend(["-f", dockerfile])
+    cmd.append(".")
+
+    print(f"Rebuilding image '{image_name}' from {context}")
+    subprocess.check_call(cmd, cwd=context)
+
 def run_container(config):
     print(f'\033[4;32mRunning container {config["name"]}\033[0m')
     container_name = config["name"]
+    run_config = dict(config)
+    rebuild_on_restart = run_config.pop("rebuild_image_on_restart", False)
+    run_config.pop("build", None)
+    should_rebuild = False
     # Get the container
     try:
         container = DOCKER_CLIENT.containers.get(container_name)
@@ -195,19 +217,38 @@ def run_container(config):
         print("Removing")
         container.remove()
         print("Running container!")
+        should_rebuild = rebuild_on_restart
     except:
         print(f"No container is running with name {container_name}")
+        should_rebuild = rebuild_on_restart
+
+    if should_rebuild:
+        rebuild_image(config)
     # Now run it
     print(f"Starting {container_name}")
-    return DOCKER_CLIENT.containers.run(**config)
+    return DOCKER_CLIENT.containers.run(**run_config)
+
+
+def _parse_host_port(value, default_port):
+    if "://" in value:
+        parsed = urlparse(value)
+        if not parsed.hostname:
+            raise ValueError(f"Could not determine hostname from URL: {value}")
+        return parsed.hostname, str(parsed.port or default_port)
+
+    host, sep, port = value.rpartition(":")
+    if not sep or not host:
+        raise ValueError(f"Expected host:port or URL, got: {value}")
+    return host, port
 
 
 def wait_for_db(network, db_url, db_user="postgres", max_attempts=30, delay=2):
     print(f"Using db_url: {db_url}")
     print(f"Waiting for the database to respond on {db_url}...")
-    host, port = db_url.split(":")
+    host, port = _parse_host_port(db_url, default_port=5432)
 
-    while True:
+    attempts = 0
+    while attempts < max_attempts:
         try:
             subprocess.run(
                 [
@@ -226,12 +267,17 @@ def wait_for_db(network, db_url, db_user="postgres", max_attempts=30, delay=2):
                 stderr=subprocess.PIPE,
             )
             print(f"The database is accepting connections on {db_url}!")
-            break
+            return
         except subprocess.CalledProcessError:
+            attempts += 1
+            if attempts >= max_attempts:
+                raise TimeoutError(
+                    f"Database did not become available after {max_attempts} attempts"
+                )
             print(
                 f"Still waiting for the database to accept connections on {db_url}..."
             )
-            time.sleep(2)
+            time.sleep(delay)
 
 def wait_for_db_localhost(db_port=5432, db_user="postgres", max_attempts=30, delay=2):
     """
@@ -629,4 +675,3 @@ def check_amd_gpu():
 
 if __name__ == "__main__":
     generateDevKeys('test')
-

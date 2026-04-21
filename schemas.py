@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
@@ -55,3 +56,67 @@ class UserPublicProfile(BaseModel):
     full_name: str | None = None
     display_name: str | None = None
     avatar_url: str | None = None
+
+
+class WebsiteSchemaField(BaseModel):
+    type: Literal["string", "number", "boolean", "array", "object"] = "string"
+    required: bool = False
+    label: str | None = None
+    description: str | None = None
+    system: bool = False
+
+
+class WebsiteCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    slug: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = None
+
+
+class WebsiteSchemaUpdate(BaseModel):
+    fields: dict[str, WebsiteSchemaField] = Field(default_factory=dict)
+
+
+class WebsitePublic(BaseModel):
+    id: UUID
+    owner_id: UUID
+    name: str
+    slug: str
+    description: str | None = None
+    user_schema: dict
+    max_users: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WebsiteUserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str | None = None
+    identity_data: dict = Field(default_factory=dict)
+
+
+class WebsiteUserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class WebsiteUserUpdate(BaseModel):
+    full_name: str | None = None
+    identity_data: dict | None = None
+    is_active: bool | None = None
+
+
+class WebsiteUserPublic(BaseModel):
+    id: UUID
+    website_id: UUID
+    email: EmailStr
+    full_name: str | None = None
+    provider: str | None = None
+    identity_data: dict | None = None
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

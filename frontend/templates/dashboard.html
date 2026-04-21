@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+{% set identity = viewer.identity_data or {} %}
+<section class="hero">
+    <div>
+        <p class="eyebrow">Dashboard</p>
+        <h1>{{ identity.display_name or viewer.full_name or viewer.email }}</h1>
+        <p class="lede">
+            Navigate to your clients and manage the users registered under each one.
+        </p>
+    </div>
+    <div class="hero-panel">
+        <div class="metric-grid">
+            <div class="metric">
+                <div class="metric-label">Owned clients</div>
+                <div class="metric-value">{{ websites|length }}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Provider</div>
+                <div class="metric-value">{{ viewer.provider or "Local" }}</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="stack">
+        <div class="section-header">
+            <h2>Your clients</h2>
+            <a class="ghost-button" href="/sites">Manage all</a>
+        </div>
+        {% if websites %}
+            {% for website in websites[:4] %}
+                <article class="site-card">
+                    <h3>{{ website.name }}</h3>
+                    <p class="muted">{{ website.description or "No description provided." }}</p>
+                    <div class="data-grid">
+                        <div class="data-item"><span class="label">Slug</span><span class="mono">{{ website.slug }}</span></div>
+                        <div class="data-item"><span class="label">User limit</span>{{ website.max_users }}</div>
+                    </div>
+                    <div class="card-actions">
+                        <a class="secondary-button" href="/sites/{{ website.id }}">View users</a>
+                    </div>
+                </article>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">No clients registered yet.</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Website Detail</p>
+        <h1>{{ website.name }}</h1>
+        <p class="lede">{{ website.description or "Inspect the schema and registered users for this website." }}</p>
+    </div>
+</section>
+
+<section class="grid two-up">
+    <article class="panel">
+        <div class="stack">
+            <div class="section-header">
+                <h2>Metadata</h2>
+                <a class="ghost-button" href="/sites">Back to websites</a>
+            </div>
+            <div class="data-grid">
+                <div class="data-item"><span class="label">Slug</span><span class="mono">{{ website.slug }}</span></div>
+                <div class="data-item"><span class="label">Created</span>{{ website.created_at.strftime("%b %d, %Y") }}</div>
+                <div class="data-item"><span class="label">User limit</span>{{ website.max_users }}</div>
+                <div class="data-item"><span class="label">Registered users</span>{{ website_users|length }}</div>
+            </div>
+        </div>
+    </article>
+
+    <article class="panel">
+        <div class="stack">
+            <h2>User schema</h2>
+            {% for key, field in (website.user_schema or {}).items() %}
+                <div class="schema-item">
+                    <strong>{{ key }}</strong>
+                    <div class="muted">{{ field.label or "No label" }}</div>
+                    <div class="inline-list">
+                        <span class="pill">type: {{ field.type }}</span>
+                        <span class="pill">required: {{ field.required }}</span>
+                        {% if field.system %}
+                            <span class="pill">system</span>
+                        {% endif %}
+                    </div>
+                </div>
+            {% else %}
+                <div class="empty-state">No schema fields defined.</div>
+            {% endfor %}
+        </div>
+    </article>
+</section>
+
+<section class="panel">
+    <div class="section-header">
+        <h2>Registered users</h2>
+    </div>
+    <div class="stack">
+        {% if website_users %}
+            {% for website_user in website_users %}
+                {% set identity = website_user.identity_data or {} %}
+                <article class="user-card">
+                    <h3>{{ identity.display_name or website_user.full_name or website_user.email }}</h3>
+                    <div class="data-grid">
+                        <div class="data-item"><span class="label">Email</span>{{ website_user.email }}</div>
+                        <div class="data-item"><span class="label">Full Name</span>{{ website_user.full_name or "Not set" }}</div>
+                        <div class="data-item"><span class="label">Display Name</span>{{ identity.display_name or "Not set" }}</div>
+                        <div class="data-item"><span class="label">First Name</span>{{ identity.first_name or "Not set" }}</div>
+                        <div class="data-item"><span class="label">Last Name</span>{{ identity.last_name or "Not set" }}</div>
+                        <div class="data-item"><span class="label">Status</span>{% if website_user.is_active %}Active{% else %}Inactive{% endif %}</div>
+                        <div class="data-item"><span class="label">Joined</span>{{ website_user.created_at.strftime("%b %d, %Y") }}</div>
+                    </div>
+                </article>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">No users have been registered for this website yet.</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

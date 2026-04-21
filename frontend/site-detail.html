@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PIdP Website Detail</title>
+    <link rel="stylesheet" href="/assets/css/app.css">
+</head>
+<body data-page="site-detail">
+    <div class="app-shell">
+        <header class="topbar">
+            <a class="brand" href="/">PIdP</a>
+            <nav class="topnav" id="topnav"></nav>
+        </header>
+
+        <main class="page">
+            <section class="page-heading">
+                <div>
+                    <p class="eyebrow">Website Detail</p>
+                    <h1 id="site-title">Website</h1>
+                    <p class="lede" id="site-description">Loading website details.</p>
+                </div>
+            </section>
+
+            <section class="grid two-up">
+                <article class="panel" id="site-meta"></article>
+                <article class="panel" id="site-schema"></article>
+            </section>
+
+            <section class="panel">
+                <div class="section-header">
+                    <h2>Registered users</h2>
+                    <button class="secondary-button" id="refresh-users" type="button">Refresh</button>
+                </div>
+                <div id="users-list" class="stack"></div>
+            </section>
+        </main>
+    </div>
+
+    <noscript>This interface requires JavaScript.</noscript>
+    <script type="module" src="/assets/js/site-detail.js"></script>
+</body>
+</html>
