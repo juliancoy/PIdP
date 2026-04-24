@@ -1,5 +1,5 @@
-BASE_ADDR = "https://ballot-vm.local/"
-PIDP_BASE_ADDR = "https://ballot-vm.local/pidp"
+BASE_ADDR = "https://pidp.example.com/"
+PIDP_BASE_ADDR = "https://pidp.example.com/"
 
 
 PIDP_POSTGRES_PASSWORD = "changeme"

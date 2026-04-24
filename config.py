@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     database_url: str
     auto_create_tables: bool = False
     allowed_origins: str = ""
+    frontend_channel: str = "stable"
+    frontend_stable_commit: str | None = None
+    admin_emails: str = ""
 
     google_client_id: str | None = None
     google_client_secret: str | None = None
@@ -47,6 +50,19 @@ class Settings(BaseSettings):
         if provider == "github":
             return bool(self.github_client_id and self.github_client_secret)
         return False
+
+    @property
+    def normalized_frontend_channel(self) -> str:
+        channel = (self.frontend_channel or "").strip().lower()
+        if channel not in {"stable", "dev"}:
+            return "stable"
+        return channel
+
+    @property
+    def admin_emails_list(self) -> list[str]:
+        if not self.admin_emails:
+            return []
+        return [email.strip().lower() for email in self.admin_emails.split(",") if email.strip()]
 
 
 settings = Settings()

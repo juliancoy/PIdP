@@ -100,61 +100,6 @@
     </article>
 </section>
 
-<section class="panel">
-    <div class="stack">
-        <div class="section-header">
-            <h2>Service API Tokens</h2>
-        </div>
-        <p class="muted">
-            Create a bearer token for user-scoped service access to `/service/*`.
-        </p>
-        {% if issued_service_token %}
-            <div class="callout">
-                <strong>New token (shown once):</strong>
-                <div class="mono token-value">{{ issued_service_token }}</div>
-            </div>
-        {% endif %}
-        <form method="post" action="{{ ui_base }}/profile/tokens" class="field-grid">
-            <div class="field">
-                <label for="token_name">Token Name</label>
-                <input id="token_name" name="name" type="text" placeholder="e.g. ci-service" required>
-            </div>
-            <div class="button-row">
-                <button class="primary-button" type="submit">Create Token</button>
-            </div>
-        </form>
-        <div class="data-grid">
-            <div class="data-item"><span class="label">Service endpoint</span><span class="mono">GET {{ request.url.scheme }}://{{ request.url.hostname }}/service/me</span></div>
-            <div class="data-item"><span class="label">Auth header</span><span class="mono">Authorization: Bearer pidp_pat_...</span></div>
-        </div>
-        {% if api_tokens %}
-            {% for token in api_tokens %}
-                <article class="site-card">
-                    <h3>{{ token.name }}</h3>
-                    <div class="data-grid">
-                        <div class="data-item"><span class="label">Scope</span>{{ token.scope }}</div>
-                        <div class="data-item"><span class="label">Status</span>{% if token.is_active %}Active{% else %}Revoked{% endif %}</div>
-                        <div class="data-item"><span class="label">Created</span>{{ token.created_at.strftime("%b %d, %Y %H:%M") }}</div>
-                        <div class="data-item"><span class="label">Last Used</span>{% if token.last_used_at %}{{ token.last_used_at.strftime("%b %d, %Y %H:%M") }}{% else %}Never{% endif %}</div>
-                    </div>
-                    <div class="button-row">
-                        <form method="post" action="{{ ui_base }}/profile/tokens/{{ token.id }}/cycle">
-                            <button class="secondary-button" type="submit">Cycle Key</button>
-                        </form>
-                        {% if token.is_active %}
-                            <form method="post" action="{{ ui_base }}/profile/tokens/{{ token.id }}/revoke">
-                                <button class="ghost-button" type="submit">Revoke Token</button>
-                            </form>
-                        {% endif %}
-                    </div>
-                </article>
-            {% endfor %}
-        {% else %}
-            <div class="empty-state">No service tokens created yet.</div>
-        {% endif %}
-    </div>
-</section>
-
 <div class="modal-shell hidden" id="avatar-modal" aria-hidden="true">
     <div class="modal-backdrop" data-close-avatar-modal></div>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="avatar-modal-title">

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Billing</p>
+        <h1>Billing overview</h1>
+        <p class="lede">This section is ready for subscription, invoicing, and usage details. For now it provides a simple account summary.</p>
+    </div>
+</section>
+
+<section class="grid two-up">
+    <article class="panel">
+        <div class="stack">
+            <h2>Account</h2>
+            <div class="data-grid">
+                <div class="data-item"><span class="label">Account email</span>{{ viewer.email }}</div>
+                <div class="data-item"><span class="label">Owned websites</span>{{ websites|length }}</div>
+                <div class="data-item"><span class="label">Plan</span>Standard</div>
+                <div class="data-item"><span class="label">Status</span>Active</div>
+            </div>
+        </div>
+    </article>
+    <article class="panel">
+        <div class="stack">
+            <h2>Next step</h2>
+            <div class="callout">
+                Billing is not connected to a payment provider yet. This page is in place so account management has a dedicated home in the new sidebar.
+            </div>
+        </div>
+    </article>
+</section>
+{% endblock %}

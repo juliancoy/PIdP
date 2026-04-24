@@ -84,11 +84,11 @@ textarea {
 }
 
 .guest-shell {
-    width: min(calc(100% - 32px), 1120px);
+    width: min(calc(100% - 32px), 1080px);
     margin: 0 auto;
     padding: 20px 0 56px;
     display: grid;
-    gap: 22px;
+    gap: 20px;
 }
 
 .guest-topbar {
@@ -96,20 +96,12 @@ textarea {
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 16px 18px;
-    border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    background:
-        linear-gradient(120deg, rgba(176, 76, 33, 0.08), rgba(15, 118, 110, 0.09)),
-        rgba(18, 20, 17, 0.56);
-    backdrop-filter: blur(16px);
-    box-shadow: 0 12px 38px rgba(0, 0, 0, 0.22);
-}
-
-.guest-controls {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+    padding: 14px 18px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    background: rgba(18, 20, 17, 0.5);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 10px 36px rgba(0, 0, 0, 0.18);
 }
 
 .guest-theme-switcher {
@@ -122,7 +114,7 @@ textarea {
 }
 
 .guest-content {
-    width: min(100%, 820px);
+    width: min(100%, 760px);
     margin: 0 auto;
 }
 
@@ -285,56 +277,6 @@ textarea {
     padding: 8px 10px;
 }
 
-.channel-switch {
-    display: grid;
-    gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.55);
-}
-
-:root[data-theme="dark"] .channel-switch {
-    background: rgba(255, 255, 255, 0.04);
-}
-
-.channel-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: fit-content;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    border: 1px solid transparent;
-}
-
-.channel-dev {
-    color: #fff;
-    background: linear-gradient(135deg, #0f766e, #0f9d8c);
-    border-color: rgba(255, 255, 255, 0.18);
-}
-
-.channel-stable {
-    color: #fff;
-    background: linear-gradient(135deg, #7c2f10, #b04c21);
-    border-color: rgba(255, 255, 255, 0.18);
-}
-
-.channel-toggle {
-    width: 100%;
-    border-radius: 12px;
-    padding: 8px 10px;
-    font-size: 0.86rem;
-}
-
-.guest-channel-switch {
-    min-width: 178px;
-}
-
 .page {
     display: grid;
     gap: 24px;
@@ -346,7 +288,7 @@ textarea {
 }
 
 .landing-heading {
-    max-width: 820px;
+    max-width: 760px;
 }
 
 .landing-grid {
@@ -394,12 +336,6 @@ textarea {
 .hero,
 .page-heading {
     padding: 32px;
-}
-
-.page-heading {
-    background:
-        linear-gradient(135deg, color-mix(in srgb, var(--brand-soft) 30%, transparent), transparent 44%),
-        var(--panel);
 }
 
 .hero {
@@ -499,16 +435,6 @@ h2 {
     background: rgba(255, 255, 255, 0.92);
     color: var(--ink);
     outline: none;
-    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
-}
-
-.field input {
-    min-height: 46px;
-}
-
-.field input::placeholder,
-.field textarea::placeholder {
-    color: color-mix(in srgb, var(--muted) 84%, transparent);
 }
 
 .field input:focus,
@@ -551,7 +477,6 @@ h2 {
     text-decoration: none;
     color: var(--ink);
     font-weight: 600;
-    transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
 .social-logo {
@@ -572,13 +497,11 @@ h2 {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease, border-color 120ms ease;
 }
 
 .primary-button {
     background: linear-gradient(135deg, var(--brand), var(--brand-deep));
     color: #fff;
-    box-shadow: 0 8px 22px color-mix(in srgb, var(--brand) 28%, transparent);
 }
 
 .secondary-button {
@@ -590,16 +513,6 @@ h2 {
     background: transparent;
     color: var(--brand-deep);
     border: 1px solid var(--line);
-}
-
-.primary-button:hover,
-.secondary-button:hover,
-.ghost-button:hover {
-    transform: translateY(-1px);
-}
-
-.primary-button:hover {
-    filter: brightness(1.05);
 }
 
 :root[data-theme="dark"] .nav-link,
@@ -617,28 +530,6 @@ h2 {
 :root[data-theme="dark"] .callout,
 :root[data-theme="dark"] .empty-state {
     background: rgba(255, 255, 255, 0.04);
-}
-
-:root[data-theme="dark"] .panel,
-:root[data-theme="dark"] .page-heading,
-:root[data-theme="dark"] .hero {
-    border-color: rgba(255, 255, 255, 0.18);
-}
-
-:root[data-theme="dark"] .field input,
-:root[data-theme="dark"] .field textarea,
-:root[data-theme="dark"] .theme-select {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.14);
-}
-
-:root[data-theme="dark"] .field input::placeholder,
-:root[data-theme="dark"] .field textarea::placeholder {
-    color: rgba(235, 231, 224, 0.56);
-}
-
-:root[data-theme="dark"] .guest-topbar {
-    border-color: rgba(255, 255, 255, 0.22);
 }
 
 .status,
@@ -931,16 +822,7 @@ h2 {
     }
 
     .guest-theme-switcher {
-        min-width: 144px;
-    }
-
-    .guest-controls {
-        flex-wrap: wrap;
-        justify-content: flex-end;
-    }
-
-    .guest-channel-switch {
-        min-width: 144px;
+        min-width: 138px;
     }
 
     .app-shell {
@@ -962,8 +844,4 @@ h2 {
     .hero {
         padding: 24px;
     }
-}
-
-.token-value {
-    word-break: break-all;
 }
