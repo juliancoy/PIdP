@@ -13,3 +13,4 @@ httpx
 itsdangerous
 boto3
 jinja2
+mcp

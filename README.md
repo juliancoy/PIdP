@@ -227,3 +227,26 @@ Deployment behavior:
 - PIdP only stores hashed passwords; plaintext is never persisted.
 - Identity data can be stored in the `identity_data` JSONB column.
 - Existing databases will need matching schema changes for the new `websites` and `website_users` tables if you are not starting from an empty database with `AUTO_CREATE_TABLES=true`.
+
+## MCP Server (PiDP Admin Adapter)
+
+This repository includes a stdio MCP server at `mcp_server.py` for safe PiDP admin automation.
+
+### Environment variables
+
+- `PIDP_BASE_URL` (optional, default `https://pidp.arkavo.org`)
+- `PIDP_PAT` (required; service token, e.g. `pidp_pat_...`)
+
+### Run
+
+```bash
+cd portal/pidp
+python mcp_server.py
+```
+
+### Exposed MCP tools
+
+- `service_me` -> calls `GET /service/me`
+- `list_service_websites` -> calls `GET /service/websites`
+- `create_service_website` -> calls `POST /service/websites`
+- `check_login_redirect_authorization` -> validates that `/auth/{provider}/login?next=...` accepts a frontend URL and reports stored `frontend_redirect_url`
