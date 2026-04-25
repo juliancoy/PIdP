@@ -103,30 +103,13 @@ erDiagram
     }
 ```
 
-## Frontend Modes
+## Deployment Model
 
-PIdP uses environment-based frontend channels:
+PIdP uses container-level environment separation:
 
-- Default behavior is `stable` with no env required.
-- `FRONTEND_CHANNEL=stable|dev` sets the deployment default channel.
-- Runtime cookie (`pidp_frontend_channel`) selects `stable` or `dev` and overrides the deployment default.
-- `stable` serves from `frontend/stable/` (falls back to `frontend/` if snapshot is missing).
-- `dev` serves live-edit files from `frontend/templates/` and `frontend/assets/`.
-- `FRONTEND_STABLE_COMMIT=<git-sha>` pins `stable` to frontend files from that exact commit.
-- Admin control API/UI can update the stable commit at runtime and persist it to `frontend/.control-state.json`.
-- Admin control API/UI can set a desired backend image (`backend_image_ref`) persisted in the same control state.
-
-This keeps one canonical route surface (`/`) and lets deployment decide which channel is active.
-
-The active channel is shown in the UI (`Prod` or `Dev`) with a built-in toggle in the app chrome.
-Use the toggle to switch channels at runtime (stored in a cookie), regardless of deployment default.
-When `FRONTEND_STABLE_COMMIT` is set, the prod badge shows `Prod @ <sha7>`.
-
-To promote current dev UI to stable (recommended before production deploy):
-
-```bash
-./scripts/promote_frontend.sh
-```
+- `pidp` serves production traffic (`pidp.<domain>`) from a release image.
+- `pidp-dev` serves development traffic (`dev.pidp.<domain>`) from local source with reload.
+- Both containers share the same Postgres auth/data model.
 
 ## Quickstart
 
@@ -155,8 +138,7 @@ Core settings:
 - `TOKEN_ALGORITHM` (optional, default `HS256`)
 - `AUTO_CREATE_TABLES` (optional, default `false`)
 - `ALLOWED_ORIGINS` (optional, comma-separated)
-- `FRONTEND_STABLE_COMMIT` (optional, git ref/sha used for `stable` frontend snapshot)
-- `ADMIN_EMAILS` (optional, comma-separated admin emails allowed to manage control endpoints)
+- `ADMIN_EMAILS` (optional, comma-separated admin emails)
 - `PIDP_PROD_IMAGE` (optional prod release image override; default `ghcr.io/juliancoy/pidp:latest`)
 - `PIDP_DEV_IMAGE` (optional local dev image tag used for the watcher container; default `pidp-dev`)
 - `PIDP_PROD_PUBLIC_BASE_URL` (optional explicit prod callback base, e.g. `https://pidp.example.com/`)
@@ -193,15 +175,10 @@ Social sign-in (set both client id/secret to enable):
 - `GET /auth/{provider}/login` Start social sign-in.
 - `GET /auth/{provider}/callback` Social provider callback, returns JWT.
 - `GET /health` Health check.
-- `GET /control/frontend/stable-commit` Admin-only control status for prod commit pin.
-- `PUT /control/frontend/stable-commit` Admin-only update for prod commit pin (`{"commit":"<ref>"}` or `{"commit":null}`).
+- `GET /configuration` Runtime configuration view sourced from active app env (host-aware `base_addr`).
 - `GET /service/me` User-scoped service identity endpoint (`Authorization: Bearer pidp_pat_...`).
 - `GET /service/websites` List websites scoped to token owner.
 - `POST /service/websites` Create website scoped to token owner.
-
-Control behavior:
-
-- Frontend prod commit pin requests are persisted in `frontend/.control-state.json`.
 
 Deployment behavior:
 

@@ -42,26 +42,6 @@
                             <option value="auto">Auto</option>
                         </select>
                     </label>
-                    <form class="channel-switch" method="post" action="/frontend/channel">
-                        <input
-                            type="hidden"
-                            name="next"
-                            value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}"
-                        >
-                        <input type="hidden" name="channel" value="{{ frontend_channel_toggle_to }}">
-                        <span class="channel-badge channel-{{ frontend_channel }}">
-                            {% if frontend_channel == "dev" %}
-                                Dev
-                            {% elif frontend_prod_commit %}
-                                Prod @ {{ frontend_prod_commit[:7] }}
-                            {% else %}
-                                Prod
-                            {% endif %}
-                        </span>
-                        <button type="submit" class="ghost-button channel-toggle">
-                            Switch to {{ "Dev" if frontend_channel_toggle_to == "dev" else "Prod" }}
-                        </button>
-                    </form>
                     {% set nav_identity = viewer.identity_data or {} %}
                     <a class="nav-link {% if active_page == 'home' %}active{% endif %}" href="{{ ui_base or '/' }}">Dashboard</a>
                     <a class="nav-link {% if active_page == 'sites' %}active{% endif %}" href="{{ ui_base }}/sites">Clients</a>
@@ -99,34 +79,11 @@
                             <option value="auto">Auto</option>
                         </select>
                     </label>
-                    <form class="channel-switch guest-channel-switch" method="post" action="/frontend/channel">
-                        <input
-                            type="hidden"
-                            name="next"
-                            value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}"
-                        >
-                        <input type="hidden" name="channel" value="{{ frontend_channel_toggle_to }}">
-                        <span class="channel-badge channel-{{ frontend_channel }}">
-                            {% if frontend_channel == "dev" %}
-                                Dev
-                            {% elif frontend_prod_commit %}
-                                Prod @ {{ frontend_prod_commit[:7] }}
-                            {% else %}
-                                Prod
-                            {% endif %}
-                        </span>
-                        <button type="submit" class="ghost-button channel-toggle">
-                            Switch to {{ "Dev" if frontend_channel_toggle_to == "dev" else "Prod" }}
-                        </button>
-                    </form>
                 </div>
             </header>
     {% endif %}
 
             <main class="page page-content {% if not viewer %}guest-content{% endif %}">
-                {% if frontend_channel_requested == "stable" and frontend_channel == "dev" and not stable_snapshot_available %}
-                    <div class="status error">Stable snapshot unavailable. Rendering Dev channel.</div>
-                {% endif %}
                 {% if flash_error %}
                     <div class="status error">{{ flash_error }}</div>
                 {% endif %}

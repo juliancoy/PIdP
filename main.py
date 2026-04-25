@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import json
-import io
 import logging
 import os
 import re
 import secrets
 import hashlib
-import subprocess
-import tarfile
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
 from uuid import UUID, uuid4
 
 import boto3
@@ -27,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from urllib.parse import urlencode, urlparse
 
 from config import settings
@@ -38,8 +34,6 @@ from schemas import (
     APITokenCreate,
     APITokenIssued,
     APITokenPublic,
-    FrontendStableCommitControl,
-    FrontendStableCommitUpdate,
     Token,
     UserCreate,
     UserProfileUpdate,
@@ -69,15 +63,9 @@ LOG = logging.getLogger(__name__)
 MAX_WEBSITES_PER_OWNER = 5
 DEFAULT_MAX_USERS_PER_WEBSITE = 10
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
-FRONTEND_DEV_ASSETS_DIR = FRONTEND_DIR / "assets"
-FRONTEND_DEV_TEMPLATES_DIR = FRONTEND_DIR / "templates"
-FRONTEND_STABLE_DIR = FRONTEND_DIR / "stable"
-FRONTEND_STABLE_ASSETS_DIR = FRONTEND_STABLE_DIR / "assets"
-FRONTEND_STABLE_TEMPLATES_DIR = FRONTEND_STABLE_DIR / "templates"
-FRONTEND_COMMIT_CACHE_DIR = FRONTEND_DIR / ".stable-commits"
-FRONTEND_CONTROL_STATE_FILE = FRONTEND_DIR / ".control-state.json"
+FRONTEND_ASSETS_DIR = FRONTEND_DIR / "assets"
+FRONTEND_TEMPLATES_DIR = FRONTEND_DIR / "templates"
 SESSION_COOKIE_NAME = "pidp_token"
-FRONTEND_CHANNEL_COOKIE_NAME = "pidp_frontend_channel"
 SYSTEM_SCHEMA_FIELDS = {
     "display_name": WebsiteSchemaField(
         type="string",
@@ -111,201 +99,8 @@ SYSTEM_SCHEMA_FIELDS = {
 
 
 app = FastAPI(title=settings.app_name)
-
-
-def _materialize_frontend_snapshot(commit_ref: str) -> tuple[Path, Path] | None:
-    safe_ref = re.sub(r"[^A-Za-z0-9._-]", "_", commit_ref.strip())
-    snapshot_root = FRONTEND_COMMIT_CACHE_DIR / safe_ref
-    templates_dir = snapshot_root / "frontend" / "templates"
-    assets_dir = snapshot_root / "frontend" / "assets"
-    if templates_dir.is_dir() and assets_dir.is_dir():
-        return templates_dir, assets_dir
-
-    snapshot_root.mkdir(parents=True, exist_ok=True)
-    repo_root = FRONTEND_DIR
-    proc = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_root),
-            "archive",
-            "--format=tar",
-            commit_ref,
-            "frontend/templates",
-            "frontend/assets",
-        ],
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        LOG.warning("Failed to archive frontend snapshot for commit %s: %s", commit_ref, proc.stderr.decode("utf-8", "ignore"))
-        return None
-
-    try:
-        with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:") as archive:
-            archive.extractall(snapshot_root)
-    except Exception as exc:
-        LOG.warning("Failed to extract frontend snapshot for commit %s: %s", commit_ref, exc)
-        return None
-
-    if templates_dir.is_dir() and assets_dir.is_dir():
-        return templates_dir, assets_dir
-
-    LOG.warning("Frontend snapshot for commit %s missing expected paths", commit_ref)
-    return None
-
-
-app.mount("/assets/dev", StaticFiles(directory=str(FRONTEND_DEV_ASSETS_DIR)), name="pidp-assets-dev")
-dev_templates = Jinja2Templates(directory=str(FRONTEND_DEV_TEMPLATES_DIR))
-stable_templates = Jinja2Templates(directory=str(FRONTEND_STABLE_TEMPLATES_DIR))
-stable_assets_dir = FRONTEND_STABLE_ASSETS_DIR
-stable_templates_dir = FRONTEND_STABLE_TEMPLATES_DIR
-stable_snapshot_available = stable_assets_dir.is_dir() and stable_templates_dir.is_dir()
-prod_commit_ref: str | None = None
-prod_requested_commit_ref: str | None = None
-stable_source = "stable_dir" if stable_snapshot_available else "dev_fallback"
-_frontend_state_lock = Lock()
-
-
-def _read_frontend_control_state() -> dict:
-    if not FRONTEND_CONTROL_STATE_FILE.is_file():
-        return {}
-    try:
-        return json.loads(FRONTEND_CONTROL_STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        LOG.warning("Failed to read frontend control state from %s", FRONTEND_CONTROL_STATE_FILE)
-        return {}
-
-
-def _write_frontend_control_state(
-    commit_ref: str | None,
-    requested_ref: str | None,
-) -> None:
-    payload = _read_frontend_control_state()
-    payload["frontend_stable_commit"] = commit_ref
-    payload["frontend_stable_commit_requested"] = requested_ref
-    payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
-    FRONTEND_CONTROL_STATE_FILE.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _resolve_commit_ref(commit_ref: str) -> str:
-    candidate = commit_ref.strip()
-    if not candidate:
-        raise ValueError("Commit must not be empty")
-    proc = subprocess.run(
-        ["git", "-C", str(FRONTEND_DIR), "rev-parse", "--verify", f"{candidate}^{{commit}}"],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise ValueError("Commit/ref not found in PIdP/frontend git history")
-    return proc.stdout.strip()
-
-
-def _apply_stable_frontend_commit(
-    requested_commit_ref: str | None,
-    persist: bool = False,
-) -> FrontendStableCommitControl:
-    global prod_commit_ref
-    global prod_requested_commit_ref
-    global stable_assets_dir
-    global stable_templates_dir
-    global stable_templates
-    global stable_snapshot_available
-    global stable_source
-
-    requested = (requested_commit_ref or "").strip() or None
-    resolved: str | None = None
-    source = "stable_dir"
-    next_templates_dir = FRONTEND_STABLE_TEMPLATES_DIR if FRONTEND_STABLE_TEMPLATES_DIR.is_dir() else FRONTEND_DEV_TEMPLATES_DIR
-    next_assets_dir = FRONTEND_STABLE_ASSETS_DIR if FRONTEND_STABLE_ASSETS_DIR.is_dir() else FRONTEND_DEV_ASSETS_DIR
-    if not FRONTEND_STABLE_TEMPLATES_DIR.is_dir() or not FRONTEND_STABLE_ASSETS_DIR.is_dir():
-        source = "dev_fallback"
-
-    if requested:
-        resolved = _resolve_commit_ref(requested)
-        snapshot = _materialize_frontend_snapshot(resolved)
-        if not snapshot:
-            raise ValueError("Unable to materialize frontend snapshot for requested commit")
-        next_templates_dir, next_assets_dir = snapshot
-        source = "commit_snapshot"
-
-    snapshot_available = next_templates_dir.is_dir() and next_assets_dir.is_dir()
-    if not snapshot_available:
-        raise ValueError("Stable frontend snapshot is unavailable")
-
-    with _frontend_state_lock:
-        prod_commit_ref = resolved
-        prod_requested_commit_ref = requested
-        stable_templates_dir = next_templates_dir
-        stable_assets_dir = next_assets_dir
-        stable_templates = Jinja2Templates(directory=str(next_templates_dir))
-        stable_snapshot_available = snapshot_available
-        stable_source = source
-        if persist:
-            _write_frontend_control_state(
-                prod_commit_ref,
-                prod_requested_commit_ref,
-            )
-
-    default_channel = settings.normalized_frontend_channel
-    if default_channel == "stable" and not stable_snapshot_available:
-        default_channel = "dev"
-    return FrontendStableCommitControl(
-        commit=prod_commit_ref,
-        requested_commit=prod_requested_commit_ref,
-        source=stable_source,
-        stable_snapshot_available=stable_snapshot_available,
-        default_channel=default_channel,
-        can_manage=False,
-    )
-
-
-def _frontend_control_state(can_manage: bool) -> FrontendStableCommitControl:
-    default_channel = settings.normalized_frontend_channel
-    if default_channel == "stable" and not stable_snapshot_available:
-        default_channel = "dev"
-    return FrontendStableCommitControl(
-        commit=prod_commit_ref,
-        requested_commit=prod_requested_commit_ref,
-        source=stable_source,
-        stable_snapshot_available=stable_snapshot_available,
-        default_channel=default_channel,
-        can_manage=can_manage,
-    )
-
-
-persisted_control_state = _read_frontend_control_state()
-initial_requested_commit = (
-    (persisted_control_state.get("frontend_stable_commit_requested") or "").strip()
-    or (persisted_control_state.get("frontend_stable_commit") or "").strip()
-    or (settings.frontend_stable_commit or "").strip()
-    or None
-)
-try:
-    _apply_stable_frontend_commit(initial_requested_commit, persist=False)
-except ValueError as exc:
-    LOG.warning("Failed to initialize stable frontend commit '%s': %s", initial_requested_commit, exc)
-    _apply_stable_frontend_commit(None, persist=False)
-
-
-def _load_pidp_editme():
-    try:
-        import pidp_editme
-
-        return pidp_editme
-    except Exception:
-        return None
-
-
-@app.get("/assets/stable/{asset_path:path}", include_in_schema=False)
-async def stable_asset(asset_path: str) -> FileResponse:
-    root = stable_assets_dir.resolve()
-    candidate = (root / asset_path).resolve()
-    if root not in candidate.parents and candidate != root:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
-    if not candidate.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
-    return FileResponse(str(candidate))
+app.mount("/assets", StaticFiles(directory=str(FRONTEND_ASSETS_DIR)), name="pidp-assets")
+templates = Jinja2Templates(directory=str(FRONTEND_TEMPLATES_DIR))
 
 
 if settings.origins_list:
@@ -328,25 +123,6 @@ def _is_request_secure(request: Request) -> bool:
     if forwarded_proto:
         return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
     return request.url.scheme == "https"
-
-
-def _default_frontend_channel() -> str:
-    channel = settings.normalized_frontend_channel
-    if channel == "stable" and not stable_snapshot_available:
-        return "dev"
-    return channel
-
-
-def _redirect_with_query(path: str, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
-    query: dict[str, str] = {}
-    if message:
-        query["message"] = message
-    if error:
-        query["error"] = error
-    url = path
-    if query:
-        url = f"{path}?{urlencode(query)}"
-    return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
 
 
 def _set_session_cookie(response: RedirectResponse, token: str) -> None:
@@ -385,17 +161,7 @@ def _render_template(
     context: dict,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    requested_channel = (request.cookies.get(FRONTEND_CHANNEL_COOKIE_NAME) or "").strip().lower()
-    default_channel = _default_frontend_channel()
-    if requested_channel not in {"stable", "dev"}:
-        requested_channel = default_channel
-    frontend_channel = requested_channel
-    if frontend_channel == "stable" and not stable_snapshot_available:
-        frontend_channel = "dev"
-    asset_base = "/assets/dev" if frontend_channel == "dev" else "/assets/stable"
-    template_engine = dev_templates if frontend_channel == "dev" else stable_templates
-    next_channel = "stable" if frontend_channel == "dev" else "dev"
-    return template_engine.TemplateResponse(
+    return templates.TemplateResponse(
         request=request,
         name=template_name,
         context={
@@ -406,12 +172,7 @@ def _render_template(
             "flash_error": request.query_params.get("error"),
             "flash_message": request.query_params.get("message"),
             "ui_base": "",
-            "asset_base": asset_base,
-            "frontend_channel": frontend_channel,
-            "frontend_channel_requested": requested_channel,
-            "frontend_channel_toggle_to": next_channel,
-            "stable_snapshot_available": stable_snapshot_available,
-            "frontend_prod_commit": prod_commit_ref,
+            "asset_base": "/assets",
             **context,
         },
         status_code=status_code,
@@ -681,6 +442,8 @@ async def _get_owner_from_api_token(raw_token: str, session: AsyncSession) -> Us
     if not row:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
     api_token, owner = row
+    if api_token.scope != "service":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API token scope is not allowed")
     api_token.last_used_at = datetime.utcnow()
     await session.commit()
     return owner
@@ -698,6 +461,13 @@ async def _get_service_owner(request: Request, session: AsyncSession) -> User:
     if raw_token.startswith("pidp_pat_"):
         return await _get_owner_from_api_token(raw_token, session)
     return await _get_current_owner(raw_token, session)
+
+
+def _request_base_url(request: Request) -> str:
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    scheme = "https" if _is_request_secure(request) else request.url.scheme
+    return f"{scheme}://{host}/"
 
 
 async def _get_owned_website(session: AsyncSession, owner_id: UUID, website_id: UUID) -> Website:
@@ -726,17 +496,6 @@ async def _get_request_owner(request: Request, session: AsyncSession) -> User | 
         return await _get_current_owner(token, session)
     except HTTPException:
         return None
-
-
-async def _is_admin_owner(session: AsyncSession, owner: User) -> bool:
-    configured_admins = set(settings.admin_emails_list)
-    if configured_admins:
-        return owner.email.lower() in configured_admins
-
-    # Bootstrap behavior: when no admin list is configured, first account is treated as admin.
-    result = await session.execute(select(User.email).order_by(User.created_at).limit(1))
-    bootstrap_email = result.scalar_one_or_none()
-    return bool(bootstrap_email and bootstrap_email.lower() == owner.email.lower())
 
 
 async def _website_user_counts(session: AsyncSession, websites: list[Website]) -> dict[str, int]:
@@ -771,29 +530,6 @@ async def startup() -> None:
             await conn.run_sync(Base.metadata.create_all)
 
 
-@app.post("/frontend/channel", include_in_schema=False)
-async def set_frontend_channel(request: Request) -> RedirectResponse:
-    form = await request.form()
-    requested = str(form.get("channel") or "").strip().lower()
-    next_url = str(form.get("next") or "/").strip()
-    if requested not in {"stable", "dev"}:
-        requested = _default_frontend_channel()
-    if not next_url.startswith("/"):
-        next_url = "/"
-
-    response = RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(
-        key=FRONTEND_CHANNEL_COOKIE_NAME,
-        value=requested,
-        httponly=True,
-        secure=_is_request_secure(request),
-        samesite="lax",
-        path="/",
-        max_age=60 * 60 * 24 * 365,
-    )
-    return response
-
-
 @app.get("/", include_in_schema=False)
 async def frontend_home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     owner = await _get_request_owner(request, session)
@@ -813,7 +549,6 @@ async def frontend_home(request: Request, session: AsyncSession = Depends(get_se
 
     result = await session.execute(select(Website).where(Website.owner_id == owner.id).order_by(Website.created_at))
     websites = list(result.scalars().all())
-    is_admin = await _is_admin_owner(session, owner)
     return _render_template(
         request,
         "dashboard.html",
@@ -822,33 +557,8 @@ async def frontend_home(request: Request, session: AsyncSession = Depends(get_se
             "active_page": "home",
             "viewer": owner,
             "websites": websites,
-            "viewer_is_admin": is_admin,
-            "frontend_control": _frontend_control_state(can_manage=is_admin),
         },
     )
-
-
-@app.post("/admin/frontend/stable-commit", include_in_schema=False)
-async def frontend_set_stable_commit(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> RedirectResponse:
-    owner = await _get_request_owner(request, session)
-    if not owner:
-        return _redirect_with_query("/", error="Sign in required")
-    if not await _is_admin_owner(session, owner):
-        return _redirect_with_query("/", error="Admin access required")
-
-    form = await request.form()
-    requested_commit = str(form.get("commit") or "").strip() or None
-    try:
-        control_state = _apply_stable_frontend_commit(requested_commit, persist=True)
-    except ValueError as exc:
-        return _redirect_with_query("/", error=str(exc))
-
-    if control_state.commit:
-        return _redirect_with_query("/", message=f"Prod frontend pinned to {control_state.commit[:12]}")
-    return _redirect_with_query("/", message="Prod frontend pin cleared")
 
 
 @app.post("/session/login", include_in_schema=False)
@@ -1240,20 +950,18 @@ async def jwks() -> dict:
 
 
 @app.get("/configuration")
-async def configuration() -> dict:
-    config = _load_pidp_editme()
-    if config is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="pidp_editme unavailable")
+async def configuration(request: Request) -> dict:
+    base_addr = _request_base_url(request)
     return {
-        "base_addr": getattr(config, "BASE_ADDR", None),
-        "google_client_id": getattr(config, "PIDP_GOOGLE_CLIENT_ID", None),
-        "google_redirect_uri": getattr(config, "PIDP_GOOGLE_REDIRECT_URI", None),
-        "github_client_id": getattr(config, "PIDP_GITHUB_CLIENT_ID", None),
-        "github_redirect_uri": getattr(config, "PIDP_GITHUB_REDIRECT_URI", None),
-        "frontend_redirect_url": getattr(config, "PIDP_FRONTEND_REDIRECT_URL", None),
-        "minio_endpoint": getattr(config, "MINIO_ENDPOINT", None),
-        "minio_bucket": getattr(config, "MINIO_BUCKET", None),
-        "minio_public_base_url": getattr(config, "MINIO_PUBLIC_BASE_URL", None),
+        "base_addr": base_addr,
+        "google_client_id": settings.google_client_id,
+        "google_redirect_uri": settings.google_redirect_uri,
+        "github_client_id": settings.github_client_id,
+        "github_redirect_uri": settings.github_redirect_uri,
+        "frontend_redirect_url": settings.frontend_redirect_url,
+        "minio_endpoint": settings.minio_endpoint,
+        "minio_bucket": settings.minio_bucket,
+        "minio_public_base_url": settings.minio_public_base_url,
     }
 
 
@@ -1374,33 +1082,6 @@ async def cycle_api_token(
         name=api_token.name,
         scope=api_token.scope,
     )
-
-
-@app.get("/control/frontend/stable-commit", response_model=FrontendStableCommitControl)
-async def get_control_frontend_stable_commit(
-    token: str = Depends(oauth2_scheme),
-    session: AsyncSession = Depends(get_session),
-) -> FrontendStableCommitControl:
-    owner = await _get_current_owner(token, session)
-    can_manage = await _is_admin_owner(session, owner)
-    if not can_manage:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-    return _frontend_control_state(can_manage=True)
-
-
-@app.put("/control/frontend/stable-commit", response_model=FrontendStableCommitControl)
-async def put_control_frontend_stable_commit(
-    payload: FrontendStableCommitUpdate,
-    token: str = Depends(oauth2_scheme),
-    session: AsyncSession = Depends(get_session),
-) -> FrontendStableCommitControl:
-    owner = await _get_current_owner(token, session)
-    can_manage = await _is_admin_owner(session, owner)
-    if not can_manage:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-    state = _apply_stable_frontend_commit(payload.commit, persist=True)
-    state.can_manage = True
-    return state
 
 
 @app.get("/service/me", response_model=UserPublic)

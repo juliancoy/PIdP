@@ -31,19 +31,6 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
-class FrontendStableCommitControl(BaseModel):
-    commit: str | None = None
-    requested_commit: str | None = None
-    source: str
-    stable_snapshot_available: bool
-    default_channel: Literal["stable", "dev"]
-    can_manage: bool
-
-
-class FrontendStableCommitUpdate(BaseModel):
-    commit: str | None = None
-
-
 class APITokenCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     scope: Literal["service"] = "service"

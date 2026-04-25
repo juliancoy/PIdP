@@ -23,40 +23,6 @@
     </div>
 </section>
 
-{% if viewer_is_admin and frontend_control %}
-<section class="panel">
-    <div class="stack">
-        <div class="section-header">
-            <h2>Frontend Control</h2>
-        </div>
-        <p class="muted">
-            Pin Prod to a frontend commit while Dev stays live. Leave commit blank to clear pin.
-        </p>
-        <div class="data-grid">
-            <div class="data-item"><span class="label">Prod commit</span><span class="mono">{{ frontend_control.commit or "none" }}</span></div>
-            <div class="data-item"><span class="label">Requested ref</span><span class="mono">{{ frontend_control.requested_commit or "none" }}</span></div>
-            <div class="data-item"><span class="label">Source</span>{{ frontend_control.source }}</div>
-            <div class="data-item"><span class="label">Default channel</span>{{ frontend_control.default_channel }}</div>
-        </div>
-        <form method="post" action="/admin/frontend/stable-commit" class="field-grid">
-            <div class="field">
-                <label for="stable-commit">Prod stable commit/ref</label>
-                <input
-                    id="stable-commit"
-                    name="commit"
-                    type="text"
-                    placeholder="e.g. 7c2c9fbe4b76"
-                    value="{{ frontend_control.requested_commit or frontend_control.commit or '' }}"
-                >
-            </div>
-            <div class="button-row">
-                <button class="primary-button" type="submit">Apply Commit Pin</button>
-            </div>
-        </form>
-    </div>
-</section>
-{% endif %}
-
 <section class="panel">
     <div class="stack">
         <div class="section-header">
