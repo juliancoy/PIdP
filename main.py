@@ -18,13 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from config import settings
 from db import engine, get_session
@@ -40,6 +40,8 @@ from schemas import (
     UserPublic,
     UserPublicProfile,
     WebsiteCreate,
+    WebsiteAuthConfigUpdate,
+    WebsiteBrandingUpdate,
     WebsitePublic,
     WebsiteSchemaField,
     WebsiteSchemaUpdate,
@@ -177,6 +179,145 @@ def _render_template(
         },
         status_code=status_code,
     )
+
+
+def _resolve_frontend_redirect_target(request: Request, raw_target: str | None) -> str | None:
+    redirect_target = (raw_target or "").strip() or None
+    if not redirect_target:
+        return None
+    if redirect_target.startswith("/"):
+        return redirect_target
+    parsed = urlparse(redirect_target)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.netloc == request.url.netloc:
+        return f"{parsed.path or '/'}{f'?{parsed.query}' if parsed.query else ''}"
+    return redirect_target
+
+
+def _normalize_host(value: str | None) -> str | None:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return None
+    if "://" in raw:
+        parsed = urlparse(raw)
+        raw = parsed.netloc.strip().lower()
+    if raw.startswith("[") and "]" in raw:
+        host, _, port = raw.partition("]")
+        raw = f"{host}]"
+        if port.startswith(":"):
+            raw = f"{raw}{port}"
+    if ":" in raw and not raw.startswith("["):
+        host, _, port = raw.partition(":")
+        if port and port.isdigit():
+            raw = host
+    raw = raw.strip(".")
+    if not raw:
+        return None
+    return raw
+
+
+def _normalize_origin(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if not raw.startswith(("http://", "https://")):
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    host = _normalize_host(parsed.netloc)
+    if not host:
+        return None
+    default_port = (parsed.scheme == "https" and parsed.port in {None, 443}) or (parsed.scheme == "http" and parsed.port in {None, 80})
+    if parsed.port and not default_port:
+        return f"{parsed.scheme}://{host}:{parsed.port}"
+    return f"{parsed.scheme}://{host}"
+
+
+def _normalize_host_list(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        host = _normalize_host(item)
+        if not host or host in seen:
+            continue
+        normalized.append(host)
+        seen.add(host)
+    return normalized
+
+
+def _normalize_origin_list(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        origin = _normalize_origin(item)
+        if not origin or origin in seen:
+            continue
+        normalized.append(origin)
+        seen.add(origin)
+    return normalized
+
+
+ALLOWED_BACKGROUND_STYLES = {"default", "gradient-warm", "gradient-ocean", "gradient-slate"}
+
+
+def _safe_branding_text(value: str | None, max_length: int) -> str:
+    text = (value or "").strip()
+    return text[:max_length]
+
+
+def _normalize_hex_color(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return ""
+    return text.lower()
+
+
+def _normalize_website_branding(raw: dict | None) -> dict[str, str]:
+    data = dict(raw or {})
+    background_style = _safe_branding_text(str(data.get("background_style") or ""), 32)
+    if background_style not in ALLOWED_BACKGROUND_STYLES:
+        background_style = "default"
+    return {
+        "logo_url": _safe_branding_text(str(data.get("logo_url") or ""), 1024),
+        "hero_eyebrow": _safe_branding_text(str(data.get("hero_eyebrow") or ""), 120),
+        "hero_title": _safe_branding_text(str(data.get("hero_title") or ""), 200),
+        "hero_subtitle": _safe_branding_text(str(data.get("hero_subtitle") or ""), 360),
+        "primary_button_label": _safe_branding_text(str(data.get("primary_button_label") or ""), 60),
+        "accent_color": _normalize_hex_color(str(data.get("accent_color") or "")),
+        "accent_deep_color": _normalize_hex_color(str(data.get("accent_deep_color") or "")),
+        "accent_soft_color": _normalize_hex_color(str(data.get("accent_soft_color") or "")),
+        "background_style": background_style,
+    }
+
+
+def _website_branding(website: Website | None) -> dict[str, str]:
+    if not website:
+        return _normalize_website_branding({})
+    return _normalize_website_branding(getattr(website, "branding", {}) or {})
+
+
+def _frontend_login_path(
+    app_slug: str | None = None,
+    next_url: str | None = None,
+    error: str | None = None,
+    message: str | None = None,
+) -> str:
+    params: dict[str, str] = {}
+    if app_slug:
+        params["app"] = app_slug
+    if next_url:
+        params["next"] = next_url
+    if error:
+        params["error"] = error
+    if message:
+        params["message"] = message
+    if not params:
+        return "/app/login"
+    return f"/app/login?{urlencode(params)}"
 
 
 def _normalize_slug(value: str) -> str:
@@ -470,6 +611,50 @@ def _request_base_url(request: Request) -> str:
     return f"{scheme}://{host}/"
 
 
+def _request_host(request: Request) -> str | None:
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    return _normalize_host(host)
+
+
+def _website_allowed_origins(website: Website) -> set[str]:
+    configured = _normalize_origin_list(list(website.allowed_redirect_origins or []))
+    if configured:
+        return set(configured)
+
+    derived: set[str] = set()
+    for host in _normalize_host_list(list(website.login_hosts or [])):
+        derived.add(f"https://{host}")
+    return derived
+
+
+def _resolve_frontend_redirect_for_website(
+    request: Request,
+    raw_target: str | None,
+    website: Website | None,
+) -> str | None:
+    resolved = _resolve_frontend_redirect_target(request, raw_target)
+    if not resolved:
+        return None
+    if resolved.startswith("/") or website is None:
+        return resolved
+
+    parsed = urlparse(resolved)
+    candidate = _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
+    if not candidate:
+        return None
+    allowed = _website_allowed_origins(website)
+    if not allowed:
+        LOG.warning(
+            "No redirect origins configured for website slug=%s; allowing redirect in compatibility mode",
+            website.slug,
+        )
+        return resolved
+    if candidate in allowed:
+        return resolved
+    return None
+
+
 async def _get_owned_website(session: AsyncSession, owner_id: UUID, website_id: UUID) -> Website:
     result = await session.execute(select(Website).where((Website.id == website_id) & (Website.owner_id == owner_id)))
     website = result.scalar_one_or_none()
@@ -498,6 +683,31 @@ async def _get_request_owner(request: Request, session: AsyncSession) -> User | 
         return None
 
 
+async def _resolve_login_website(session: AsyncSession, raw_slug: str | None) -> Website | None:
+    if not raw_slug:
+        return None
+    candidate = raw_slug.strip()
+    if not candidate:
+        return None
+    try:
+        normalized = _normalize_slug(candidate)
+    except HTTPException:
+        return None
+    result = await session.execute(select(Website).where(Website.slug == normalized))
+    return result.scalar_one_or_none()
+
+
+async def _resolve_login_website_from_host(session: AsyncSession, request: Request) -> Website | None:
+    host = _request_host(request)
+    if not host:
+        return None
+    result = await session.execute(select(Website).order_by(Website.created_at))
+    for website in result.scalars().all():
+        if host in _normalize_host_list(list(website.login_hosts or [])):
+            return website
+    return None
+
+
 async def _website_user_counts(session: AsyncSession, websites: list[Website]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for website in websites:
@@ -523,11 +733,37 @@ def _profile_fields(user: User) -> dict[str, str]:
     }
 
 
+async def _ensure_runtime_schema() -> None:
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE websites "
+                    "ADD COLUMN IF NOT EXISTS login_hosts JSONB NOT NULL DEFAULT '[]'::jsonb"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE websites "
+                    "ADD COLUMN IF NOT EXISTS allowed_redirect_origins JSONB NOT NULL DEFAULT '[]'::jsonb"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE websites "
+                    "ADD COLUMN IF NOT EXISTS branding JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+            )
+    except Exception as exc:
+        LOG.warning("Runtime schema patch skipped: %s", exc)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     if settings.auto_create_tables:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    await _ensure_runtime_schema()
 
 
 @app.get("/", include_in_schema=False)
@@ -540,6 +776,8 @@ async def frontend_home(request: Request, session: AsyncSession = Depends(get_se
             {
                 "page_title": "PIdP Console",
                 "active_page": "home",
+                "login_next": request.query_params.get("next") or "",
+                "login_branding": _website_branding(None),
                 "configuration": {
                     "google_enabled": settings.social_enabled("google"),
                     "github_enabled": settings.social_enabled("github"),
@@ -561,6 +799,69 @@ async def frontend_home(request: Request, session: AsyncSession = Depends(get_se
     )
 
 
+@app.get("/login", include_in_schema=False)
+@app.get("/login/", include_in_schema=False)
+async def frontend_login_alias(request: Request) -> RedirectResponse:
+    next_url = (request.query_params.get("next") or "").strip()
+    if next_url:
+        encoded = quote(next_url, safe="")
+        return RedirectResponse(url=f"/?next={encoded}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/app/login", include_in_schema=False)
+@app.get("/app/login/", include_in_schema=False)
+async def frontend_app_login(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    owner = await _get_request_owner(request, session)
+    if owner:
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+    app_slug = (request.query_params.get("app") or "").strip()
+    website = await _resolve_login_website(session, app_slug) if app_slug else None
+    if not website and not app_slug:
+        website = await _resolve_login_website_from_host(session, request)
+    branding = _website_branding(website)
+    if app_slug and not website:
+        return _render_template(
+            request,
+            "home.html",
+            {
+                "page_title": "Application Login",
+                "active_page": "home",
+                "login_next": request.query_params.get("next") or "",
+                "login_app_slug": app_slug,
+                "app_lookup_error": f"Unknown application '{app_slug}'.",
+                "login_branding": branding,
+                "configuration": {
+                    "google_enabled": settings.social_enabled("google"),
+                    "github_enabled": settings.social_enabled("github"),
+                },
+            },
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    return _render_template(
+        request,
+        "home.html",
+        {
+            "page_title": f"Sign in to {website.name}" if website else "PIdP Console",
+            "active_page": "home",
+            "login_next": request.query_params.get("next") or "",
+            "login_app_slug": website.slug if website else "",
+            "login_app_name": website.name if website else "",
+            "login_app_description": website.description if website else "",
+            "login_branding": branding,
+            "configuration": {
+                "google_enabled": settings.social_enabled("google"),
+                "github_enabled": settings.social_enabled("github"),
+            },
+        },
+    )
+
+
 @app.post("/session/login", include_in_schema=False)
 async def frontend_login(
     request: Request,
@@ -569,15 +870,43 @@ async def frontend_login(
     form = await request.form()
     email = str(form.get("email") or "").strip()
     password = str(form.get("password") or "")
+    next_url = str(form.get("next") or "").strip()
+    requested_app = str(form.get("app") or "").strip()
+    app_website = await _resolve_login_website(session, requested_app)
+    if not app_website and not requested_app:
+        app_website = await _resolve_login_website_from_host(session, request)
+    app_slug = app_website.slug if app_website else ""
+    redirect_target = _resolve_frontend_redirect_for_website(request, next_url, app_website)
+    if next_url and not redirect_target:
+        LOG.info("Rejected login redirect target for app=%s next=%s", app_slug or "none", next_url)
+        return RedirectResponse(
+            url=_frontend_login_path(
+                app_slug=app_slug or requested_app or None,
+                error="Redirect URL is not allowed for this application",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     user = await authenticate_user(session, email, password)
     if not user:
+        LOG.info("Login failed for email=%s app=%s", email, app_slug or requested_app or "none")
         return RedirectResponse(
-            url="/?error=Invalid+credentials",
+            url=_frontend_login_path(
+                app_slug=app_slug or requested_app or None,
+                next_url=next_url or None,
+                error="Invalid credentials",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
     token = create_access_token(subject=str(user.id), email=user.email)
-    response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    LOG.info("Login succeeded for user=%s app=%s", user.email, app_slug or "none")
+    if redirect_target:
+        request.session["frontend_redirect_url"] = redirect_target
+    redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
+    if redirect_target and not redirect_target.startswith("/"):
+        params = urlencode({"token": token, "token_type": "bearer"})
+        return RedirectResponse(f"{redirect_target}#{params}")
+    response = RedirectResponse(url=redirect_target or "/", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(response, token)
     return response
 
@@ -591,11 +920,31 @@ async def frontend_register(
     email = str(form.get("email") or "").strip()
     password = str(form.get("password") or "")
     full_name = str(form.get("full_name") or "").strip() or None
+    next_url = str(form.get("next") or "").strip()
+    requested_app = str(form.get("app") or "").strip()
+    app_website = await _resolve_login_website(session, requested_app)
+    if not app_website and not requested_app:
+        app_website = await _resolve_login_website_from_host(session, request)
+    app_slug = app_website.slug if app_website else ""
+    redirect_target = _resolve_frontend_redirect_for_website(request, next_url, app_website)
+    if next_url and not redirect_target:
+        LOG.info("Rejected register redirect target for app=%s next=%s", app_slug or "none", next_url)
+        return RedirectResponse(
+            url=_frontend_login_path(
+                app_slug=app_slug or requested_app or None,
+                error="Redirect URL is not allowed for this application",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
     result = await session.execute(select(User).where(User.email == email))
     if result.scalar_one_or_none():
         return RedirectResponse(
-            url="/?error=Account+already+exists",
+            url=_frontend_login_path(
+                app_slug=app_slug or requested_app or None,
+                next_url=next_url or None,
+                error="Account already exists",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -607,12 +956,17 @@ async def frontend_register(
     session.add(user)
     await session.commit()
     await session.refresh(user)
+    LOG.info("Completed social callback provider=%s email=%s", provider, user.email)
 
     token = create_access_token(subject=str(user.id), email=user.email)
-    response = RedirectResponse(
-        url="/?message=Account+created",
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
+    LOG.info("Registration succeeded for email=%s app=%s", user.email, app_slug or "none")
+    if redirect_target:
+        request.session["frontend_redirect_url"] = redirect_target
+    redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
+    if redirect_target and not redirect_target.startswith("/"):
+        params = urlencode({"token": token, "token_type": "bearer"})
+        return RedirectResponse(f"{redirect_target}#{params}")
+    response = RedirectResponse(url=redirect_target or "/?message=Account+created", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(response, token)
     return response
 
@@ -875,6 +1229,7 @@ async def frontend_create_site(
         slug=slug,
         description=description,
         user_schema=dict(SYSTEM_SCHEMA_FIELDS),
+        branding=_normalize_website_branding({}),
         max_users=DEFAULT_MAX_USERS_PER_WEBSITE,
     )
     session.add(website)
@@ -934,8 +1289,45 @@ async def frontend_site_detail(
             "active_page": "sites",
             "viewer": owner,
             "website": website,
+            "website_branding": _website_branding(website),
             "website_users": users,
         },
+    )
+
+
+@app.post("/sites/{website_id}/personalization", include_in_schema=False)
+async def frontend_site_personalization_update(
+    website_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    owner = await _get_request_owner(request, session)
+    if not owner:
+        return RedirectResponse(
+            url="/?error=Sign+in+required",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    website = await _get_owned_website(session, owner.id, website_id)
+    form = await request.form()
+    branding = _normalize_website_branding(
+        {
+            "logo_url": str(form.get("logo_url") or ""),
+            "hero_eyebrow": str(form.get("hero_eyebrow") or ""),
+            "hero_title": str(form.get("hero_title") or ""),
+            "hero_subtitle": str(form.get("hero_subtitle") or ""),
+            "primary_button_label": str(form.get("primary_button_label") or ""),
+            "accent_color": str(form.get("accent_color") or ""),
+            "accent_deep_color": str(form.get("accent_deep_color") or ""),
+            "accent_soft_color": str(form.get("accent_soft_color") or ""),
+            "background_style": str(form.get("background_style") or "default"),
+        }
+    )
+    website.branding = branding
+    await session.commit()
+    return RedirectResponse(
+        url=f"/sites/{website.id}?message=Client+personalization+saved",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -995,6 +1387,18 @@ async def login_for_access_token(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     token = create_access_token(subject=str(user.id), email=user.email)
+    return Token(access_token=token)
+
+
+@app.get("/auth/session-token", response_model=Token)
+async def auth_session_token(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Token:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    await _get_current_owner(token, session)
     return Token(access_token=token)
 
 
@@ -1124,9 +1528,12 @@ async def service_create_website(
 
     website = Website(
         owner_id=owner.id,
-        name=payload.name,
+        name=payload.name.strip(),
         slug=slug,
         description=payload.description,
+        login_hosts=_normalize_host_list(payload.login_hosts),
+        allowed_redirect_origins=_normalize_origin_list(payload.allowed_redirect_origins),
+        branding=_normalize_website_branding({}),
         user_schema=dict(SYSTEM_SCHEMA_FIELDS),
         max_users=DEFAULT_MAX_USERS_PER_WEBSITE,
     )
@@ -1290,6 +1697,9 @@ async def create_website(
         name=payload.name.strip(),
         slug=slug,
         description=payload.description,
+        login_hosts=_normalize_host_list(payload.login_hosts),
+        allowed_redirect_origins=_normalize_origin_list(payload.allowed_redirect_origins),
+        branding=_normalize_website_branding({}),
         user_schema=dict(SYSTEM_SCHEMA_FIELDS),
         max_users=DEFAULT_MAX_USERS_PER_WEBSITE,
     )
@@ -1329,6 +1739,37 @@ async def update_website_schema(
     owner = await _get_current_owner(token, session)
     website = await _get_owned_website(session, owner.id, website_id)
     website.user_schema = _normalize_website_schema(payload.fields)
+    await session.commit()
+    await session.refresh(website)
+    return website
+
+
+@app.put("/websites/{website_id}/auth-config", response_model=WebsitePublic)
+async def update_website_auth_config(
+    website_id: UUID,
+    payload: WebsiteAuthConfigUpdate,
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> WebsitePublic:
+    owner = await _get_current_owner(token, session)
+    website = await _get_owned_website(session, owner.id, website_id)
+    website.login_hosts = _normalize_host_list(payload.login_hosts)
+    website.allowed_redirect_origins = _normalize_origin_list(payload.allowed_redirect_origins)
+    await session.commit()
+    await session.refresh(website)
+    return website
+
+
+@app.put("/websites/{website_id}/branding", response_model=WebsitePublic)
+async def update_website_branding(
+    website_id: UUID,
+    payload: WebsiteBrandingUpdate,
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> WebsitePublic:
+    owner = await _get_current_owner(token, session)
+    website = await _get_owned_website(session, owner.id, website_id)
+    website.branding = _normalize_website_branding(payload.model_dump())
     await session.commit()
     await session.refresh(website)
     return website
@@ -1509,7 +1950,11 @@ async def get_website_user_me(
 
 
 @app.get("/auth/{provider}/login")
-async def social_login(provider: str, request: Request):
+async def social_login(
+    provider: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
     client = oauth.create_client(provider)
     if client is None:
         raise HTTPException(status_code=400, detail="Provider not enabled")
@@ -1519,10 +1964,36 @@ async def social_login(provider: str, request: Request):
         raise HTTPException(status_code=400, detail="Redirect URI not configured")
 
     next_url = request.query_params.get("next")
-    if next_url and next_url.startswith("/"):
-        request.session["frontend_redirect_url"] = next_url
-    elif next_url:
-        request.session["frontend_redirect_url"] = next_url
+    app_slug = (request.query_params.get("app") or "").strip()
+    website: Website | None = None
+    if app_slug:
+        website = await _resolve_login_website(session, app_slug)
+        if not website:
+            return RedirectResponse(
+                url=_frontend_login_path(
+                    app_slug=app_slug,
+                    next_url=(next_url or "").strip() or None,
+                    error=f"Unknown application '{app_slug}'",
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+    if not website:
+        website = await _resolve_login_website_from_host(session, request)
+        if website:
+            app_slug = website.slug
+    resolved_next = _resolve_frontend_redirect_for_website(request, next_url, website)
+    if next_url and not resolved_next:
+        LOG.info("Rejected social redirect target provider=%s app=%s next=%s", provider, app_slug or "none", next_url)
+        return RedirectResponse(
+            url=_frontend_login_path(
+                app_slug=app_slug or None,
+                error="Redirect URL is not allowed for this application",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    if resolved_next:
+        request.session["frontend_redirect_url"] = resolved_next
+    LOG.info("Starting social login provider=%s app=%s", provider, app_slug or "none")
     return await client.authorize_redirect(request, redirect_uri)
 
 
@@ -1583,16 +2054,7 @@ async def social_callback(
     await session.refresh(user)
 
     token = create_access_token(subject=str(user.id), email=user.email)
-    redirect_target = request.session.pop("frontend_redirect_url", None)
-    if redirect_target:
-        if redirect_target.startswith("/"):
-            pass
-        else:
-            parsed = urlparse(redirect_target)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                redirect_target = None
-            elif parsed.netloc == request.url.netloc:
-                redirect_target = f"{parsed.path or '/'}{f'?{parsed.query}' if parsed.query else ''}"
+    redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
     if redirect_target:
         if redirect_target.startswith("/"):
             response = RedirectResponse(redirect_target, status_code=status.HTTP_303_SEE_OTHER)

@@ -1,10 +1,57 @@
 {% extends "base.html" %}
 {% block content %}
+{% set branding = login_branding or {} %}
+{% set branding_style = branding.background_style or "default" %}
+<style>
+    .shell-guest {
+        {% if branding.accent_color %}
+            --brand: {{ branding.accent_color }};
+        {% endif %}
+        {% if branding.accent_deep_color %}
+            --brand-deep: {{ branding.accent_deep_color }};
+        {% endif %}
+        {% if branding.accent_soft_color %}
+            --brand-soft: {{ branding.accent_soft_color }};
+        {% endif %}
+    }
+    .shell-guest[data-login-background="gradient-warm"] .guest-shell {
+        background: radial-gradient(circle at 15% 20%, rgba(255, 168, 128, 0.24), transparent 42%),
+            linear-gradient(120deg, rgba(52, 31, 16, 0.45), rgba(25, 14, 10, 0.7));
+    }
+    .shell-guest[data-login-background="gradient-ocean"] .guest-shell {
+        background: radial-gradient(circle at 15% 20%, rgba(94, 214, 232, 0.2), transparent 42%),
+            linear-gradient(120deg, rgba(10, 44, 52, 0.42), rgba(8, 22, 30, 0.72));
+    }
+    .shell-guest[data-login-background="gradient-slate"] .guest-shell {
+        background: radial-gradient(circle at 15% 20%, rgba(149, 165, 191, 0.16), transparent 42%),
+            linear-gradient(120deg, rgba(34, 38, 48, 0.5), rgba(15, 18, 24, 0.76));
+    }
+    .app-logo {
+        max-height: 56px;
+        max-width: 220px;
+        object-fit: contain;
+    }
+</style>
+<script>
+    document.body.dataset.loginBackground = "{{ branding_style }}";
+</script>
 <section class="page-heading landing-heading">
     <div>
-        <p class="eyebrow">People's Identity Provider</p>
-        <h1>Identity for your account and clients.</h1>
-        <p class="lede">One place to run account auth, website users, and profile data with clarity.</p>
+        {% if branding.logo_url %}
+            <p><img class="app-logo" src="{{ branding.logo_url }}" alt="{{ login_app_name or 'Application' }} logo"></p>
+        {% endif %}
+        {% if login_app_name %}
+            <p class="eyebrow">{{ branding.hero_eyebrow or "Sign In To" }}</p>
+            <h1>{{ branding.hero_title or login_app_name }}</h1>
+            <p class="lede">{{ branding.hero_subtitle or login_app_description or "Use your identity provider account to continue." }}</p>
+        {% else %}
+            <p class="eyebrow">People's Identity Provider</p>
+            <h1>Identity for your account and clients.</h1>
+            <p class="lede">One place to run account auth, website users, and profile data with clarity.</p>
+        {% endif %}
+        {% if app_lookup_error %}
+            <div class="status error">{{ app_lookup_error }}</div>
+        {% endif %}
     </div>
 </section>
 
@@ -12,6 +59,8 @@
     <div class="stack">
         <h2>Sign in</h2>
         <form method="post" action="{{ ui_base }}/session/login" class="stack">
+            <input type="hidden" name="next" value="{{ login_next }}">
+            <input type="hidden" name="app" value="{{ login_app_slug or '' }}">
             <div class="field">
                 <label for="login-email">Email</label>
                 <input id="login-email" name="email" type="email" autocomplete="email" required>
@@ -21,14 +70,14 @@
                 <input id="login-password" name="password" type="password" autocomplete="current-password" required>
             </div>
             <div class="button-row">
-                <button class="primary-button" type="submit">Sign in</button>
+                <button class="primary-button" type="submit">{{ branding.primary_button_label or "Sign in" }}</button>
             </div>
         </form>
 
         <div class="muted">or continue with</div>
         <div class="social-login-row">
             {% if configuration.google_enabled %}
-                <a class="social-login-button" href="/auth/google/login?next={{ ui_base or '/' }}" aria-label="Login with Google" title="Login with Google">
+                <a class="social-login-button" href="{{ ui_base }}/auth/google/login?next={{ (login_next or (ui_base or '/')) | urlencode }}{% if login_app_slug %}&app={{ login_app_slug | urlencode }}{% endif %}" aria-label="Login with Google" title="Login with Google">
                     <svg class="social-logo" viewBox="0 0 24 24" aria-hidden="true">
                         <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.3-1.5 3.9-5.5 3.9-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.2.8 3.9 1.5l2.7-2.6C16.9 3.3 14.7 2.4 12 2.4 6.9 2.4 2.8 6.5 2.8 11.6S6.9 20.8 12 20.8c6.9 0 8.6-4.8 8.6-7.2 0-.5 0-.9-.1-1.3z"/>
                         <path fill="#34A853" d="M2.8 11.6c0 1.6.4 3.1 1.2 4.4l3.3-2.6c-.2-.5-.4-1.1-.4-1.8s.1-1.2.4-1.8L4 7.2c-.8 1.3-1.2 2.8-1.2 4.4z"/>
@@ -39,7 +88,7 @@
                 </a>
             {% endif %}
             {% if configuration.github_enabled %}
-                <a class="social-login-button" href="/auth/github/login?next={{ ui_base or '/' }}" aria-label="Login with GitHub" title="Login with GitHub">
+                <a class="social-login-button" href="{{ ui_base }}/auth/github/login?next={{ (login_next or (ui_base or '/')) | urlencode }}{% if login_app_slug %}&app={{ login_app_slug | urlencode }}{% endif %}" aria-label="Login with GitHub" title="Login with GitHub">
                     <svg class="social-logo" viewBox="0 0 24 24" aria-hidden="true">
                         <path fill="currentColor" d="M12 .5C5.7.5.6 5.6.6 11.9c0 5 3.2 9.2 7.6 10.7.6.1.8-.3.8-.6v-2.1c-3.1.7-3.8-1.3-3.8-1.3-.5-1.3-1.2-1.7-1.2-1.7-1-.7.1-.7.1-.7 1.1.1 1.8 1.2 1.8 1.2 1 .1 1.5 2 1.5 2 .9 1.4 2.4 1 3 .7.1-.7.4-1.1.7-1.4-2.5-.3-5.2-1.3-5.2-5.7 0-1.2.4-2.2 1.1-3-.1-.3-.5-1.5.1-3.1 0 0 .9-.3 3 .1.9-.2 1.8-.3 2.7-.3s1.9.1 2.7.3c2.1-.4 3-.1 3-.1.6 1.6.2 2.8.1 3.1.7.8 1.1 1.8 1.1 3 0 4.4-2.7 5.4-5.3 5.7.4.3.8 1 .8 2v2.9c0 .3.2.7.8.6 4.4-1.5 7.6-5.7 7.6-10.7C23.4 5.6 18.3.5 12 .5z"/>
                     </svg>
@@ -48,13 +97,21 @@
             {% endif %}
         </div>
 
-        <div class="callout">
-            PIdP stores hashed passwords only and keeps custom identity fields in JSON.
-        </div>
+        {% if login_app_name %}
+            <div class="callout">
+                You are signing in to {{ login_app_name }} via PIdP.
+            </div>
+        {% else %}
+            <div class="callout">
+                PIdP stores hashed passwords only and keeps custom identity fields in JSON.
+            </div>
+        {% endif %}
 
         <details>
             <summary>Create account</summary>
             <form method="post" action="{{ ui_base }}/session/register" class="stack">
+                <input type="hidden" name="next" value="{{ login_next }}">
+                <input type="hidden" name="app" value="{{ login_app_slug or '' }}">
                 <div class="field-grid">
                     <div class="field">
                         <label for="register-name">Full name</label>

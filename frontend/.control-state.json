@@ -1,6 +1,6 @@
 {
-  "backend_last_rollout_at": "2026-04-24T20:55:48.083314Z",
+  "backend_last_rollout_at": "2026-04-25T06:44:33.604509Z",
   "backend_last_rollout_image": "pidp-prod:local",
   "backend_rollout_requested_at": null,
-  "updated_at": "2026-04-24T20:55:48.083441Z"
+  "updated_at": "2026-04-25T06:44:33.604615Z"
 }

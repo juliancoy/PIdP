@@ -166,6 +166,8 @@ Social sign-in (set both client id/secret to enable):
 - `POST /websites` Create a website owned by the authenticated account, capped at 5 sites.
 - `GET /websites` List the authenticated owner's websites.
 - `PUT /websites/{website_id}/schema` Replace the website user-data schema while preserving the reserved fields.
+- `PUT /websites/{website_id}/auth-config` Set first-class login host mapping and allowed redirect origins.
+- `PUT /websites/{website_id}/branding` Update app login branding fields (logo, hero copy, colors, background style).
 - `POST /websites/{website_id}/users` Owner-created website user, capped at 10 users per site.
 - `GET /websites/{website_id}/users` List website users for an owned site.
 - `PUT /websites/{website_id}/users/{website_user_id}` Update website user data with schema validation.
@@ -174,6 +176,7 @@ Social sign-in (set both client id/secret to enable):
 - `GET /websites/{website_slug}/auth/me` Returns the current website user.
 - `GET /auth/{provider}/login` Start social sign-in.
 - `GET /auth/{provider}/callback` Social provider callback, returns JWT.
+- `GET /app/login` Application-scoped login page; resolves by `app` slug and/or mapped host.
 - `GET /health` Health check.
 - `GET /configuration` Runtime configuration view sourced from active app env (host-aware `base_addr`).
 - `GET /service/me` User-scoped service identity endpoint (`Authorization: Bearer pidp_pat_...`).
@@ -203,6 +206,10 @@ Deployment behavior:
 - Social sign-in is disabled unless provider client id and secret are set.
 - PIdP only stores hashed passwords; plaintext is never persisted.
 - Identity data can be stored in the `identity_data` JSONB column.
+- `websites.login_hosts` maps inbound hosts (for example `portal.arkavo.org`) to an app login experience.
+- `websites.allowed_redirect_origins` allowlists absolute `next=` redirect origins for auth flows.
+- `websites.branding` stores client personalization used by `/app/login` (logo URL, hero text, button text, colors, and background style).
+- When no redirect allowlist is configured for a website, PiDP allows redirects in compatibility mode and logs a warning.
 - Existing databases will need matching schema changes for the new `websites` and `website_users` tables if you are not starting from an empty database with `AUTO_CREATE_TABLES=true`.
 
 ## MCP Server (PiDP Admin Adapter)

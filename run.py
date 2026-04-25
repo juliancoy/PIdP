@@ -160,6 +160,26 @@ def _oauth_urls(base_url: str | None) -> dict[str, str | None]:
     }
 
 
+def _default_allowed_origins(prod_base: str | None, dev_base: str | None) -> str:
+    origins: list[str] = []
+    for base in (prod_base, dev_base):
+        normalized = _normalize_public_base(base)
+        if not normalized:
+            continue
+        origin = normalized.rstrip("/")
+        if origin not in origins:
+            origins.append(origin)
+        if "://pidp." in origin:
+            portal_origin = origin.replace("://pidp.", "://portal.", 1)
+            if portal_origin not in origins:
+                origins.append(portal_origin)
+        if "://dev.pidp." in origin:
+            dev_portal_origin = origin.replace("://dev.pidp.", "://dev.portal.", 1)
+            if dev_portal_origin not in origins:
+                origins.append(dev_portal_origin)
+    return ",".join(origins)
+
+
 def run(prefix, network_name):
     docker_utils.initializeFiles(current_dir)
     import pidp_editme
@@ -178,6 +198,11 @@ def run(prefix, network_name):
     configured_dev_base = os.getenv("PIDP_DEV_PUBLIC_BASE_URL") or _derive_dev_base(configured_prod_base)
     prod_oauth = _oauth_urls(configured_prod_base)
     dev_oauth = _oauth_urls(configured_dev_base)
+    configured_allowed_origins = (os.getenv("PIDP_ALLOWED_ORIGINS") or "").strip()
+    env_base["ALLOWED_ORIGINS"] = configured_allowed_origins or _default_allowed_origins(
+        configured_prod_base,
+        configured_dev_base,
+    )
 
     pidp_db = {
         "image": "postgres:15-alpine",

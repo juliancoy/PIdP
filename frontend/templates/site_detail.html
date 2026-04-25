@@ -48,6 +48,63 @@
 
 <section class="panel">
     <div class="section-header">
+        <h2>Client Personalization</h2>
+    </div>
+    <form method="post" action="{{ ui_base }}/sites/{{ website.id }}/personalization" class="stack">
+        <div class="field-grid">
+            <div class="field">
+                <label for="logo_url">Logo URL</label>
+                <input id="logo_url" name="logo_url" type="url" value="{{ website_branding.logo_url }}">
+            </div>
+            <div class="field">
+                <label for="background_style">Background Style</label>
+                <select id="background_style" name="background_style">
+                    <option value="default" {% if website_branding.background_style == "default" %}selected{% endif %}>Default</option>
+                    <option value="gradient-warm" {% if website_branding.background_style == "gradient-warm" %}selected{% endif %}>Gradient Warm</option>
+                    <option value="gradient-ocean" {% if website_branding.background_style == "gradient-ocean" %}selected{% endif %}>Gradient Ocean</option>
+                    <option value="gradient-slate" {% if website_branding.background_style == "gradient-slate" %}selected{% endif %}>Gradient Slate</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="hero_eyebrow">Hero Eyebrow</label>
+                <input id="hero_eyebrow" name="hero_eyebrow" type="text" value="{{ website_branding.hero_eyebrow }}" maxlength="120">
+            </div>
+            <div class="field">
+                <label for="hero_title">Hero Title</label>
+                <input id="hero_title" name="hero_title" type="text" value="{{ website_branding.hero_title }}" maxlength="200">
+            </div>
+        </div>
+        <div class="field">
+            <label for="hero_subtitle">Hero Subtitle</label>
+            <textarea id="hero_subtitle" name="hero_subtitle" rows="2">{{ website_branding.hero_subtitle }}</textarea>
+        </div>
+        <div class="field-grid">
+            <div class="field">
+                <label for="primary_button_label">Primary Button Label</label>
+                <input id="primary_button_label" name="primary_button_label" type="text" value="{{ website_branding.primary_button_label }}" maxlength="60">
+            </div>
+            <div class="field">
+                <label for="accent_color">Accent Color</label>
+                <input id="accent_color" name="accent_color" type="text" value="{{ website_branding.accent_color }}" placeholder="#b04c21">
+            </div>
+            <div class="field">
+                <label for="accent_deep_color">Accent Deep</label>
+                <input id="accent_deep_color" name="accent_deep_color" type="text" value="{{ website_branding.accent_deep_color }}" placeholder="#7c2f10">
+            </div>
+            <div class="field">
+                <label for="accent_soft_color">Accent Soft</label>
+                <input id="accent_soft_color" name="accent_soft_color" type="text" value="{{ website_branding.accent_soft_color }}" placeholder="#f1d2c2">
+            </div>
+        </div>
+        <div class="button-row">
+            <button class="primary-button" type="submit">Save Personalization</button>
+            <a class="ghost-button" href="{{ ui_base }}/app/login?app={{ website.slug | urlencode }}">Preview App Login</a>
+        </div>
+    </form>
+</section>
+
+<section class="panel">
+    <div class="section-header">
         <h2>Registered users</h2>
     </div>
     <div class="stack">

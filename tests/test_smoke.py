@@ -55,6 +55,9 @@ class _FakeExecuteResult:
     def scalars(self):
         return _FakeScalarResult(self._rows)
 
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeSession:
     def __init__(self, websites):
@@ -89,7 +92,11 @@ class PidpSmokeTests(unittest.TestCase):
                 )
 
         original_create_client = self.main.oauth.create_client
+        original_resolve_login_website_from_host = self.main._resolve_login_website_from_host
         self.main.oauth.create_client = lambda provider: _FakeOAuthClient() if provider == "google" else None
+        async def _fake_resolve_login_website_from_host(_session, _request):
+            return None
+        self.main._resolve_login_website_from_host = _fake_resolve_login_website_from_host
         try:
             with TestClient(self.main.app) as client:
                 response = client.get("/auth/google/login?next=/sites")
@@ -99,6 +106,7 @@ class PidpSmokeTests(unittest.TestCase):
             self.assertEqual(payload["redirect_uri"], os.environ["GOOGLE_REDIRECT_URI"])
         finally:
             self.main.oauth.create_client = original_create_client
+            self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
     def test_configuration_matches_runtime_env_and_host(self):
         with TestClient(self.main.app) as client:
@@ -132,6 +140,8 @@ class PidpSmokeTests(unittest.TestCase):
             name="Example Site",
             slug="example-site",
             description=None,
+            login_hosts=[],
+            allowed_redirect_origins=[],
             user_schema={},
             max_users=10,
             created_at=datetime.utcnow(),
@@ -161,6 +171,110 @@ class PidpSmokeTests(unittest.TestCase):
             self.assertEqual(sites_response.json()[0]["slug"], website.slug)
         finally:
             self.main._get_owner_from_api_token = original_get_owner_from_api_token
+
+    def test_app_login_renders_website_specific_branding(self):
+        website = SimpleNamespace(
+            id=uuid4(),
+            owner_id=uuid4(),
+            name="Code Collective",
+            slug="code-collective",
+            description="Portal sign-in for Code Collective",
+            login_hosts=["portal.arkavo.org"],
+            allowed_redirect_origins=["https://portal.arkavo.org"],
+            user_schema={},
+            max_users=10,
+            created_at=datetime.utcnow(),
+        )
+
+        async def _fake_resolve_login_website(_session, raw_slug):
+            if raw_slug == website.slug:
+                return website
+            return None
+
+        original_resolve_login_website = self.main._resolve_login_website
+        self.main._resolve_login_website = _fake_resolve_login_website
+        try:
+            with TestClient(self.main.app) as client:
+                response = client.get(f"/app/login?app={website.slug}&next=%2F")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Sign In To", response.text)
+            self.assertIn(website.name, response.text)
+            self.assertIn("name=\"app\" value=\"code-collective\"", response.text)
+        finally:
+            self.main._resolve_login_website = original_resolve_login_website
+
+    def test_app_login_resolves_website_from_host_when_app_omitted(self):
+        website = SimpleNamespace(
+            id=uuid4(),
+            owner_id=uuid4(),
+            name="Code Collective",
+            slug="code-collective",
+            description="Portal sign-in for Code Collective",
+            login_hosts=["portal.arkavo.org"],
+            allowed_redirect_origins=["https://portal.arkavo.org"],
+            user_schema={},
+            max_users=10,
+            created_at=datetime.utcnow(),
+        )
+
+        async def _fake_resolve_login_website_from_host(_session, _request):
+            return website
+
+        original_resolve_login_website_from_host = self.main._resolve_login_website_from_host
+        self.main._resolve_login_website_from_host = _fake_resolve_login_website_from_host
+        try:
+            with TestClient(self.main.app) as client:
+                response = client.get("/app/login", headers={"host": "portal.arkavo.org"})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Code Collective", response.text)
+            self.assertIn("name=\"app\" value=\"code-collective\"", response.text)
+        finally:
+            self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
+
+    def test_social_login_rejects_disallowed_redirect_origin(self):
+        website = SimpleNamespace(
+            id=uuid4(),
+            owner_id=uuid4(),
+            name="Code Collective",
+            slug="code-collective",
+            description="Portal sign-in for Code Collective",
+            login_hosts=["portal.arkavo.org"],
+            allowed_redirect_origins=["https://portal.arkavo.org"],
+            user_schema={},
+            max_users=10,
+            created_at=datetime.utcnow(),
+        )
+
+        class _FakeOAuthClient:
+            async def authorize_redirect(self, request, redirect_uri):
+                return JSONResponse(
+                    {
+                        "saved_next": request.session.get("frontend_redirect_url"),
+                        "redirect_uri": redirect_uri,
+                    }
+                )
+
+        async def _fake_resolve_login_website(_session, raw_slug):
+            if raw_slug == website.slug:
+                return website
+            return None
+
+        original_create_client = self.main.oauth.create_client
+        original_resolve_login_website = self.main._resolve_login_website
+        self.main.oauth.create_client = lambda provider: _FakeOAuthClient() if provider == "google" else None
+        self.main._resolve_login_website = _fake_resolve_login_website
+        try:
+            with TestClient(self.main.app) as client:
+                response = client.get(
+                    "/auth/google/login?app=code-collective&next=https://evil.example/path",
+                    follow_redirects=False,
+                )
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("/app/login?app=code-collective", response.headers["location"])
+            self.assertIn("Redirect+URL+is+not+allowed+for+this+application", response.headers["location"])
+        finally:
+            self.main.oauth.create_client = original_create_client
+            self.main._resolve_login_website = original_resolve_login_website
 
 
 if __name__ == "__main__":

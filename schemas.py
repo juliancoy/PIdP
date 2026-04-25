@@ -94,6 +94,25 @@ class WebsiteCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     slug: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = None
+    login_hosts: list[str] = Field(default_factory=list)
+    allowed_redirect_origins: list[str] = Field(default_factory=list)
+
+
+class WebsiteAuthConfigUpdate(BaseModel):
+    login_hosts: list[str] = Field(default_factory=list)
+    allowed_redirect_origins: list[str] = Field(default_factory=list)
+
+
+class WebsiteBrandingUpdate(BaseModel):
+    logo_url: str | None = None
+    hero_eyebrow: str | None = None
+    hero_title: str | None = None
+    hero_subtitle: str | None = None
+    primary_button_label: str | None = None
+    accent_color: str | None = None
+    accent_deep_color: str | None = None
+    accent_soft_color: str | None = None
+    background_style: str | None = None
 
 
 class WebsiteSchemaUpdate(BaseModel):
@@ -106,6 +125,9 @@ class WebsitePublic(BaseModel):
     name: str
     slug: str
     description: str | None = None
+    login_hosts: list[str] = Field(default_factory=list)
+    allowed_redirect_origins: list[str] = Field(default_factory=list)
+    branding: dict = Field(default_factory=dict)
     user_schema: dict
     max_users: int
     created_at: datetime
