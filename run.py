@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import subprocess
 import sys
 from datetime import datetime
@@ -13,6 +14,87 @@ container_app_dir = "/app"
 control_state_file = current_dir / "frontend" / ".control-state.json"
 
 DEFAULT_PROD_IMAGE = "ghcr.io/juliancoy/pidp:latest"
+PINNED_ENV_KEYS = (
+    "PIDP_SECRET_KEY",
+    "PIDP_JWT_PRIVATE_KEY",
+    "PIDP_JWT_PUBLIC_KEY",
+    "PIDP_JWT_ISSUER",
+    "PIDP_JWT_AUDIENCE",
+)
+
+def _parse_simple_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists() or not path.is_file():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _ensure_env_key(path: Path, key: str, value: str) -> None:
+    if not path.exists():
+        path.write_text("", encoding="utf-8")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
+        if "=" not in stripped:
+            continue
+        current_key, _ = stripped.split("=", 1)
+        if current_key.strip() == key:
+            return
+    suffix = "" if not lines else "\n"
+    path.write_text(path.read_text(encoding="utf-8") + f"{suffix}{key}={value}\n", encoding="utf-8")
+
+
+def _apply_pidp_defaults() -> tuple[dict[str, str], Path]:
+    env_candidates = [
+        current_dir / ".env.pidp",
+        current_dir.parent / ".env.pidp",
+    ]
+    file_values: dict[str, str] = {}
+    selected_path = env_candidates[0]
+    for candidate in env_candidates:
+        parsed = _parse_simple_env_file(candidate)
+        if parsed or candidate.exists():
+            file_values = parsed
+            selected_path = candidate
+            if parsed:
+                break
+
+    if not file_values.get("PIDP_SECRET_KEY"):
+        generated = secrets.token_urlsafe(48)
+        _ensure_env_key(selected_path, "PIDP_SECRET_KEY", generated)
+        file_values["PIDP_SECRET_KEY"] = generated
+        print(f"Generated persistent PIDP_SECRET_KEY in {selected_path}")
+
+    for key, value in file_values.items():
+        os.environ.setdefault(key, value)
+
+    for key in PINNED_ENV_KEYS:
+        if key in file_values and file_values[key].strip():
+            os.environ[key] = file_values[key].strip()
+
+    return file_values, selected_path
 
 
 def _read_control_state() -> dict:
@@ -101,11 +183,15 @@ def _ensure_prod_image_available(requested_image: str) -> tuple[str, str]:
 
 
 def _common_env(pidp_editme, db_url: str) -> dict:
+    secret_key = (os.getenv("PIDP_SECRET_KEY") or "").strip()
+    if not secret_key:
+        raise RuntimeError("PIDP_SECRET_KEY must be set in .env.pidp for stable session behavior.")
     return {
         "DATABASE_URL": db_url,
-        "SECRET_KEY": pidp_editme.PIDP_SECRET_KEY,
+        "SECRET_KEY": secret_key,
         "AUTO_CREATE_TABLES": "true",
         "ADMIN_EMAILS": os.getenv("PIDP_ADMIN_EMAILS", ""),
+        "ADMIN_USER_IDS": os.getenv("PIDP_ADMIN_USER_IDS", ""),
         "FRONTEND_REDIRECT_URL": pidp_editme.PIDP_FRONTEND_REDIRECT_URL,
         "GOOGLE_CLIENT_ID": pidp_editme.PIDP_GOOGLE_CLIENT_ID,
         "GOOGLE_CLIENT_SECRET": pidp_editme.PIDP_GOOGLE_CLIENT_SECRET,
@@ -180,7 +266,47 @@ def _default_allowed_origins(prod_base: str | None, dev_base: str | None) -> str
     return ",".join(origins)
 
 
+def _allowed_origins_for_base(base: str | None) -> str:
+    normalized = _normalize_public_base(base)
+    if not normalized:
+        return ""
+    origin = normalized.rstrip("/")
+    origins: list[str] = [origin]
+    if "://pidp." in origin:
+        portal_origin = origin.replace("://pidp.", "://portal.", 1)
+        if portal_origin not in origins:
+            origins.append(portal_origin)
+    if "://dev.pidp." in origin:
+        dev_portal_origin = origin.replace("://dev.pidp.", "://dev.portal.", 1)
+        if dev_portal_origin not in origins:
+            origins.append(dev_portal_origin)
+    native_origins = (
+        os.getenv("PIDP_NATIVE_ALLOWED_ORIGINS")
+        or "capacitor://localhost,http://localhost,http://127.0.0.1,https://localhost"
+    )
+    for native_origin in [item.strip() for item in native_origins.split(",") if item.strip()]:
+        if native_origin not in origins:
+            origins.append(native_origin)
+    return ",".join(origins)
+
+
+def _append_native_allowed_origins(value: str | None) -> str:
+    merged: list[str] = []
+    for item in [part.strip() for part in (value or "").split(",") if part.strip()]:
+        if item not in merged:
+            merged.append(item)
+    native_origins = (
+        os.getenv("PIDP_NATIVE_ALLOWED_ORIGINS")
+        or "capacitor://localhost,http://localhost,http://127.0.0.1,https://localhost"
+    )
+    for item in [part.strip() for part in native_origins.split(",") if part.strip()]:
+        if item not in merged:
+            merged.append(item)
+    return ",".join(merged)
+
+
 def run(prefix, network_name):
+    _file_values, selected_env_path = _apply_pidp_defaults()
     docker_utils.initializeFiles(current_dir)
     import pidp_editme
 
@@ -190,6 +316,7 @@ def run(prefix, network_name):
         f"{pidp_editme.PIDP_POSTGRES_PASSWORD}@{db_name}:5432/PIdP"
     )
     env_base = _common_env(pidp_editme, db_url)
+    print(f"PIdP secrets pinned from {selected_env_path}")
     configured_prod_base = (
         os.getenv("PIDP_PROD_PUBLIC_BASE_URL")
         or getattr(pidp_editme, "PIDP_BASE_ADDR", None)
@@ -199,9 +326,16 @@ def run(prefix, network_name):
     prod_oauth = _oauth_urls(configured_prod_base)
     dev_oauth = _oauth_urls(configured_dev_base)
     configured_allowed_origins = (os.getenv("PIDP_ALLOWED_ORIGINS") or "").strip()
-    env_base["ALLOWED_ORIGINS"] = configured_allowed_origins or _default_allowed_origins(
-        configured_prod_base,
-        configured_dev_base,
+    prod_allowed_origins = (os.getenv("PIDP_PROD_ALLOWED_ORIGINS") or "").strip()
+    dev_allowed_origins = (os.getenv("PIDP_DEV_ALLOWED_ORIGINS") or "").strip()
+    if configured_allowed_origins:
+        prod_allowed_origins = prod_allowed_origins or configured_allowed_origins
+        dev_allowed_origins = dev_allowed_origins or configured_allowed_origins
+    prod_allowed_origins = _append_native_allowed_origins(
+        prod_allowed_origins or _allowed_origins_for_base(configured_prod_base)
+    )
+    dev_allowed_origins = _append_native_allowed_origins(
+        dev_allowed_origins or _allowed_origins_for_base(configured_dev_base)
     )
 
     pidp_db = {
@@ -234,6 +368,17 @@ def run(prefix, network_name):
         "name": prefix + "pidp",
         "environment": {
             **env_base,
+            "ALLOWED_ORIGINS": prod_allowed_origins,
+            "ALLOWED_NATIVE_REDIRECT_SCHEMES": os.getenv(
+                "PIDP_ALLOWED_NATIVE_REDIRECT_SCHEMES",
+                "org.arkavo.portal",
+            ),
+            "ALLOW_CROSS_LANE_REDIRECT": "false",
+            "ACCESS_TOKEN_EXPIRE_MINUTES": (
+                os.getenv("PIDP_PROD_ACCESS_TOKEN_EXPIRE_MINUTES")
+                or os.getenv("PIDP_ACCESS_TOKEN_EXPIRE_MINUTES")
+                or "60"
+            ),
             "GOOGLE_REDIRECT_URI": prod_oauth["google"] or env_base.get("GOOGLE_REDIRECT_URI"),
             "GITHUB_REDIRECT_URI": prod_oauth["github"] or env_base.get("GITHUB_REDIRECT_URI"),
             "FRONTEND_REDIRECT_URL": prod_oauth["frontend"] or env_base.get("FRONTEND_REDIRECT_URL"),
@@ -261,6 +406,17 @@ def run(prefix, network_name):
         "volumes": {str(current_dir): {"bind": container_app_dir, "mode": "rw"}},
         "environment": {
             **env_base,
+            "ALLOWED_ORIGINS": dev_allowed_origins,
+            "ALLOWED_NATIVE_REDIRECT_SCHEMES": os.getenv(
+                "PIDP_ALLOWED_NATIVE_REDIRECT_SCHEMES",
+                "org.arkavo.portal",
+            ),
+            "ALLOW_CROSS_LANE_REDIRECT": "false",
+            "ACCESS_TOKEN_EXPIRE_MINUTES": (
+                os.getenv("PIDP_DEV_ACCESS_TOKEN_EXPIRE_MINUTES")
+                or os.getenv("PIDP_ACCESS_TOKEN_EXPIRE_MINUTES")
+                or "720"
+            ),
             "GOOGLE_REDIRECT_URI": dev_oauth["google"] or env_base.get("GOOGLE_REDIRECT_URI"),
             "GITHUB_REDIRECT_URI": dev_oauth["github"] or env_base.get("GITHUB_REDIRECT_URI"),
             "FRONTEND_REDIRECT_URL": dev_oauth["frontend"] or env_base.get("FRONTEND_REDIRECT_URL"),
@@ -287,6 +443,8 @@ def run(prefix, network_name):
     print(f"Using prod release image: {resolved_prod_image} ({image_source})")
     print(f"Prod OAuth callback base: {_normalize_public_base(configured_prod_base) or 'unchanged'}")
     print(f"Dev OAuth callback base: {_normalize_public_base(configured_dev_base) or 'unchanged'}")
+    print(f"Prod allowed origins: {prod_allowed_origins or '(none)'}")
+    print(f"Dev allowed origins: {dev_allowed_origins or '(none)'}")
     pidp_prod["image"] = resolved_prod_image
     pidp_prod["environment"]["BACKEND_IMAGE_RUNNING"] = resolved_prod_image
 

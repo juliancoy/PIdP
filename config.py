@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     auto_create_tables: bool = False
     allowed_origins: str = ""
     admin_emails: str = ""
+    admin_user_ids: str = ""
 
     google_client_id: str | None = None
     google_client_secret: str | None = None
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
     github_client_secret: str | None = None
     github_redirect_uri: str | None = None
     frontend_redirect_url: str | None = None
+    allow_cross_lane_redirect: bool = False
+    allowed_native_redirect_schemes: str = "org.arkavo.portal"
     minio_endpoint: str | None = None
     minio_access_key: str | None = None
     minio_secret_key: str | None = None
@@ -42,6 +45,16 @@ class Settings(BaseSettings):
             return []
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
+    @property
+    def native_redirect_schemes_list(self) -> list[str]:
+        if not self.allowed_native_redirect_schemes:
+            return []
+        return [
+            scheme.strip().lower()
+            for scheme in self.allowed_native_redirect_schemes.split(",")
+            if scheme.strip()
+        ]
+
     def social_enabled(self, provider: str) -> bool:
         if provider == "google":
             return bool(self.google_client_id and self.google_client_secret)
@@ -54,6 +67,12 @@ class Settings(BaseSettings):
         if not self.admin_emails:
             return []
         return [email.strip().lower() for email in self.admin_emails.split(",") if email.strip()]
+
+    @property
+    def admin_user_ids_list(self) -> list[str]:
+        if not self.admin_user_ids:
+            return []
+        return [user_id.strip() for user_id in self.admin_user_ids.split(",") if user_id.strip()]
 
 
 settings = Settings()

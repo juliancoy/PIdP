@@ -138,7 +138,9 @@ Core settings:
 - `TOKEN_ALGORITHM` (optional, default `HS256`)
 - `AUTO_CREATE_TABLES` (optional, default `false`)
 - `ALLOWED_ORIGINS` (optional, comma-separated)
-- `ADMIN_EMAILS` (optional, comma-separated admin emails)
+- `ADMIN_EMAILS` (optional, comma-separated admin emails used to assert `is_sysadmin`)
+- `ADMIN_USER_IDS` (optional, comma-separated PIdP user IDs used to assert `is_sysadmin`)
+- `PIDP_ADMIN_EMAILS` / `PIDP_ADMIN_USER_IDS` (launcher-level aliases consumed by `PIdP/run.py`)
 - `PIDP_PROD_IMAGE` (optional prod release image override; default `ghcr.io/juliancoy/pidp:latest`)
 - `PIDP_DEV_IMAGE` (optional local dev image tag used for the watcher container; default `pidp-dev`)
 - `PIDP_PROD_PUBLIC_BASE_URL` (optional explicit prod callback base, e.g. `https://pidp.example.com/`)
@@ -160,6 +162,7 @@ Social sign-in (set both client id/secret to enable):
 - `POST /auth/token` OAuth2 password flow, returns JWT access token.
 - `GET /auth/me` Returns the current user.
 - `POST /auth/tokens` Create a user-scoped API token for service access.
+  - Supported token scopes: `service`, `org_portal`, `org_mcp`, `org_admin`
 - `GET /auth/tokens` List API tokens for the current user.
 - `DELETE /auth/tokens/{token_id}` Revoke one of the current user's API tokens.
 - `POST /auth/tokens/{token_id}/cycle` Rotate a token secret (same token id/name, new bearer value; re-activates if revoked).
@@ -180,6 +183,7 @@ Social sign-in (set both client id/secret to enable):
 - `GET /health` Health check.
 - `GET /configuration` Runtime configuration view sourced from active app env (host-aware `base_addr`).
 - `GET /service/me` User-scoped service identity endpoint (`Authorization: Bearer pidp_pat_...`).
+- `GET /service/token-info` Introspect bearer token kind/scope and owner identity (PAT or JWT).
 - `GET /service/websites` List websites scoped to token owner.
 - `POST /service/websites` Create website scoped to token owner.
 

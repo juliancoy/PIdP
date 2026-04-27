@@ -34,6 +34,7 @@ from schemas import (
     APITokenCreate,
     APITokenIssued,
     APITokenPublic,
+    ServiceTokenInfo,
     Token,
     UserCreate,
     UserProfileUpdate,
@@ -114,10 +115,39 @@ if settings.origins_list:
         allow_headers=["*"],
     )
 
-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+    session_cookie="pidp_oauth_session",
+    https_only=True,
+    same_site="none",
+    max_age=20 * 60,
+)
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+ALLOWED_API_TOKEN_SCOPES = {"service", "org_portal", "org_mcp", "org_admin"}
+TOKEN_SCOPE_GRANTS: dict[str, list[str]] = {
+    "service": ["service:*"],
+    "org_portal": [
+        "org:profile.read",
+        "org:profile.write",
+        "org:events.attend",
+        "org:chat.use",
+    ],
+    "org_mcp": [
+        "org:mcp.use",
+        "org:profile.read",
+        "org:events.read",
+    ],
+    "org_admin": [
+        "org:*",
+        "org:admin.read",
+        "org:admin.write",
+        "org:mcp.use",
+    ],
+}
 
 
 def _is_request_secure(request: Request) -> bool:
@@ -127,7 +157,7 @@ def _is_request_secure(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
-def _set_session_cookie(response: RedirectResponse, token: str) -> None:
+def _set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -139,7 +169,7 @@ def _set_session_cookie(response: RedirectResponse, token: str) -> None:
     )
 
 
-def _clear_session_cookie(response: RedirectResponse) -> None:
+def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
 
 
@@ -188,11 +218,65 @@ def _resolve_frontend_redirect_target(request: Request, raw_target: str | None) 
     if redirect_target.startswith("/"):
         return redirect_target
     parsed = urlparse(redirect_target)
+    native_scheme = (parsed.scheme or "").strip().lower()
+    if native_scheme and native_scheme in settings.native_redirect_schemes_list:
+        return redirect_target
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     if parsed.netloc == request.url.netloc:
         return f"{parsed.path or '/'}{f'?{parsed.query}' if parsed.query else ''}"
+    request_lane = _host_environment_lane(_request_host(request))
+    target_lane = _host_environment_lane(parsed.netloc)
+    if (
+        not settings.allow_cross_lane_redirect
+        and request_lane
+        and target_lane
+        and request_lane != target_lane
+    ):
+        return None
     return redirect_target
+
+
+def _host_environment_lane(host: str | None) -> str | None:
+    normalized = _normalize_host(host)
+    if not normalized:
+        return None
+    return "dev" if normalized.startswith("dev.") else "prod"
+
+
+def _lane_host_for_request_host(request_host: str, lane: str) -> str:
+    normalized = _normalize_host(request_host) or request_host
+    if lane == "dev":
+        if normalized.startswith("dev."):
+            return normalized
+        return f"dev.{normalized}"
+    if normalized.startswith("dev."):
+        return normalized[4:]
+    return normalized
+
+
+def _cross_lane_login_redirect(request: Request, raw_target: str | None) -> str | None:
+    if not settings.allow_cross_lane_redirect:
+        return None
+    resolved_target = _resolve_frontend_redirect_target(request, raw_target)
+    if not resolved_target or resolved_target.startswith("/"):
+        return None
+
+    parsed_target = urlparse(resolved_target)
+    target_lane = _host_environment_lane(parsed_target.netloc)
+    request_host = _request_host(request)
+    request_lane = _host_environment_lane(request_host)
+    if not target_lane or not request_lane or target_lane == request_lane or not request_host:
+        return None
+
+    desired_host = _lane_host_for_request_host(request_host, target_lane)
+    if desired_host == request_host:
+        return None
+
+    scheme = "https" if _is_request_secure(request) else request.url.scheme
+    query = request.url.query
+    path = request.url.path or "/"
+    return f"{scheme}://{desired_host}{path}{f'?{query}' if query else ''}"
 
 
 def _normalize_host(value: str | None) -> str | None:
@@ -233,6 +317,39 @@ def _normalize_origin(value: str | None) -> str | None:
     if parsed.port and not default_port:
         return f"{parsed.scheme}://{host}:{parsed.port}"
     return f"{parsed.scheme}://{host}"
+
+
+def _request_origin(request: Request) -> str | None:
+    origin = _normalize_origin(request.headers.get("origin"))
+    if origin:
+        return origin
+    referer = (request.headers.get("referer") or "").strip()
+    if not referer:
+        return None
+    parsed = urlparse(referer)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
+
+
+def _trusted_origins(request: Request) -> set[str]:
+    trusted: set[str] = set()
+    request_origin = _normalize_origin(f"{request.url.scheme}://{request.url.netloc}")
+    if request_origin:
+        trusted.add(request_origin)
+    for configured in settings.origins_list:
+        normalized = _normalize_origin(configured)
+        if normalized:
+            trusted.add(normalized)
+    return trusted
+
+
+def _require_trusted_browser_origin(request: Request) -> None:
+    origin = _request_origin(request)
+    if not origin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing Origin/Referer")
+    if origin not in _trusted_origins(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Untrusted origin")
 
 
 def _normalize_host_list(values: list[str] | None) -> list[str]:
@@ -494,8 +611,75 @@ def _hash_api_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _is_pidp_sysadmin(user: User) -> bool:
+    user_id = str(user.id or "").strip()
+    email = str(user.email or "").strip().lower()
+    if user_id and user_id in settings.admin_user_ids_list:
+        return True
+    if email and email in settings.admin_emails_list:
+        return True
+
+    identity = user.identity_data or {}
+    if not isinstance(identity, dict):
+        return False
+    if _truthy(identity.get("is_sysadmin")):
+        return True
+    roles = identity.get("roles")
+    if isinstance(roles, list):
+        normalized = {str(item).strip().lower() for item in roles if str(item).strip()}
+        if "sysadmin" in normalized or "admin" in normalized:
+            return True
+    return False
+
+
+def _to_user_public(user: User) -> UserPublic:
+    return UserPublic(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        provider=user.provider,
+        identity_data=user.identity_data,
+        is_sysadmin=_is_pidp_sysadmin(user),
+        is_active=user.is_active,
+        created_at=user.created_at,
+    )
+
+
+def _create_owner_access_token(user: User) -> str:
+    return create_access_token(
+        subject=str(user.id),
+        email=user.email,
+        extra_claims={"is_sysadmin": _is_pidp_sysadmin(user)},
+    )
+
+
 def _generate_api_token() -> str:
     return f"pidp_pat_{secrets.token_urlsafe(40)}"
+
+
+def _normalize_api_token_scope(raw_scope: str | None) -> str:
+    scope = (raw_scope or "service").strip().lower()
+    if scope not in ALLOWED_API_TOKEN_SCOPES:
+        allowed = ", ".join(sorted(ALLOWED_API_TOKEN_SCOPES))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported API token scope '{scope}'. Allowed: {allowed}",
+        )
+    return scope
+
+
+def _scope_grants(scope: str) -> list[str]:
+    return list(TOKEN_SCOPE_GRANTS.get(scope, []))
 
 
 async def _issue_or_reactivate_api_token(
@@ -504,6 +688,7 @@ async def _issue_or_reactivate_api_token(
     name: str,
     scope: str = "service",
 ) -> tuple[str, UserAPIToken]:
+    normalized_scope = _normalize_api_token_scope(scope)
     existing_result = await session.execute(
         select(UserAPIToken).where(
             (UserAPIToken.owner_id == owner_id)
@@ -519,7 +704,7 @@ async def _issue_or_reactivate_api_token(
     try:
         if existing:
             existing.token_hash = token_hash
-            existing.scope = scope
+            existing.scope = normalized_scope
             existing.is_active = True
             existing.last_used_at = None
             api_token = existing
@@ -528,7 +713,7 @@ async def _issue_or_reactivate_api_token(
                 owner_id=owner_id,
                 name=name,
                 token_hash=token_hash,
-                scope=scope,
+                scope=normalized_scope,
             )
             session.add(api_token)
         await session.commit()
@@ -569,7 +754,7 @@ async def _cycle_api_token(
     return raw_token, api_token
 
 
-async def _get_owner_from_api_token(raw_token: str, session: AsyncSession) -> User:
+async def _get_api_token_owner_and_record(raw_token: str, session: AsyncSession) -> tuple[User, UserAPIToken]:
     token_hash = _hash_api_token(raw_token)
     result = await session.execute(
         select(UserAPIToken, User)
@@ -583,10 +768,14 @@ async def _get_owner_from_api_token(raw_token: str, session: AsyncSession) -> Us
     if not row:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
     api_token, owner = row
-    if api_token.scope != "service":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API token scope is not allowed")
+    _normalize_api_token_scope(api_token.scope)
     api_token.last_used_at = datetime.utcnow()
     await session.commit()
+    return owner, api_token
+
+
+async def _get_owner_from_api_token(raw_token: str, session: AsyncSession) -> User:
+    owner, _token = await _get_api_token_owner_and_record(raw_token, session)
     return owner
 
 
@@ -605,15 +794,19 @@ async def _get_service_owner(request: Request, session: AsyncSession) -> User:
 
 
 def _request_base_url(request: Request) -> str:
+    direct_host = (request.headers.get("host") or "").split(",", 1)[0].strip()
     forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
-    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    host = direct_host or forwarded_host or request.url.netloc
     scheme = "https" if _is_request_secure(request) else request.url.scheme
     return f"{scheme}://{host}/"
 
 
 def _request_host(request: Request) -> str | None:
+    # Prefer the direct Host header set by the trusted edge proxy.
+    # X-Forwarded-Host can be injected/rewritten across hops and should only be fallback.
+    direct_host = (request.headers.get("host") or "").split(",", 1)[0].strip()
     forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
-    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    host = direct_host or forwarded_host or request.url.netloc
     return _normalize_host(host)
 
 
@@ -628,6 +821,12 @@ def _website_allowed_origins(website: Website) -> set[str]:
     return derived
 
 
+def _is_native_redirect_target(target: str) -> bool:
+    parsed = urlparse(target)
+    scheme = (parsed.scheme or "").strip().lower()
+    return bool(scheme and scheme in settings.native_redirect_schemes_list)
+
+
 def _resolve_frontend_redirect_for_website(
     request: Request,
     raw_target: str | None,
@@ -636,6 +835,8 @@ def _resolve_frontend_redirect_for_website(
     resolved = _resolve_frontend_redirect_target(request, raw_target)
     if not resolved:
         return None
+    if _is_native_redirect_target(resolved):
+        return resolved
     if resolved.startswith("/") or website is None:
         return resolved
 
@@ -815,14 +1016,22 @@ async def frontend_app_login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    lane_redirect = _cross_lane_login_redirect(request, request.query_params.get("next"))
+    if lane_redirect:
+        return RedirectResponse(url=lane_redirect, status_code=status.HTTP_303_SEE_OTHER)
+
     owner = await _get_request_owner(request, session)
     if owner:
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
     app_slug = (request.query_params.get("app") or "").strip()
+    raw_next = (request.query_params.get("next") or "").strip() or None
     website = await _resolve_login_website(session, app_slug) if app_slug else None
     if not website and not app_slug:
         website = await _resolve_login_website_from_host(session, request)
+    resolved_next = _resolve_frontend_redirect_for_website(request, raw_next, website)
+    if raw_next and not resolved_next:
+        LOG.info("Rejected app login redirect target for app=%s next=%s", app_slug or "none", raw_next)
     branding = _website_branding(website)
     if app_slug and not website:
         return _render_template(
@@ -831,7 +1040,7 @@ async def frontend_app_login(
             {
                 "page_title": "Application Login",
                 "active_page": "home",
-                "login_next": request.query_params.get("next") or "",
+                "login_next": resolved_next or "",
                 "login_app_slug": app_slug,
                 "app_lookup_error": f"Unknown application '{app_slug}'.",
                 "login_branding": branding,
@@ -849,7 +1058,7 @@ async def frontend_app_login(
         {
             "page_title": f"Sign in to {website.name}" if website else "PIdP Console",
             "active_page": "home",
-            "login_next": request.query_params.get("next") or "",
+            "login_next": resolved_next or "",
             "login_app_slug": website.slug if website else "",
             "login_app_name": website.name if website else "",
             "login_app_description": website.description if website else "",
@@ -867,6 +1076,7 @@ async def frontend_login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    _require_trusted_browser_origin(request)
     form = await request.form()
     email = str(form.get("email") or "").strip()
     password = str(form.get("password") or "")
@@ -898,7 +1108,7 @@ async def frontend_login(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    token = create_access_token(subject=str(user.id), email=user.email)
+    token = _create_owner_access_token(user)
     LOG.info("Login succeeded for user=%s app=%s", user.email, app_slug or "none")
     if redirect_target:
         request.session["frontend_redirect_url"] = redirect_target
@@ -916,6 +1126,7 @@ async def frontend_register(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    _require_trusted_browser_origin(request)
     form = await request.form()
     email = str(form.get("email") or "").strip()
     password = str(form.get("password") or "")
@@ -956,9 +1167,9 @@ async def frontend_register(
     session.add(user)
     await session.commit()
     await session.refresh(user)
-    LOG.info("Completed social callback provider=%s email=%s", provider, user.email)
+    LOG.info("Completed frontend registration email=%s", user.email)
 
-    token = create_access_token(subject=str(user.id), email=user.email)
+    token = _create_owner_access_token(user)
     LOG.info("Registration succeeded for email=%s app=%s", user.email, app_slug or "none")
     if redirect_target:
         request.session["frontend_redirect_url"] = redirect_target
@@ -973,6 +1184,7 @@ async def frontend_register(
 
 @app.post("/session/logout", include_in_schema=False)
 async def frontend_logout(request: Request) -> RedirectResponse:
+    _require_trusted_browser_origin(request)
     response = RedirectResponse(
         url="/?message=Signed+out",
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1374,7 +1586,7 @@ async def register_user(payload: UserCreate, session: AsyncSession = Depends(get
     session.add(user)
     await session.commit()
     await session.refresh(user)
-    return user
+    return _to_user_public(user)
 
 
 @app.post("/auth/token", response_model=Token)
@@ -1386,8 +1598,47 @@ async def login_for_access_token(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    token = create_access_token(subject=str(user.id), email=user.email)
+    token = _create_owner_access_token(user)
     return Token(access_token=token)
+
+
+@app.post("/auth/session/login", status_code=status.HTTP_204_NO_CONTENT)
+async def login_for_session_cookie(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    _require_trusted_browser_origin(request)
+    user = await authenticate_user(session, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    token = _create_owner_access_token(user)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _set_session_cookie(response, token)
+    return response
+
+
+@app.post("/auth/session/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_session_cookie(request: Request) -> Response:
+    _require_trusted_browser_origin(request)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _clear_session_cookie(response)
+    return response
+
+
+@app.post("/auth/session/exchange", status_code=status.HTTP_204_NO_CONTENT)
+async def exchange_access_token_for_session_cookie(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    _require_trusted_browser_origin(request)
+    user = await _get_current_owner(token, session)
+    rotated_token = _create_owner_access_token(user)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _set_session_cookie(response, rotated_token)
+    return response
 
 
 @app.get("/auth/session-token", response_model=Token)
@@ -1408,7 +1659,7 @@ async def get_me(
     session: AsyncSession = Depends(get_session),
 ) -> UserPublic:
     user = await _get_current_owner(token, session)
-    return user
+    return _to_user_public(user)
 
 
 @app.post("/auth/tokens", response_model=APITokenIssued)
@@ -1494,7 +1745,30 @@ async def service_me(
     session: AsyncSession = Depends(get_session),
 ) -> UserPublic:
     owner = await _get_service_owner(request, session)
-    return owner
+    return _to_user_public(owner)
+
+
+@app.get("/service/token-info", response_model=ServiceTokenInfo)
+async def service_token_info(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> ServiceTokenInfo:
+    raw_token = _extract_bearer_token(request)
+    if raw_token.startswith("pidp_pat_"):
+        owner, api_token = await _get_api_token_owner_and_record(raw_token, session)
+        return ServiceTokenInfo(
+            token_kind="pat",
+            scope=api_token.scope,
+            scope_grants=_scope_grants(api_token.scope),
+            owner=_to_user_public(owner),
+        )
+    owner = await _get_current_owner(raw_token, session)
+    return ServiceTokenInfo(
+        token_kind="jwt",
+        scope="session",
+        scope_grants=["session:*"],
+        owner=_to_user_public(owner),
+    )
 
 
 @app.get("/service/websites", response_model=list[WebsitePublic])
@@ -1552,7 +1826,7 @@ async def find_users(
     await _get_current_owner(token, session)
     result = await session.execute(select(User).where(User.email.ilike(email)))
     users = result.scalars().all()
-    return users
+    return [_to_user_public(user) for user in users]
 
 
 @app.get("/auth/public/users", response_model=list[UserPublicProfile])
@@ -1595,7 +1869,7 @@ async def update_me(
 
     await session.commit()
     await session.refresh(user)
-    return user
+    return _to_user_public(user)
 
 
 @app.post("/auth/avatar/upload-url")
@@ -1955,6 +2229,10 @@ async def social_login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    lane_redirect = _cross_lane_login_redirect(request, request.query_params.get("next"))
+    if lane_redirect:
+        return RedirectResponse(url=lane_redirect, status_code=status.HTTP_303_SEE_OTHER)
+
     client = oauth.create_client(provider)
     if client is None:
         raise HTTPException(status_code=400, detail="Provider not enabled")
@@ -1966,6 +2244,13 @@ async def social_login(
     next_url = request.query_params.get("next")
     app_slug = (request.query_params.get("app") or "").strip()
     website: Website | None = None
+    # Keep only one active OAuth attempt per provider per browser session.
+    # This avoids stale/accumulated state keys causing callback mismatches.
+    stale_state_keys = [
+        key for key in list(request.session.keys()) if isinstance(key, str) and key.startswith(f"_state_{provider}_")
+    ]
+    for key in stale_state_keys:
+        request.session.pop(key, None)
     if app_slug:
         website = await _resolve_login_website(session, app_slug)
         if not website:
@@ -1981,6 +2266,8 @@ async def social_login(
         website = await _resolve_login_website_from_host(session, request)
         if website:
             app_slug = website.slug
+    if app_slug:
+        request.session["social_login_app_slug"] = app_slug
     resolved_next = _resolve_frontend_redirect_for_website(request, next_url, website)
     if next_url and not resolved_next:
         LOG.info("Rejected social redirect target provider=%s app=%s next=%s", provider, app_slug or "none", next_url)
@@ -2003,7 +2290,47 @@ async def social_callback(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    profile = await fetch_social_profile(provider, request)
+    app_slug = request.session.pop("social_login_app_slug", None)
+    callback_state = (request.query_params.get("state") or "").strip()
+    if callback_state:
+        expected_state_key = f"_state_{provider}_{callback_state}"
+        if expected_state_key not in request.session:
+            LOG.warning(
+                "OAuth callback missing expected session state key provider=%s host=%s state=%s",
+                provider,
+                _request_host(request) or "unknown",
+                callback_state,
+            )
+            return RedirectResponse(
+                url=_frontend_login_path(
+                    app_slug=app_slug or None,
+                    error=f"{provider.capitalize()} sign-in session expired. Please try again.",
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+    try:
+        profile = await fetch_social_profile(provider, request)
+    except HTTPException as exc:
+        detail = str(getattr(exc, "detail", "") or "").strip()
+        message = f"{provider.capitalize()} sign-in failed. Please try again."
+        if detail and detail.lower() not in {"provider not enabled"}:
+            message = detail
+        return RedirectResponse(
+            url=_frontend_login_path(
+                app_slug=app_slug or None,
+                error=message,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    except Exception:
+        LOG.exception("Unhandled social callback error provider=%s", provider)
+        return RedirectResponse(
+            url=_frontend_login_path(
+                app_slug=app_slug or None,
+                error=f"{provider.capitalize()} sign-in failed. Please try again.",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     if not profile.get("email"):
         raise HTTPException(status_code=400, detail="Provider did not return an email")
 
@@ -2053,7 +2380,7 @@ async def social_callback(
     await session.commit()
     await session.refresh(user)
 
-    token = create_access_token(subject=str(user.id), email=user.email)
+    token = _create_owner_access_token(user)
     redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
     if redirect_target:
         if redirect_target.startswith("/"):

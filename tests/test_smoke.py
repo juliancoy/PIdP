@@ -108,6 +108,60 @@ class PidpSmokeTests(unittest.TestCase):
             self.main.oauth.create_client = original_create_client
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
+    def test_social_login_drops_cross_lane_next_before_oauth(self):
+        class _FakeOAuthClient:
+            async def authorize_redirect(self, request, redirect_uri):
+                return JSONResponse(
+                    {
+                        "saved_next": request.session.get("frontend_redirect_url"),
+                        "redirect_uri": redirect_uri,
+                    }
+                )
+
+        original_create_client = self.main.oauth.create_client
+        original_resolve_login_website_from_host = self.main._resolve_login_website_from_host
+        self.main.oauth.create_client = lambda provider: _FakeOAuthClient() if provider == "google" else None
+        async def _fake_resolve_login_website_from_host(_session, _request):
+            return None
+        self.main._resolve_login_website_from_host = _fake_resolve_login_website_from_host
+        try:
+            with TestClient(self.main.app) as client:
+                response = client.get(
+                    "/auth/google/login?next=https://dev.portal.arkavo.org/admin",
+                    headers={
+                        "host": "pidp.arkavo.org",
+                        "x-forwarded-proto": "https",
+                    },
+                    follow_redirects=False,
+                )
+            self.assertEqual(response.status_code, 303)
+            location = response.headers.get("location", "")
+            self.assertTrue(location.startswith("/app/login?error="))
+            self.assertNotIn("dev.pidp.arkavo.org", location)
+        finally:
+            self.main.oauth.create_client = original_create_client
+            self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
+
+    def test_app_login_drops_cross_lane_next(self):
+        original_resolve_login_website_from_host = self.main._resolve_login_website_from_host
+        async def _fake_resolve_login_website_from_host(_session, _request):
+            return None
+        self.main._resolve_login_website_from_host = _fake_resolve_login_website_from_host
+        try:
+            with TestClient(self.main.app) as client:
+                response = client.get(
+                    "/app/login?next=https://dev.portal.arkavo.org/admin",
+                    headers={
+                        "host": "pidp.arkavo.org",
+                        "x-forwarded-proto": "https",
+                    },
+                    follow_redirects=False,
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('value="https://dev.portal.arkavo.org/admin"', response.text)
+        finally:
+            self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
+
     def test_configuration_matches_runtime_env_and_host(self):
         with TestClient(self.main.app) as client:
             response = client.get(
@@ -172,6 +226,42 @@ class PidpSmokeTests(unittest.TestCase):
         finally:
             self.main._get_owner_from_api_token = original_get_owner_from_api_token
 
+    def test_service_token_info_includes_pat_scope(self):
+        owner = SimpleNamespace(
+            id=uuid4(),
+            email="owner@example.com",
+            full_name="Owner Example",
+            provider=None,
+            identity_data={},
+            is_active=True,
+            created_at=datetime.utcnow(),
+        )
+        token_record = SimpleNamespace(scope="org_portal")
+
+        async def _override_get_session():
+            yield _FakeSession([])
+
+        async def _fake_get_api_token_owner_and_record(raw_token, _session):
+            if not raw_token.startswith("pidp_pat_"):
+                raise AssertionError("Expected PAT token")
+            return owner, token_record
+
+        original = self.main._get_api_token_owner_and_record
+        self.main._get_api_token_owner_and_record = _fake_get_api_token_owner_and_record
+        self.main.app.dependency_overrides[self.main.get_session] = _override_get_session
+        try:
+            with TestClient(self.main.app) as client:
+                headers = {"Authorization": "Bearer pidp_pat_test_smoke_token"}
+                response = client.get("/service/token-info", headers=headers)
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["token_kind"], "pat")
+            self.assertEqual(payload["scope"], "org_portal")
+            self.assertIn("org:profile.write", payload["scope_grants"])
+            self.assertEqual(payload["owner"]["email"], owner.email)
+        finally:
+            self.main._get_api_token_owner_and_record = original
+
     def test_app_login_renders_website_specific_branding(self):
         website = SimpleNamespace(
             id=uuid4(),
@@ -197,7 +287,7 @@ class PidpSmokeTests(unittest.TestCase):
             with TestClient(self.main.app) as client:
                 response = client.get(f"/app/login?app={website.slug}&next=%2F")
             self.assertEqual(response.status_code, 200)
-            self.assertIn("Sign In To", response.text)
+            self.assertIn("Sign in to", response.text)
             self.assertIn(website.name, response.text)
             self.assertIn("name=\"app\" value=\"code-collective\"", response.text)
         finally:

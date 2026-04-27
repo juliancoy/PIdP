@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
+APITokenScope = Literal["service", "org_portal", "org_mcp", "org_admin"]
+
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -19,6 +21,7 @@ class UserPublic(BaseModel):
     full_name: str | None = None
     provider: str | None = None
     identity_data: dict | None = None
+    is_sysadmin: bool = False
     is_active: bool
     created_at: datetime
 
@@ -33,7 +36,7 @@ class Token(BaseModel):
 
 class APITokenCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    scope: Literal["service"] = "service"
+    scope: APITokenScope = "service"
 
 
 class APITokenPublic(BaseModel):
@@ -55,6 +58,13 @@ class APITokenIssued(BaseModel):
     scope: str
 
 
+class ServiceTokenInfo(BaseModel):
+    token_kind: Literal["pat", "jwt"]
+    scope: str
+    scope_grants: list[str] = Field(default_factory=list)
+    owner: UserPublic
+
+
 class TokenData(BaseModel):
     sub: str
     email: EmailStr | None = None
@@ -73,6 +83,8 @@ class UserProfileUpdate(BaseModel):
     state: str | None = None
     zip: str | None = None
     organizations: list[str] | None = None
+    maslow_now: dict[str, int] | None = None
+    maslow_future: dict[str, int] | None = None
 
 
 class UserPublicProfile(BaseModel):
