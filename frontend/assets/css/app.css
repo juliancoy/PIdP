@@ -1075,3 +1075,93 @@ h2 {
 .token-value {
     word-break: break-all;
 }
+
+.token-create-grid {
+    align-items: end;
+}
+
+.token-field-wide {
+    grid-column: span 2;
+}
+
+.token-issued-callout {
+    display: grid;
+    gap: 10px;
+}
+
+.token-grants-preview {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+}
+
+.token-grants-stack {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.token-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 4px 0 10px;
+}
+
+.token-scope-pill,
+.token-status-pill,
+.token-grant-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.token-scope-pill {
+    padding: 5px 10px;
+    color: color-mix(in srgb, var(--accent-strong) 85%, var(--ink));
+    background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-strong) 32%, transparent);
+}
+
+.token-status-pill {
+    padding: 5px 10px;
+    border: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+    background: color-mix(in srgb, var(--bg-panel) 85%, transparent);
+    color: var(--muted);
+}
+
+.token-status-pill.active {
+    color: #0b6e57;
+    background: rgba(16, 185, 129, 0.15);
+    border-color: rgba(16, 185, 129, 0.35);
+}
+
+.token-status-pill.revoked {
+    color: #8b1d1d;
+    background: rgba(220, 38, 38, 0.12);
+    border-color: rgba(220, 38, 38, 0.28);
+}
+
+.token-grant-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.token-grant-pill {
+    padding: 4px 10px;
+    font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    font-size: 0.74rem;
+    color: var(--ink);
+    background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
+    border: 1px solid color-mix(in srgb, var(--line) 90%, transparent);
+}
+
+@media (max-width: 900px) {
+    .token-field-wide {
+        grid-column: span 1;
+    }
+}

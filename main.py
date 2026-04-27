@@ -34,6 +34,7 @@ from schemas import (
     APITokenCreate,
     APITokenIssued,
     APITokenPublic,
+    APITokenUpdate,
     ServiceTokenInfo,
     Token,
     UserCreate,
@@ -503,6 +504,48 @@ def _validate_identity_data(identity_data: dict | None, schema_fields: dict) -> 
     return payload
 
 
+def _social_website_identity_payload(profile: dict[str, Any], schema_fields: dict) -> dict[str, Any]:
+    raw = dict(profile.get("raw", {}) or {})
+    email = str(profile.get("email") or "").strip()
+    full_name = str(profile.get("full_name") or "").strip()
+    first_name = str(raw.get("given_name") or raw.get("first_name") or "").strip()
+    last_name = str(raw.get("family_name") or raw.get("last_name") or "").strip()
+    if not first_name and full_name and " " in full_name:
+        first_name = full_name.split(" ", 1)[0].strip()
+    if not last_name and full_name and " " in full_name:
+        last_name = full_name.rsplit(" ", 1)[-1].strip()
+    display_name = full_name or (email.split("@", 1)[0] if "@" in email else email)
+    avatar_url = str(profile.get("avatar_url") or "").strip()
+
+    payload: dict[str, Any] = {}
+    if "display_name" in schema_fields and display_name:
+        payload["display_name"] = display_name
+    if "first_name" in schema_fields and first_name:
+        payload["first_name"] = first_name
+    if "last_name" in schema_fields and last_name:
+        payload["last_name"] = last_name
+    if "avatar_url" in schema_fields and avatar_url:
+        payload["avatar_url"] = avatar_url
+
+    # Satisfy required fields when social profile does not provide them.
+    for field_name, definition in schema_fields.items():
+        if not definition.get("required") or field_name in payload:
+            continue
+        field_type = definition.get("type")
+        if field_type == "string":
+            payload[field_name] = ""
+        elif field_type == "number":
+            payload[field_name] = 0
+        elif field_type == "boolean":
+            payload[field_name] = False
+        elif field_type == "array":
+            payload[field_name] = []
+        elif field_type == "object":
+            payload[field_name] = {}
+
+    return _validate_identity_data(payload, schema_fields)
+
+
 async def _get_s3_client(endpoint_override: str | None = None):
     endpoint = endpoint_override or settings.minio_endpoint
     if not endpoint or not settings.minio_access_key or not settings.minio_secret_key:
@@ -607,6 +650,28 @@ async def _get_current_owner(token: str, session: AsyncSession) -> User:
     return user
 
 
+async def _get_current_website_user(token: str, session: AsyncSession) -> WebsiteUser:
+    payload = safe_decode_token(token)
+    if not payload or not payload.get("sub"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid website user token")
+    if payload.get("actor_type") != "website_user":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token is not a website user token")
+    website_id = str(payload.get("website_id") or "").strip()
+    if not website_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid website user token")
+
+    result = await session.execute(
+        select(WebsiteUser).where(
+            (WebsiteUser.id == payload["sub"])
+            & (WebsiteUser.website_id == website_id)
+        )
+    )
+    website_user = result.scalar_one_or_none()
+    if not website_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Website user not found")
+    return website_user
+
+
 def _hash_api_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
@@ -660,6 +725,30 @@ def _create_owner_access_token(user: User) -> str:
         subject=str(user.id),
         email=user.email,
         extra_claims={"is_sysadmin": _is_pidp_sysadmin(user)},
+    )
+
+
+def _to_user_public_from_website_user(website_user: WebsiteUser) -> UserPublic:
+    return UserPublic(
+        id=website_user.id,
+        email=website_user.email,
+        full_name=website_user.full_name,
+        provider=website_user.provider,
+        identity_data=website_user.identity_data,
+        is_sysadmin=False,
+        is_active=website_user.is_active,
+        created_at=website_user.created_at,
+    )
+
+
+def _create_website_user_access_token(website_user: WebsiteUser) -> str:
+    return create_access_token(
+        subject=str(website_user.id),
+        email=website_user.email,
+        extra_claims={
+            "actor_type": "website_user",
+            "website_id": str(website_user.website_id),
+        },
     )
 
 
@@ -1211,6 +1300,7 @@ async def frontend_profile(request: Request, session: AsyncSession = Depends(get
     )
     api_tokens = list(token_result.scalars().all())
     issued_service_token = request.session.pop("issued_service_token", None)
+    token_scopes = [scope for scope in ("service", "org_portal", "org_mcp", "org_admin") if scope in ALLOWED_API_TOKEN_SCOPES]
     return _render_template(
         request,
         "profile.html",
@@ -1222,6 +1312,8 @@ async def frontend_profile(request: Request, session: AsyncSession = Depends(get
             "profile_fields": _profile_fields(owner),
             "api_tokens": api_tokens,
             "issued_service_token": issued_service_token,
+            "token_scopes": token_scopes,
+            "token_scope_grants": {scope: _scope_grants(scope) for scope in token_scopes},
         },
     )
 
@@ -1283,18 +1375,28 @@ async def frontend_create_profile_token(
 
     form = await request.form()
     name = str(form.get("name") or "").strip()
+    scope_raw = str(form.get("scope") or "service").strip().lower()
     if not name:
         return RedirectResponse(
             url="/profile?error=Token+name+is+required",
             status_code=status.HTTP_303_SEE_OTHER,
         )
+    try:
+        scope = _normalize_api_token_scope(scope_raw)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+            return RedirectResponse(
+                url="/profile?error=Unsupported+token+scope",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        raise
 
     try:
         raw_token, _ = await _issue_or_reactivate_api_token(
             session=session,
             owner_id=owner.id,
             name=name,
-            scope="service",
+            scope=scope,
         )
     except HTTPException as exc:
         if exc.status_code == status.HTTP_409_CONFLICT:
@@ -1306,7 +1408,7 @@ async def frontend_create_profile_token(
 
     request.session["issued_service_token"] = raw_token
     return RedirectResponse(
-        url="/profile?message=Service+token+created.+Copy+it+now.",
+        url="/profile?message=API+token+created.+Copy+it+now.",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1634,8 +1736,15 @@ async def exchange_access_token_for_session_cookie(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     _require_trusted_browser_origin(request)
-    user = await _get_current_owner(token, session)
-    rotated_token = _create_owner_access_token(user)
+    payload = safe_decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if payload.get("actor_type") == "website_user":
+        website_user = await _get_current_website_user(token, session)
+        rotated_token = _create_website_user_access_token(website_user)
+    else:
+        user = await _get_current_owner(token, session)
+        rotated_token = _create_owner_access_token(user)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _set_session_cookie(response, rotated_token)
     return response
@@ -1649,7 +1758,13 @@ async def auth_session_token(
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    await _get_current_owner(token, session)
+    payload = safe_decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if payload.get("actor_type") == "website_user":
+        await _get_current_website_user(token, session)
+    else:
+        await _get_current_owner(token, session)
     return Token(access_token=token)
 
 
@@ -1658,6 +1773,12 @@ async def get_me(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> UserPublic:
+    payload = safe_decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if payload.get("actor_type") == "website_user":
+        website_user = await _get_current_website_user(token, session)
+        return _to_user_public_from_website_user(website_user)
     user = await _get_current_owner(token, session)
     return _to_user_public(user)
 
@@ -1685,6 +1806,7 @@ async def create_api_token(
         token_id=api_token.id,
         name=api_token.name,
         scope=api_token.scope,
+        scope_grants=_scope_grants(api_token.scope),
     )
 
 
@@ -1699,7 +1821,59 @@ async def list_api_tokens(
         .where(UserAPIToken.owner_id == owner.id)
         .order_by(UserAPIToken.created_at.desc())
     )
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    return [
+        APITokenPublic(
+            id=row.id,
+            name=row.name,
+            scope=row.scope,
+            scope_grants=_scope_grants(row.scope),
+            is_active=row.is_active,
+            created_at=row.created_at,
+            last_used_at=row.last_used_at,
+        )
+        for row in rows
+    ]
+
+
+@app.patch("/auth/tokens/{token_id}", response_model=APITokenPublic)
+async def update_api_token(
+    token_id: UUID,
+    payload: APITokenUpdate,
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> APITokenPublic:
+    owner = await _get_current_owner(token, session)
+    result = await session.execute(
+        select(UserAPIToken).where(
+            (UserAPIToken.id == token_id)
+            & (UserAPIToken.owner_id == owner.id)
+        )
+    )
+    api_token = result.scalar_one_or_none()
+    if not api_token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API token not found")
+
+    next_name = payload.name.strip()
+    if not next_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Token name is required")
+    api_token.name = next_name
+    try:
+        await session.commit()
+        await session.refresh(api_token)
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="API token with this name already exists")
+
+    return APITokenPublic(
+        id=api_token.id,
+        name=api_token.name,
+        scope=api_token.scope,
+        scope_grants=_scope_grants(api_token.scope),
+        is_active=api_token.is_active,
+        created_at=api_token.created_at,
+        last_used_at=api_token.last_used_at,
+    )
 
 
 @app.delete("/auth/tokens/{token_id}")
@@ -1736,6 +1910,7 @@ async def cycle_api_token(
         token_id=api_token.id,
         name=api_token.name,
         scope=api_token.scope,
+        scope_grants=_scope_grants(api_token.scope),
     )
 
 
@@ -1761,6 +1936,15 @@ async def service_token_info(
             scope=api_token.scope,
             scope_grants=_scope_grants(api_token.scope),
             owner=_to_user_public(owner),
+        )
+    payload = safe_decode_token(raw_token)
+    if payload and payload.get("actor_type") == "website_user":
+        website_user = await _get_current_website_user(raw_token, session)
+        return ServiceTokenInfo(
+            token_kind="jwt",
+            scope="session",
+            scope_grants=["session:*"],
+            owner=_to_user_public_from_website_user(website_user),
         )
     owner = await _get_current_owner(raw_token, session)
     return ServiceTokenInfo(
@@ -2291,6 +2475,13 @@ async def social_callback(
     session: AsyncSession = Depends(get_session),
 ):
     app_slug = request.session.pop("social_login_app_slug", None)
+    login_website: Website | None = None
+    if app_slug:
+        login_website = await _resolve_login_website(session, app_slug)
+    if not login_website:
+        login_website = await _resolve_login_website_from_host(session, request)
+    if login_website and not app_slug:
+        app_slug = login_website.slug
     callback_state = (request.query_params.get("state") or "").strip()
     if callback_state:
         expected_state_key = f"_state_{provider}_{callback_state}"
@@ -2333,6 +2524,70 @@ async def social_callback(
         )
     if not profile.get("email"):
         raise HTTPException(status_code=400, detail="Provider did not return an email")
+
+    if login_website:
+        provider_account_id = str(profile.get("provider_account_id") or "").strip()
+        email = str(profile.get("email") or "").strip().lower()
+        result = await session.execute(
+            select(WebsiteUser).where(
+                (WebsiteUser.website_id == login_website.id)
+                & (WebsiteUser.provider == provider)
+                & (WebsiteUser.provider_account_id == provider_account_id)
+            )
+        )
+        website_user = result.scalar_one_or_none()
+        if not website_user:
+            result = await session.execute(
+                select(WebsiteUser).where(
+                    (WebsiteUser.website_id == login_website.id)
+                    & (WebsiteUser.email.ilike(email))
+                )
+            )
+            website_user = result.scalar_one_or_none()
+
+        schema_fields = dict(login_website.user_schema or SYSTEM_SCHEMA_FIELDS)
+        identity_data = _social_website_identity_payload(profile, schema_fields)
+        if not website_user:
+            website_user = WebsiteUser(
+                website_id=login_website.id,
+                email=email,
+                full_name=profile.get("full_name"),
+                provider=provider,
+                provider_account_id=provider_account_id or None,
+                identity_data=identity_data,
+                is_active=True,
+            )
+            session.add(website_user)
+        else:
+            website_user.email = email
+            website_user.full_name = profile.get("full_name")
+            website_user.provider = provider
+            website_user.provider_account_id = provider_account_id or website_user.provider_account_id
+            website_user.identity_data = identity_data
+            website_user.is_active = True
+
+        await session.commit()
+        await session.refresh(website_user)
+        token = _create_website_user_access_token(website_user)
+        redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
+        if redirect_target:
+            if redirect_target.startswith("/"):
+                response = RedirectResponse(redirect_target, status_code=status.HTTP_303_SEE_OTHER)
+                _set_session_cookie(response, token)
+                return response
+            params = urlencode({"token": token, "token_type": "bearer"})
+            return RedirectResponse(f"{redirect_target}#{params}")
+        if settings.frontend_redirect_url:
+            parsed = urlparse(settings.frontend_redirect_url)
+            if parsed.netloc == request.url.netloc:
+                response = RedirectResponse(parsed.path or "/", status_code=status.HTTP_303_SEE_OTHER)
+                _set_session_cookie(response, token)
+                return response
+            params = urlencode({"token": token, "token_type": "bearer"})
+            return RedirectResponse(f"{settings.frontend_redirect_url}#{params}")
+        response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+        _set_session_cookie(response, token)
+        return response
 
     result = await session.execute(
         select(User).where(

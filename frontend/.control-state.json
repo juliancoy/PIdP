@@ -1,6 +1,6 @@
 {
-  "backend_last_rollout_at": "2026-04-27T07:22:21.544575Z",
-  "backend_last_rollout_image": "ghcr.io/juliancoy/pidp:latest",
+  "backend_last_rollout_at": "2026-04-27T16:05:07.304371Z",
+  "backend_last_rollout_image": "pidp-prod:local-16250be6750a",
   "backend_rollout_requested_at": null,
-  "updated_at": "2026-04-27T07:22:21.544837Z"
+  "updated_at": "2026-04-27T16:05:07.304499Z"
 }

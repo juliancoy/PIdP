@@ -101,41 +101,78 @@
 </section>
 
 <section class="panel">
+    {% set scope_grants = token_scope_grants or {} %}
+    {% set default_scope = (token_scopes[0] if token_scopes else "service") %}
+    {% set service_base = request.url.scheme ~ "://" ~ request.url.netloc %}
     <div class="stack">
         <div class="section-header">
-            <h2>Service API Tokens</h2>
+            <h2>Dev Tool: Personal Access Tokens</h2>
         </div>
         <p class="muted">
-            Create a bearer token for user-scoped service access to `/service/*`.
+            Create scoped bearer tokens for service-to-service automation. PAT values are shown once and never stored in plaintext.
         </p>
         {% if issued_service_token %}
-            <div class="callout">
+            <div class="callout token-issued-callout">
                 <strong>New token (shown once):</strong>
-                <div class="mono token-value">{{ issued_service_token }}</div>
+                <div class="mono token-value" id="issued-token-value">{{ issued_service_token }}</div>
+                <div class="button-row compact-row">
+                    <button class="secondary-button" id="copy-issued-token" type="button">Copy token</button>
+                </div>
             </div>
         {% endif %}
-        <form method="post" action="{{ ui_base }}/profile/tokens" class="field-grid">
-            <div class="field">
+        <form method="post" action="{{ ui_base }}/profile/tokens" class="field-grid token-create-grid">
+            <div class="field token-field-wide">
                 <label for="token_name">Token Name</label>
-                <input id="token_name" name="name" type="text" placeholder="e.g. ci-service" required>
+                <input id="token_name" name="name" type="text" placeholder="e.g. orgportal-bot-prod" required>
+            </div>
+            <div class="field">
+                <label for="token_scope">Scope</label>
+                <select id="token_scope" name="scope" required>
+                    {% for scope in token_scopes %}
+                        <option value="{{ scope }}">{{ scope }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="callout token-grants-preview" id="scope-grants-preview" data-scope-grants='{{ scope_grants|tojson }}'>
+                <strong id="scope-grants-title">{{ default_scope }} grants</strong>
+                <div class="token-grant-list" id="scope-grants-list">
+                    {% for grant in scope_grants.get(default_scope, []) %}
+                        <span class="token-grant-pill">{{ grant }}</span>
+                    {% endfor %}
+                </div>
             </div>
             <div class="button-row">
                 <button class="primary-button" type="submit">Create Token</button>
             </div>
         </form>
         <div class="data-grid">
-            <div class="data-item"><span class="label">Service endpoint</span><span class="mono">GET {{ request.url.scheme }}://{{ request.url.hostname }}/service/me</span></div>
+            <div class="data-item"><span class="label">Service endpoint</span><span class="mono">GET {{ service_base }}/service/me</span></div>
+            <div class="data-item"><span class="label">Token info endpoint</span><span class="mono">GET {{ service_base }}/service/token-info</span></div>
             <div class="data-item"><span class="label">Auth header</span><span class="mono">Authorization: Bearer pidp_pat_...</span></div>
         </div>
         {% if api_tokens %}
             {% for token in api_tokens %}
                 <article class="site-card">
                     <h3>{{ token.name }}</h3>
+                    <div class="token-pill-row">
+                        <span class="token-scope-pill">{{ token.scope }}</span>
+                        <span class="token-status-pill {% if token.is_active %}active{% else %}revoked{% endif %}">
+                            {% if token.is_active %}Active{% else %}Revoked{% endif %}
+                        </span>
+                    </div>
                     <div class="data-grid">
-                        <div class="data-item"><span class="label">Scope</span>{{ token.scope }}</div>
-                        <div class="data-item"><span class="label">Status</span>{% if token.is_active %}Active{% else %}Revoked{% endif %}</div>
                         <div class="data-item"><span class="label">Created</span>{{ token.created_at.strftime("%b %d, %Y %H:%M") }}</div>
                         <div class="data-item"><span class="label">Last Used</span>{% if token.last_used_at %}{{ token.last_used_at.strftime("%b %d, %Y %H:%M") }}{% else %}Never{% endif %}</div>
+                    </div>
+                    <div class="token-grants-stack">
+                        <div class="label">Granted permissions</div>
+                        <div class="token-grant-list">
+                            {% for grant in scope_grants.get(token.scope, []) %}
+                                <span class="token-grant-pill">{{ grant }}</span>
+                            {% else %}
+                                <span class="muted">No grants configured for this scope.</span>
+                            {% endfor %}
+                        </div>
                     </div>
                     <div class="button-row">
                         <form method="post" action="{{ ui_base }}/profile/tokens/{{ token.id }}/cycle">
@@ -143,7 +180,7 @@
                         </form>
                         {% if token.is_active %}
                             <form method="post" action="{{ ui_base }}/profile/tokens/{{ token.id }}/revoke">
-                                <button class="ghost-button" type="submit">Revoke Token</button>
+                                <button class="ghost-button" type="submit" onclick="return confirm('Revoke this token?')">Revoke Token</button>
                             </form>
                         {% endif %}
                     </div>
@@ -192,6 +229,58 @@
 </div>
 <script>
     window.PIDP_UI_BASE = "{{ ui_base }}";
+    (function () {
+        var scopeSelect = document.getElementById("token_scope");
+        var preview = document.getElementById("scope-grants-preview");
+        var grantsTitle = document.getElementById("scope-grants-title");
+        var grantsList = document.getElementById("scope-grants-list");
+        if (scopeSelect && preview && grantsTitle && grantsList) {
+            var scopeGrants = {};
+            try {
+                scopeGrants = JSON.parse(preview.dataset.scopeGrants || "{}");
+            } catch (err) {
+                scopeGrants = {};
+            }
+            var renderScope = function (scope) {
+                var grants = Array.isArray(scopeGrants[scope]) ? scopeGrants[scope] : [];
+                grantsTitle.textContent = scope + " grants";
+                grantsList.innerHTML = "";
+                if (!grants.length) {
+                    var muted = document.createElement("span");
+                    muted.className = "muted";
+                    muted.textContent = "No grants configured for this scope.";
+                    grantsList.appendChild(muted);
+                    return;
+                }
+                for (var i = 0; i < grants.length; i += 1) {
+                    var pill = document.createElement("span");
+                    pill.className = "token-grant-pill";
+                    pill.textContent = grants[i];
+                    grantsList.appendChild(pill);
+                }
+            };
+            renderScope(scopeSelect.value);
+            scopeSelect.addEventListener("change", function () {
+                renderScope(scopeSelect.value);
+            });
+        }
+
+        var issuedTokenValue = document.getElementById("issued-token-value");
+        var copyButton = document.getElementById("copy-issued-token");
+        if (issuedTokenValue && copyButton && navigator.clipboard) {
+            copyButton.addEventListener("click", async function () {
+                try {
+                    await navigator.clipboard.writeText(issuedTokenValue.textContent || "");
+                    copyButton.textContent = "Copied";
+                    window.setTimeout(function () {
+                        copyButton.textContent = "Copy token";
+                    }, 1300);
+                } catch (err) {
+                    copyButton.textContent = "Copy failed";
+                }
+            });
+        }
+    }());
 </script>
 <script src="{{ asset_base }}/js/avatar-editor.js"></script>
 {% endblock %}

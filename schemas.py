@@ -43,6 +43,7 @@ class APITokenPublic(BaseModel):
     id: UUID
     name: str
     scope: str
+    scope_grants: list[str] = Field(default_factory=list)
     is_active: bool
     created_at: datetime
     last_used_at: datetime | None = None
@@ -56,6 +57,11 @@ class APITokenIssued(BaseModel):
     token_id: UUID
     name: str
     scope: str
+    scope_grants: list[str] = Field(default_factory=list)
+
+
+class APITokenUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
 
 
 class ServiceTokenInfo(BaseModel):
