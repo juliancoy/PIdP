@@ -650,6 +650,19 @@ async def _get_current_owner(token: str, session: AsyncSession) -> User:
     return user
 
 
+async def _get_current_owner_for_token_admin(token: str, session: AsyncSession) -> User:
+    if token.startswith("pidp_pat_"):
+        owner, api_token = await _get_api_token_owner_and_record(token, session)
+        scope = _normalize_api_token_scope(api_token.scope)
+        if scope != "org_admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="PAT scope does not permit token administration",
+            )
+        return owner
+    return await _get_current_owner(token, session)
+
+
 async def _get_current_website_user(token: str, session: AsyncSession) -> WebsiteUser:
     payload = safe_decode_token(token)
     if not payload or not payload.get("sub"):
@@ -1048,12 +1061,42 @@ async def _ensure_runtime_schema() -> None:
         LOG.warning("Runtime schema patch skipped: %s", exc)
 
 
+async def _warn_identity_uuid_collisions() -> None:
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                text(
+                    "SELECT w.id, w.email, w.website_id "
+                    "FROM website_users w "
+                    "JOIN users u ON u.id = w.id"
+                )
+            )
+            rows = result.all()
+            if not rows:
+                return
+            LOG.warning(
+                "Identity UUID collision detected between users and website_users. "
+                "These must be distinct principals. collisions=%s",
+                len(rows),
+            )
+            for row in rows:
+                LOG.warning(
+                    "collision id=%s email=%s website_id=%s",
+                    row[0],
+                    row[1],
+                    row[2],
+                )
+    except Exception as exc:
+        LOG.warning("UUID collision check skipped: %s", exc)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     if settings.auto_create_tables:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     await _ensure_runtime_schema()
+    await _warn_identity_uuid_collisions()
 
 
 @app.get("/", include_in_schema=False)
@@ -1109,14 +1152,14 @@ async def frontend_app_login(
     if lane_redirect:
         return RedirectResponse(url=lane_redirect, status_code=status.HTTP_303_SEE_OTHER)
 
-    owner = await _get_request_owner(request, session)
-    if owner:
-        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-
+    force_owner_login = _truthy(request.query_params.get("owner"))
+    auto_login = _truthy(request.query_params.get("auto"))
     app_slug = (request.query_params.get("app") or "").strip()
+    if force_owner_login:
+        app_slug = ""
     raw_next = (request.query_params.get("next") or "").strip() or None
     website = await _resolve_login_website(session, app_slug) if app_slug else None
-    if not website and not app_slug:
+    if not website and not app_slug and not force_owner_login:
         website = await _resolve_login_website_from_host(session, request)
     resolved_next = _resolve_frontend_redirect_for_website(request, raw_next, website)
     if raw_next and not resolved_next:
@@ -1141,6 +1184,53 @@ async def frontend_app_login(
             status_code=status.HTTP_404_NOT_FOUND,
         )
 
+    if auto_login and not force_owner_login:
+        provider: str | None = None
+        if settings.social_enabled("google"):
+            provider = "google"
+        elif settings.social_enabled("github"):
+            provider = "github"
+        if provider:
+            params = {}
+            if resolved_next:
+                params["next"] = resolved_next
+            if website:
+                params["app"] = website.slug
+            query = urlencode(params) if params else ""
+            target = f"/auth/{provider}/login"
+            if query:
+                target = f"{target}?{query}"
+            return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+
+    request_token = _request_token(request)
+    if request_token:
+        payload = safe_decode_token(request_token)
+        if payload and payload.get("sub"):
+            actor_type = str(payload.get("actor_type") or "owner")
+            can_bypass = False
+            if actor_type == "website_user":
+                if not force_owner_login:
+                    try:
+                        website_user = await _get_current_website_user(request_token, session)
+                        if website is None or str(website_user.website_id) == str(website.id):
+                            can_bypass = True
+                    except HTTPException:
+                        can_bypass = False
+            else:
+                try:
+                    await _get_current_owner(request_token, session)
+                    can_bypass = True
+                except HTTPException:
+                    can_bypass = False
+
+            if can_bypass:
+                if resolved_next:
+                    if not resolved_next.startswith("/"):
+                        params = urlencode({"token": request_token, "token_type": "bearer"})
+                        return RedirectResponse(f"{resolved_next}#{params}", status_code=status.HTTP_303_SEE_OTHER)
+                    return RedirectResponse(url=resolved_next, status_code=status.HTTP_303_SEE_OTHER)
+                return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
     return _render_template(
         request,
         "home.html",
@@ -1149,6 +1239,7 @@ async def frontend_app_login(
             "active_page": "home",
             "login_next": resolved_next or "",
             "login_app_slug": website.slug if website else "",
+            "login_force_owner": force_owner_login,
             "login_app_name": website.name if website else "",
             "login_app_description": website.description if website else "",
             "login_branding": branding,
@@ -1171,8 +1262,11 @@ async def frontend_login(
     password = str(form.get("password") or "")
     next_url = str(form.get("next") or "").strip()
     requested_app = str(form.get("app") or "").strip()
+    force_owner_login = _truthy(form.get("owner"))
+    if force_owner_login:
+        requested_app = ""
     app_website = await _resolve_login_website(session, requested_app)
-    if not app_website and not requested_app:
+    if not app_website and not requested_app and not force_owner_login:
         app_website = await _resolve_login_website_from_host(session, request)
     app_slug = app_website.slug if app_website else ""
     redirect_target = _resolve_frontend_redirect_for_website(request, next_url, app_website)
@@ -1222,8 +1316,11 @@ async def frontend_register(
     full_name = str(form.get("full_name") or "").strip() or None
     next_url = str(form.get("next") or "").strip()
     requested_app = str(form.get("app") or "").strip()
+    force_owner_login = _truthy(form.get("owner"))
+    if force_owner_login:
+        requested_app = ""
     app_website = await _resolve_login_website(session, requested_app)
-    if not app_website and not requested_app:
+    if not app_website and not requested_app and not force_owner_login:
         app_website = await _resolve_login_website_from_host(session, request)
     app_slug = app_website.slug if app_website else ""
     redirect_target = _resolve_frontend_redirect_for_website(request, next_url, app_website)
@@ -1789,7 +1886,7 @@ async def create_api_token(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> APITokenIssued:
-    owner = await _get_current_owner(token, session)
+    owner = await _get_current_owner_for_token_admin(token, session)
     normalized_name = payload.name.strip()
     if not normalized_name:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Token name is required")
@@ -1815,7 +1912,7 @@ async def list_api_tokens(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> list[APITokenPublic]:
-    owner = await _get_current_owner(token, session)
+    owner = await _get_current_owner_for_token_admin(token, session)
     result = await session.execute(
         select(UserAPIToken)
         .where(UserAPIToken.owner_id == owner.id)
@@ -1843,7 +1940,7 @@ async def update_api_token(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> APITokenPublic:
-    owner = await _get_current_owner(token, session)
+    owner = await _get_current_owner_for_token_admin(token, session)
     result = await session.execute(
         select(UserAPIToken).where(
             (UserAPIToken.id == token_id)
@@ -1882,7 +1979,7 @@ async def revoke_api_token(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    owner = await _get_current_owner(token, session)
+    owner = await _get_current_owner_for_token_admin(token, session)
     result = await session.execute(
         select(UserAPIToken).where(
             (UserAPIToken.id == token_id)
@@ -1903,7 +2000,7 @@ async def cycle_api_token(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> APITokenIssued:
-    owner = await _get_current_owner(token, session)
+    owner = await _get_current_owner_for_token_admin(token, session)
     raw_token, api_token = await _cycle_api_token(session, owner.id, token_id)
     return APITokenIssued(
         token=raw_token,
@@ -1933,6 +2030,7 @@ async def service_token_info(
         owner, api_token = await _get_api_token_owner_and_record(raw_token, session)
         return ServiceTokenInfo(
             token_kind="pat",
+            actor_type="owner",
             scope=api_token.scope,
             scope_grants=_scope_grants(api_token.scope),
             owner=_to_user_public(owner),
@@ -1942,6 +2040,7 @@ async def service_token_info(
         website_user = await _get_current_website_user(raw_token, session)
         return ServiceTokenInfo(
             token_kind="jwt",
+            actor_type="website_user",
             scope="session",
             scope_grants=["session:*"],
             owner=_to_user_public_from_website_user(website_user),
@@ -1949,6 +2048,7 @@ async def service_token_info(
     owner = await _get_current_owner(raw_token, session)
     return ServiceTokenInfo(
         token_kind="jwt",
+        actor_type="owner",
         scope="session",
         scope_grants=["session:*"],
         owner=_to_user_public(owner),
@@ -2426,7 +2526,10 @@ async def social_login(
         raise HTTPException(status_code=400, detail="Redirect URI not configured")
 
     next_url = request.query_params.get("next")
+    force_owner_login = _truthy(request.query_params.get("owner"))
     app_slug = (request.query_params.get("app") or "").strip()
+    if force_owner_login:
+        app_slug = ""
     website: Website | None = None
     # Keep only one active OAuth attempt per provider per browser session.
     # This avoids stale/accumulated state keys causing callback mismatches.
@@ -2446,10 +2549,11 @@ async def social_login(
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-    if not website:
+    if not website and not force_owner_login:
         website = await _resolve_login_website_from_host(session, request)
         if website:
             app_slug = website.slug
+    request.session["social_login_force_owner"] = force_owner_login
     if app_slug:
         request.session["social_login_app_slug"] = app_slug
     resolved_next = _resolve_frontend_redirect_for_website(request, next_url, website)
@@ -2474,11 +2578,12 @@ async def social_callback(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    force_owner_login = _truthy(request.session.pop("social_login_force_owner", False))
     app_slug = request.session.pop("social_login_app_slug", None)
     login_website: Website | None = None
     if app_slug:
         login_website = await _resolve_login_website(session, app_slug)
-    if not login_website:
+    if not login_website and not force_owner_login:
         login_website = await _resolve_login_website_from_host(session, request)
     if login_website and not app_slug:
         app_slug = login_website.slug

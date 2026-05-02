@@ -66,6 +66,7 @@ class APITokenUpdate(BaseModel):
 
 class ServiceTokenInfo(BaseModel):
     token_kind: Literal["pat", "jwt"]
+    actor_type: Literal["owner", "website_user"]
     scope: str
     scope_grants: list[str] = Field(default_factory=list)
     owner: UserPublic
