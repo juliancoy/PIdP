@@ -5,6 +5,7 @@ asyncpg
 pydantic-settings
 email-validator
 python-jose[cryptography]
+cryptography
 passlib[bcrypt]
 bcrypt<4
 python-multipart
