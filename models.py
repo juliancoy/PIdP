@@ -7,6 +7,8 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uni
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from encrypted_json import EncryptedJSONB
+
 
 class Base(DeclarativeBase):
     pass
@@ -23,7 +25,7 @@ class User(Base):
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     provider_account_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    identity_data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    identity_data: Mapped[dict] = mapped_column(EncryptedJSONB, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -63,7 +65,7 @@ class WebsiteUser(Base):
     full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     provider_account_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    identity_data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    identity_data: Mapped[dict] = mapped_column(EncryptedJSONB, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

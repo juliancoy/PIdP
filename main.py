@@ -27,7 +27,8 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from urllib.parse import quote, urlencode, urlparse
 
 from config import settings
-from db import engine, get_session
+from db import SessionLocal, engine, get_session
+from encrypted_json import validate_pii_encryption_config
 from models import Base, User, UserAPIToken, Website, WebsiteUser
 from oauth import fetch_social_profile, oauth
 from schemas import (
@@ -556,6 +557,7 @@ async def _get_s3_client(endpoint_override: str | None = None):
         aws_access_key_id=settings.minio_access_key,
         aws_secret_access_key=settings.minio_secret_key,
         region_name="us-east-1",
+        use_ssl=settings.minio_use_ssl,
     )
 
 
@@ -581,6 +583,13 @@ def _ensure_bucket(client) -> None:
         client.put_bucket_policy(Bucket=bucket, Policy=json.dumps(policy))
     except ClientError:
         pass
+
+
+def _s3_encryption_args() -> dict[str, str]:
+    algorithm = (settings.minio_server_side_encryption or "").strip()
+    if not algorithm:
+        return {}
+    return {"ServerSideEncryption": algorithm}
 
 
 async def _store_social_avatar(
@@ -613,6 +622,7 @@ async def _store_social_avatar(
                 Key=object_key,
                 Body=resp.content,
                 ContentType=content_type,
+                **_s3_encryption_args(),
             )
         public_endpoint = (settings.minio_public_base_url or "").rstrip("/")
         if not public_endpoint:
@@ -1063,7 +1073,7 @@ async def _ensure_runtime_schema() -> None:
 
 async def _warn_identity_uuid_collisions() -> None:
     try:
-        async with AsyncSessionLocal() as session:
+        async with SessionLocal() as session:
             result = await session.execute(
                 text(
                     "SELECT w.id, w.email, w.website_id "
@@ -1092,6 +1102,7 @@ async def _warn_identity_uuid_collisions() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
+    validate_pii_encryption_config()
     if settings.auto_create_tables:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -2190,6 +2201,7 @@ async def create_avatar_upload_url(
                 "Bucket": settings.minio_bucket,
                 "Key": object_key,
                 "ContentType": "image/png",
+                **_s3_encryption_args(),
             },
             ExpiresIn=300,
         )

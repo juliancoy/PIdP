@@ -33,7 +33,7 @@ def _load_main_module():
     os.environ["MINIO_BUCKET"] = "pidp-avatars"
     os.environ["MINIO_PUBLIC_BASE_URL"] = "https://dev.pidp.arkavo.org/s3"
 
-    for module_name in ("config", "db", "main"):
+    for module_name in ("config", "db", "encrypted_json", "main", "models"):
         if module_name in sys.modules:
             del sys.modules[module_name]
 

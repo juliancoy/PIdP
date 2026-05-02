@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     jwt_audience: str | None = None
     database_url: str
     auto_create_tables: bool = False
+    pii_encryption_keys: str = ""
+    require_pii_encryption: bool = False
     allowed_origins: str = ""
     admin_emails: str = ""
     admin_user_ids: str = ""
@@ -34,6 +36,8 @@ class Settings(BaseSettings):
     minio_secret_key: str | None = None
     minio_bucket: str = "pidp-avatars"
     minio_public_base_url: str = "/s3"
+    minio_use_ssl: bool = True
+    minio_server_side_encryption: str | None = "AES256"
 
     class Config:
         env_file = ".env"

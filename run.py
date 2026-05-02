@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import secrets
@@ -20,6 +21,7 @@ PINNED_ENV_KEYS = (
     "PIDP_JWT_PUBLIC_KEY",
     "PIDP_JWT_ISSUER",
     "PIDP_JWT_AUDIENCE",
+    "PIDP_PII_ENCRYPTION_KEYS",
 )
 
 def _parse_simple_env_file(path: Path) -> dict[str, str]:
@@ -86,6 +88,12 @@ def _apply_pidp_defaults() -> tuple[dict[str, str], Path]:
         _ensure_env_key(selected_path, "PIDP_SECRET_KEY", generated)
         file_values["PIDP_SECRET_KEY"] = generated
         print(f"Generated persistent PIDP_SECRET_KEY in {selected_path}")
+
+    if not file_values.get("PIDP_PII_ENCRYPTION_KEYS"):
+        generated = base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8")
+        _ensure_env_key(selected_path, "PIDP_PII_ENCRYPTION_KEYS", generated)
+        file_values["PIDP_PII_ENCRYPTION_KEYS"] = generated
+        print(f"Generated persistent PIDP_PII_ENCRYPTION_KEYS in {selected_path}")
 
     for key, value in file_values.items():
         os.environ.setdefault(key, value)
@@ -189,6 +197,7 @@ def _common_env(pidp_editme, db_url: str) -> dict:
     return {
         "DATABASE_URL": db_url,
         "SECRET_KEY": secret_key,
+        "PII_ENCRYPTION_KEYS": os.getenv("PIDP_PII_ENCRYPTION_KEYS") or os.getenv("PII_ENCRYPTION_KEYS", ""),
         "AUTO_CREATE_TABLES": "true",
         "ADMIN_EMAILS": os.getenv("PIDP_ADMIN_EMAILS", ""),
         "ADMIN_USER_IDS": os.getenv("PIDP_ADMIN_USER_IDS", ""),
@@ -208,6 +217,11 @@ def _common_env(pidp_editme, db_url: str) -> dict:
         "MINIO_SECRET_KEY": pidp_editme.MINIO_SECRET_KEY,
         "MINIO_BUCKET": pidp_editme.MINIO_BUCKET,
         "MINIO_PUBLIC_BASE_URL": pidp_editme.MINIO_PUBLIC_BASE_URL,
+        "MINIO_USE_SSL": os.getenv("PIDP_MINIO_USE_SSL", os.getenv("MINIO_USE_SSL", "true")),
+        "MINIO_SERVER_SIDE_ENCRYPTION": os.getenv(
+            "PIDP_MINIO_SERVER_SIDE_ENCRYPTION",
+            os.getenv("MINIO_SERVER_SIDE_ENCRYPTION", "AES256"),
+        ),
     }
 
 
@@ -368,6 +382,7 @@ def run(prefix, network_name):
         "name": prefix + "pidp",
         "environment": {
             **env_base,
+            "ENV": "production",
             "ALLOWED_ORIGINS": prod_allowed_origins,
             "ALLOWED_NATIVE_REDIRECT_SCHEMES": os.getenv(
                 "PIDP_ALLOWED_NATIVE_REDIRECT_SCHEMES",
@@ -406,6 +421,7 @@ def run(prefix, network_name):
         "volumes": {str(current_dir): {"bind": container_app_dir, "mode": "rw"}},
         "environment": {
             **env_base,
+            "ENV": "dev",
             "ALLOWED_ORIGINS": dev_allowed_origins,
             "ALLOWED_NATIVE_REDIRECT_SCHEMES": os.getenv(
                 "PIDP_ALLOWED_NATIVE_REDIRECT_SCHEMES",
