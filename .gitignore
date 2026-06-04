@@ -1,6 +1,7 @@
 __pycache__
 *editme.py
 .venv
+.env.cloudflare
 
 # Certificates / private keys
 *.crt
@@ -17,3 +18,4 @@ htmlcov/
 .pytest_cache/
 playwright-report/
 test-results/
+.env
