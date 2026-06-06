@@ -6,7 +6,7 @@ import { bearerToken, fail, formCredentials, jsonError, readJson } from "./http"
 import { hashPassword, randomToken, sha256Hex, signJwt, verifyJwt, verifyPassword } from "./crypto";
 import { DEFAULT_MAX_USERS_PER_WEBSITE, MAX_WEBSITES_PER_OWNER, PROFILE_LINK_FIELDS, SYSTEM_SCHEMA_FIELDS, normalizeBranding, normalizeHostList, normalizeOriginList, normalizeSlug, normalizeWebsiteSchema, schemaWithSystemFields, validateIdentityData } from "./normalize";
 import { oauthCallback, oauthLogin } from "./oauth";
-import { renderProfilePage } from "./profilePage";
+import { renderProfilePage, renderProfileQrSvg } from "./profilePage";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -28,6 +28,20 @@ app.onError((error, c) => jsonError(c, error));
 
 function json<T>(value: T): string {
   return JSON.stringify(value);
+}
+
+function absoluteUrl(c: { req: { url: string } }, path: string): string {
+  return new URL(path, c.req.url).toString();
+}
+
+function svgAttachment(svg: string, filename: string): Response {
+  return new Response(svg, {
+    headers: {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename.replace(/[^a-zA-Z0-9._-]/g, "-")}"`,
+      "cache-control": "no-store",
+    },
+  });
 }
 
 function escapeHtml(value: string): string {
@@ -548,12 +562,23 @@ app.get("/auth/public/users", async (c) => {
 app.get("/u/:userId", async (c) => {
   const user = await userById(c.env.DB, c.req.param("userId"));
   if (!user || !user.is_active) fail(404, "User not found");
+  const profilePath = `/u/${encodeURIComponent(user.id)}`;
+  const profileUrl = absoluteUrl(c, profilePath);
   return c.html(renderProfilePage({
     id: user.id,
     email: user.email,
     fullName: user.full_name,
     identity: parseJson<Record<string, unknown>>(user.identity_data, {}),
+    profileUrl,
+    qrSvg: await renderProfileQrSvg(profileUrl),
+    qrDownloadUrl: `${profilePath}/qr.svg`,
   }));
+});
+
+app.get("/u/:userId/qr.svg", async (c) => {
+  const user = await userById(c.env.DB, c.req.param("userId"));
+  if (!user || !user.is_active) fail(404, "User not found");
+  return svgAttachment(await renderProfileQrSvg(absoluteUrl(c, `/u/${encodeURIComponent(user.id)}`)), `pidp-${user.id}-qr.svg`);
 });
 
 app.get("/users/:userId", async (c) => {
@@ -566,6 +591,8 @@ app.get("/sites/:websiteSlug/users/:websiteUserId/profile", async (c) => {
   if (!website) fail(404, "Website not found");
   const websiteUser = await websiteUserById(c.env.DB, website.id, c.req.param("websiteUserId"));
   if (!websiteUser || !websiteUser.is_active) fail(404, "Website user not found");
+  const profilePath = `/sites/${encodeURIComponent(website.slug)}/users/${encodeURIComponent(websiteUser.id)}/profile`;
+  const profileUrl = absoluteUrl(c, profilePath);
   return c.html(renderProfilePage({
     id: websiteUser.id,
     email: websiteUser.email,
@@ -573,7 +600,19 @@ app.get("/sites/:websiteSlug/users/:websiteUserId/profile", async (c) => {
     identity: parseJson<Record<string, unknown>>(websiteUser.identity_data, {}),
     schema: schemaWithSystemFields(parseJson<Record<string, WebsiteSchemaField>>(website.user_schema, SYSTEM_SCHEMA_FIELDS)),
     titleSuffix: website.name,
+    profileUrl,
+    qrSvg: await renderProfileQrSvg(profileUrl),
+    qrDownloadUrl: `${profilePath}/qr.svg`,
   }));
+});
+
+app.get("/sites/:websiteSlug/users/:websiteUserId/profile/qr.svg", async (c) => {
+  const website = await websiteBySlug(c.env.DB, normalizeSlug(c.req.param("websiteSlug")));
+  if (!website) fail(404, "Website not found");
+  const websiteUser = await websiteUserById(c.env.DB, website.id, c.req.param("websiteUserId"));
+  if (!websiteUser || !websiteUser.is_active) fail(404, "Website user not found");
+  const profilePath = `/sites/${encodeURIComponent(website.slug)}/users/${encodeURIComponent(websiteUser.id)}/profile`;
+  return svgAttachment(await renderProfileQrSvg(absoluteUrl(c, profilePath)), `pidp-${website.slug}-${websiteUser.id}-qr.svg`);
 });
 
 app.post("/auth/avatar/upload-url", async (c) => {

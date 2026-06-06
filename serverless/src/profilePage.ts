@@ -1,5 +1,6 @@
 import type { WebsiteSchemaField } from "./types";
 import { PROFILE_LINK_FIELDS, SYSTEM_SCHEMA_FIELDS, schemaWithSystemFields } from "./normalize";
+import QRCode from "qrcode";
 
 const INTERNAL_PROFILE_FIELDS = new Set([
   "sub",
@@ -70,6 +71,22 @@ export interface ProfilePageInput {
   identity: Record<string, unknown>;
   schema?: Record<string, WebsiteSchemaField>;
   titleSuffix?: string;
+  profileUrl?: string;
+  qrSvg?: string;
+  qrDownloadUrl?: string;
+}
+
+export async function renderProfileQrSvg(profileUrl: string): Promise<string> {
+  return QRCode.toString(profileUrl, {
+    type: "svg",
+    errorCorrectionLevel: "M",
+    margin: 2,
+    width: 224,
+    color: {
+      dark: "#18201f",
+      light: "#ffffff",
+    },
+  });
 }
 
 function escapeHtml(value: unknown): string {
@@ -154,6 +171,8 @@ export function renderProfilePage(input: ProfilePageInput): string {
   const links = collectLinks(identity);
   const info = collectInfo(identity, schema);
   const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "P";
+  const qrDownloadUrl = input.qrDownloadUrl || "";
+  const qrSvg = input.qrSvg || "";
 
   const contactHtml = contacts.map((item) => `
         <a class="link contact" href="${escapeHtml(item.href)}">
@@ -170,6 +189,17 @@ export function renderProfilePage(input: ProfilePageInput): string {
           <span>${escapeHtml(item.label)}</span>
           <strong>${escapeHtml(item.value)}</strong>
         </div>`).join("");
+  const qrHtml = input.profileUrl && qrSvg ? `
+      <section class="qr-section">
+        <h2>QR Code</h2>
+        <div class="qr-card">
+          <div class="qr-image" aria-label="QR code for ${escapeHtml(displayName)}">${qrSvg}</div>
+          <div class="qr-actions">
+            <strong>${escapeHtml(displayName)}</strong>
+            <a class="qr-download" href="${escapeHtml(qrDownloadUrl)}" download>Download SVG</a>
+          </div>
+        </div>
+      </section>` : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -195,6 +225,13 @@ export function renderProfilePage(input: ProfilePageInput): string {
     .link:hover { border-color: rgba(15,118,110,.44); transform: translateY(-1px); }
     .link span, .info-row span { flex: 0 0 auto; color: var(--muted); font-size: .92rem; }
     .link strong, .info-row strong { min-width: 0; overflow-wrap: anywhere; text-align: right; font-size: .98rem; }
+    .qr-card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.82); box-shadow: 0 1px 0 rgba(24,32,31,.04); }
+    .qr-image { width: 132px; height: 132px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .qr-image svg { display: block; width: 100%; height: 100%; }
+    .qr-actions { min-width: 0; display: grid; gap: 10px; justify-items: start; }
+    .qr-actions strong { overflow-wrap: anywhere; }
+    .qr-download { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 10px 14px; border: 1px solid rgba(15,118,110,.36); border-radius: 8px; background: #fff; color: var(--accent); font-weight: 700; text-decoration: none; }
+    .qr-download:hover { border-color: rgba(15,118,110,.62); background: rgba(15,118,110,.08); }
     .empty { padding: 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; background: rgba(255,255,255,.58); }
     footer { margin-top: 34px; text-align: center; color: var(--muted); font-size: .82rem; }
     @media (max-width: 560px) {
@@ -202,6 +239,8 @@ export function renderProfilePage(input: ProfilePageInput): string {
       .avatar { width: 92px; height: 92px; border-radius: 22px; }
       .link, .info-row { align-items: flex-start; flex-direction: column; min-height: 76px; }
       .link strong, .info-row strong { text-align: left; }
+      .qr-card { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+      .qr-actions { justify-items: center; }
     }
   </style>
 </head>
@@ -214,6 +253,7 @@ export function renderProfilePage(input: ProfilePageInput): string {
     </header>
     ${contacts.length ? `<section><h2>Contact</h2>${contactHtml}</section>` : ""}
     ${links.length ? `<section><h2>Links</h2>${linkHtml}</section>` : ""}
+    ${qrHtml}
     ${info.length ? `<section><h2>Info</h2>${infoHtml}</section>` : ""}
     ${!contacts.length && !links.length && !info.length ? `<div class="empty">No public profile details have been added yet.</div>` : ""}
     <footer>Powered by PIdP</footer>
