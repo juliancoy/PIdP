@@ -251,8 +251,9 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   const returnedState = url.searchParams.get("state") || "";
   const cookieState = getCookie(c, COOKIE_NAME);
   deleteCookie(c, COOKIE_NAME, { path: "/" });
-  if (!code || !returnedState || returnedState !== cookieState) fail(400, `${provider} sign-in session expired. Please try again.`);
-  const state = await decodeState(c.env, cookieState);
+  if (!code || !returnedState) fail(400, `${provider} sign-in session expired. Please try again.`);
+  if (cookieState && returnedState !== cookieState) fail(400, `${provider} sign-in session expired. Please try again.`);
+  const state = await decodeState(c.env, cookieState || returnedState);
   if (state.provider !== provider) fail(400, `${provider} sign-in session expired. Please try again.`);
 
   const accessToken = await exchangeCode(c.env, cfg.provider, code, callbackUri(c, cfg.provider, cfg.redirectUri));
