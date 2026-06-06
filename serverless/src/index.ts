@@ -16,6 +16,7 @@ const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
   org_mcp: ["org:mcp.use", "org:profile.read", "org:events.read"],
   org_admin: ["org:*", "org:admin.read", "org:admin.write", "org:mcp.use"],
 };
+const SESSION_COOKIE = "pidp_session";
 
 app.use("*", async (c, next) => {
   const allowed = (c.env.ALLOWED_ORIGINS || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -27,6 +28,87 @@ app.onError((error, c) => jsonError(c, error));
 
 function json<T>(value: T): string {
   return JSON.stringify(value);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[char] || char);
+}
+
+function cookieValue(c: { req: { header(name: string): string | undefined } }, name: string): string | null {
+  const raw = c.req.header("Cookie") || "";
+  for (const part of raw.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
+function setSessionCookie(headers: Headers, token: string, maxAgeSeconds: number) {
+  headers.append(
+    "set-cookie",
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Lax`,
+  );
+}
+
+function clearSessionCookie(headers: Headers) {
+  headers.append("set-cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+}
+
+function redirectWithToken(next: string, token: string, headers = new Headers()): Response {
+  const fallback = "/";
+  let target = next || fallback;
+  try {
+    target = new URL(target).toString();
+  } catch {
+    target = target.startsWith("/") ? target : fallback;
+  }
+  const separator = target.includes("#") ? "&" : "#";
+  headers.set("location", `${target}${separator}token=${encodeURIComponent(token)}`);
+  return new Response(null, { status: 303, headers });
+}
+
+function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean }) {
+  const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
+  const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
+  const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
+  const title = params.ownerMode ? `${params.appName} Owner Login` : `${params.appName} Login`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; color: #111827; }
+    main { width: min(100% - 32px, 420px); background: #fff; border: 1px solid #d7dce3; border-radius: 8px; padding: 24px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08); }
+    h1 { font-size: 1.4rem; margin: 0 0 16px; }
+    label { display: grid; gap: 6px; font-size: 0.92rem; margin: 12px 0; }
+    input { font: inherit; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; }
+    button { width: 100%; margin-top: 12px; padding: 10px 12px; border: 0; border-radius: 6px; background: #111827; color: #fff; font: inherit; cursor: pointer; }
+    .error { color: #b42318; background: #fff1f0; border: 1px solid #ffccc7; padding: 10px 12px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(title)}</h1>
+    ${error}
+    <form method="post" action="/app/login">
+      ${appField}
+      ${ownerField}
+      <input type="hidden" name="next" value="${escapeHtml(params.next)}">
+      <label>Email <input name="email" type="email" autocomplete="email" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Log in</button>
+    </form>
+  </main>
+</body>
+</html>`;
 }
 
 function isSysadmin(env: Env, user: UserRow): boolean {
@@ -232,6 +314,70 @@ app.post("/auth/token", async (c) => {
   return c.json({ access_token: await createOwnerToken(c.env, user), token_type: "bearer" });
 });
 
+app.get("/app/login", async (c) => {
+  const url = new URL(c.req.url);
+  const appParam = url.searchParams.get("app") || "";
+  const appSlug = appParam ? normalizeSlug(appParam) : "";
+  const appName = c.env.APP_NAME || "PIdP";
+  const ownerMode = Boolean(url.searchParams.get("owner"));
+  const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
+  if (url.searchParams.get("auto") && (c.env.GOOGLE_CLIENT_ID || c.env.GITHUB_CLIENT_ID)) {
+    const provider = c.env.GOOGLE_CLIENT_ID ? "google" : "github";
+    const redirect = new URL(`/auth/${provider}/login`, url.origin);
+    redirect.searchParams.set("next", next);
+    if (ownerMode) redirect.searchParams.set("owner", "1");
+    else if (appSlug) redirect.searchParams.set("app", appSlug);
+    return c.redirect(redirect.toString(), 303);
+  }
+  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode }));
+});
+
+app.get("/app/login/", (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = "/app/login";
+  return c.redirect(url.toString(), 301);
+});
+
+app.post("/app/login", async (c) => {
+  const form = await c.req.parseBody();
+  const email = String(form.email || "").trim().toLowerCase();
+  const password = String(form.password || "");
+  const appParam = String(form.app || "");
+  const appSlug = appParam ? normalizeSlug(appParam) : "";
+  const appName = c.env.APP_NAME || "PIdP";
+  const ownerMode = Boolean(form.owner);
+  const next = String(form.next || c.env.FRONTEND_REDIRECT_URL || "/");
+  if (!email || !password) {
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "Email and password are required." }), 422);
+  }
+
+  if (!ownerMode && appSlug) {
+    const website = await websiteBySlug(c.env.DB, appSlug);
+    if (website) {
+      const websiteUser = await websiteUserByEmail(c.env.DB, website.id, email);
+      if (!websiteUser || !(await verifyPassword(password, websiteUser.hashed_password))) {
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "Invalid credentials." }), 401);
+      }
+      if (!websiteUser.is_active) {
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "This account is inactive." }), 403);
+      }
+      const token = await createWebsiteUserToken(c.env, websiteUser);
+      const headers = new Headers();
+      setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+      return redirectWithToken(next, token, headers);
+    }
+  }
+
+  const user = await userByEmail(c.env.DB, email);
+  if (!user || !(await verifyPassword(password, user.hashed_password))) {
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "Invalid credentials." }), 401);
+  }
+  const token = await createOwnerToken(c.env, user);
+  const headers = new Headers();
+  setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  return redirectWithToken(next, token, headers);
+});
+
 app.get("/auth/me", async (c) => {
   const token = bearerToken(c);
   const payload = await verifyJwt(c.env, token);
@@ -270,11 +416,32 @@ app.post("/auth/session/exchange", async (c) => {
   const rotated = payload.actor_type === "website_user"
     ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
     : await createOwnerToken(c.env, await currentOwner(c.env, token));
-  return c.json({ access_token: rotated, token_type: "bearer" });
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
+  setSessionCookie(headers, rotated, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
 });
 
-app.get("/auth/session-token", () => {
-  fail(501, "Cookie session exchange is not implemented in the serverless base layer");
+app.post("/auth/session/login", async (c) => {
+  const { username, password } = await formCredentials(c);
+  const user = await userByEmail(c.env.DB, username);
+  if (!user || !(await verifyPassword(password, user.hashed_password))) fail(401, "Invalid credentials");
+  const token = await createOwnerToken(c.env, user);
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
+  setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
+});
+
+app.post("/auth/session/logout", (c) => {
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
+  clearSessionCookie(headers);
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+});
+
+app.get("/auth/session-token", async (c) => {
+  const token = cookieValue(c, SESSION_COOKIE);
+  if (!token) fail(401, "No active session");
+  await verifyJwt(c.env, token);
+  return c.json({ access_token: token, token_type: "bearer" });
 });
 
 app.post("/auth/tokens", async (c) => {

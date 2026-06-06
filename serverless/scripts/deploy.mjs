@@ -11,16 +11,61 @@ export function parseArgs(argv) {
   return {
     checkOnly: argv.includes("--check-only"),
     skipMigrations: argv.includes("--skip-migrations"),
+    skipStatus: argv.includes("--skip-status"),
     dryRun: argv.includes("--dry-run"),
   };
 }
 
 export function readWranglerConfig(root = ROOT) {
   const configPath = path.join(root, "wrangler.jsonc");
-  const raw = readFileSync(configPath, "utf8")
-    .replace(/\/\/.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const raw = stripJsoncComments(readFileSync(configPath, "utf8"));
   return JSON.parse(raw);
+}
+
+export function stripJsoncComments(raw) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    const next = raw[index + 1];
+
+    if (inString) {
+      output += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      output += char;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      while (index < raw.length && raw[index] !== "\n") index += 1;
+      output += "\n";
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      index += 2;
+      while (index < raw.length && !(raw[index] === "*" && raw[index + 1] === "/")) index += 1;
+      index += 1;
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
 }
 
 export function parseEnvFile(raw) {
@@ -79,7 +124,8 @@ export function plannedCommands(options) {
   ];
   if (options.checkOnly) return status;
 
-  const commands = [["typecheck", "npm run typecheck"], ...status];
+  const commands = [["typecheck", "npm run typecheck"]];
+  if (!options.skipStatus) commands.push(...status);
   if (!options.skipMigrations) commands.push(["d1-migrate", "wrangler d1 migrations apply pidp --remote"]);
   commands.push(["deploy", options.dryRun ? "wrangler deploy --dry-run" : "wrangler deploy"]);
   return commands;
@@ -122,6 +168,10 @@ export function main(argv = process.argv.slice(2)) {
     console.log(`\n==> ${label}: ${command}`);
     const result = runShell(command, env);
     if (result.status !== 0) {
+      if (label === "deployments") {
+        console.warn("Deployment history is unavailable; continuing because this may be the first deployment for this Worker.");
+        continue;
+      }
       console.error(`Command failed: ${command}`);
       return result.status || 1;
     }
