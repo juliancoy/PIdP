@@ -3,7 +3,7 @@ import type { Context } from "hono";
 import type { Env, SocialProfile, WebsiteRow, WebsiteSchemaField } from "./types";
 import { first, nowIso, parseJson, websiteBySlug } from "./db";
 import { fail } from "./http";
-import { signJwt } from "./crypto";
+import { sha256Hex, signJwt } from "./crypto";
 import { SYSTEM_SCHEMA_FIELDS, normalizeHost, normalizeSlug, schemaWithSystemFields, validateIdentityData } from "./normalize";
 
 type Provider = "google" | "github";
@@ -53,6 +53,20 @@ async function decodeState(env: Env, value: string | undefined): Promise<OAuthSt
   const state = JSON.parse(dec.decode(fromBase64Url(body))) as OAuthState;
   if (!state.exp || state.exp < Math.floor(Date.now() / 1000)) fail(400, "OAuth sign-in session expired. Please try again.");
   return state;
+}
+
+async function storeOAuthState(env: Env, state: OAuthState, stateValue: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM oauth_states WHERE expires_at < ? OR consumed_at IS NOT NULL").bind(Math.floor(Date.now() / 1000)).run();
+  await env.DB.prepare(
+    "INSERT INTO oauth_states (id, provider, nonce_hash, state_hash, expires_at) VALUES (?, ?, ?, ?, ?)",
+  ).bind(crypto.randomUUID(), state.provider, await sha256Hex(state.nonce), await sha256Hex(stateValue), state.exp).run();
+}
+
+async function consumeOAuthState(env: Env, state: OAuthState, stateValue: string): Promise<void> {
+  const result = await env.DB.prepare(
+    "UPDATE oauth_states SET consumed_at = ? WHERE provider = ? AND nonce_hash = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at >= ?",
+  ).bind(nowIso(), state.provider, await sha256Hex(state.nonce), await sha256Hex(stateValue), Math.floor(Date.now() / 1000)).run();
+  if (!result.meta?.changes) fail(400, `${state.provider} sign-in session expired. Please try again.`);
 }
 
 function truthy(value: string | undefined): boolean {
@@ -230,6 +244,7 @@ export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Respons
     exp: Math.floor(Date.now() / 1000) + 20 * 60,
   };
   const stateValue = await encodeState(c.env, state);
+  await storeOAuthState(c.env, state, stateValue);
   setCookie(c, COOKIE_NAME, stateValue, { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: 20 * 60 });
 
   const authorize = new URL(cfg.authorizeUrl);
@@ -255,6 +270,7 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   if (cookieState && returnedState !== cookieState) fail(400, `${provider} sign-in session expired. Please try again.`);
   const state = await decodeState(c.env, cookieState || returnedState);
   if (state.provider !== provider) fail(400, `${provider} sign-in session expired. Please try again.`);
+  await consumeOAuthState(c.env, state, returnedState);
 
   const accessToken = await exchangeCode(c.env, cfg.provider, code, callbackUri(c, cfg.provider, cfg.redirectUri));
   const profile = await fetchSocialProfile(cfg.provider, accessToken);
