@@ -3,18 +3,19 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadCloudflareEnv, parseArgs, parseEnvFile, plannedCommands, validateConfig } from "../scripts/deploy.mjs";
+import { loadCloudflareEnv, parseArgs, parseEnvFile, plannedCommands, readWranglerConfig, stripJsoncComments, validateConfig } from "../scripts/deploy.mjs";
 
 test("parseArgs recognizes status and dry-run flags", () => {
-  assert.deepEqual(parseArgs(["--check-only", "--dry-run"]), {
+  assert.deepEqual(parseArgs(["--check-only", "--dry-run", "--skip-status"]), {
     checkOnly: true,
     skipMigrations: false,
+    skipStatus: true,
     dryRun: true,
   });
 });
 
 test("check-only plan only runs status commands", () => {
-  const commands = plannedCommands({ checkOnly: true, skipMigrations: false, dryRun: false }).map((item) => item[1]);
+  const commands = plannedCommands({ checkOnly: true, skipMigrations: false, skipStatus: false, dryRun: false }).map((item) => item[1]);
   assert.deepEqual(commands, [
     "wrangler whoami",
     "wrangler d1 list",
@@ -24,16 +25,21 @@ test("check-only plan only runs status commands", () => {
 });
 
 test("deploy plan typechecks, checks status, migrates, and deploys", () => {
-  const commands = plannedCommands({ checkOnly: false, skipMigrations: false, dryRun: false }).map((item) => item[1]);
+  const commands = plannedCommands({ checkOnly: false, skipMigrations: false, skipStatus: false, dryRun: false }).map((item) => item[1]);
   assert.equal(commands[0], "npm run typecheck");
   assert.ok(commands.includes("wrangler d1 migrations apply pidp --remote"));
   assert.equal(commands.at(-1), "wrangler deploy");
 });
 
 test("deploy plan supports dry-run and skipping migrations", () => {
-  const commands = plannedCommands({ checkOnly: false, skipMigrations: true, dryRun: true }).map((item) => item[1]);
+  const commands = plannedCommands({ checkOnly: false, skipMigrations: true, skipStatus: false, dryRun: true }).map((item) => item[1]);
   assert.equal(commands.at(-1), "wrangler deploy --dry-run");
   assert.equal(commands.includes("wrangler d1 migrations apply pidp --remote"), false);
+});
+
+test("deploy plan can skip Cloudflare status checks", () => {
+  const commands = plannedCommands({ checkOnly: false, skipMigrations: true, skipStatus: true, dryRun: true }).map((item) => item[1]);
+  assert.deepEqual(commands, ["npm run typecheck", "wrangler deploy --dry-run"]);
 });
 
 test("validateConfig catches placeholder D1 ids", () => {
@@ -42,6 +48,34 @@ test("validateConfig catches placeholder D1 ids", () => {
     r2_buckets: [{ bucket_name: "pidp-avatars" }],
   });
   assert.deepEqual(problems, ["Set d1_databases[0].database_id in wrangler.jsonc."]);
+});
+
+test("readWranglerConfig preserves URLs while removing comments", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "pidp-config-"));
+  try {
+    writeFileSync(path.join(root, "wrangler.jsonc"), `{
+      // comments should be ignored
+      "vars": {
+        "ALLOWED_ORIGINS": "https://app.example.com,https://www.example.com",
+        "FRONTEND_REDIRECT_URL": "https://app.example.com/p/auth/callback"
+      },
+      "d1_databases": [{ "binding": "DB", "database_name": "pidp", "database_id": "abc" }],
+      "r2_buckets": [{ "binding": "AVATARS", "bucket_name": "pidp-avatars" }]
+    }`);
+    const config = readWranglerConfig(root);
+    assert.equal(config.vars.ALLOWED_ORIGINS, "https://app.example.com,https://www.example.com");
+    assert.equal(config.vars.FRONTEND_REDIRECT_URL, "https://app.example.com/p/auth/callback");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stripJsoncComments keeps comment markers inside strings", () => {
+  const raw = `{"url":"https://id.example.com/*","value":"literal /* marker */"} // remove`;
+  assert.deepEqual(JSON.parse(stripJsoncComments(raw)), {
+    url: "https://id.example.com/*",
+    value: "literal /* marker */",
+  });
 });
 
 test("parseEnvFile reads CLOUDFLARE_API_TOKEN without surrounding quotes", () => {
