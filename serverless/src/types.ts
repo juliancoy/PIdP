@@ -13,6 +13,7 @@ export interface Env {
   ADMIN_USER_IDS?: string;
   SMOKE_TEST_SECRET?: string;
   PUBLIC_R2_BASE_URL?: string;
+  PUBLIC_BASE_URL?: string;
   FRONTEND_REDIRECT_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;

@@ -102,6 +102,8 @@ function providerConfig(env: Env, provider: string) {
 }
 
 function requestBase(c: Context<{ Bindings: Env }>): string {
+  const configured = c.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/g, "");
+  if (configured) return configured;
   const url = new URL(c.req.url);
   return `${url.protocol}//${url.host}`;
 }
