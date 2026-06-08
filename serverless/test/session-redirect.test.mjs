@@ -17,3 +17,13 @@ test("native app login redirects keep the explicit deep-link token handoff", () 
   assert.match(source, /allowedNativeRedirect\(env,\s*target\)/);
   assert.match(source, /new URLSearchParams\(\{\s*token,\s*token_type:\s*"bearer"\s*\}\)/);
 });
+
+test("browser sessions can be scoped to the parent portal domain", () => {
+  const source = readFileSync(path.join(import.meta.dirname, "../src/index.ts"), "utf8");
+  const oauthSource = readFileSync(path.join(import.meta.dirname, "../src/oauth.ts"), "utf8");
+
+  assert.match(source, /SESSION_COOKIE_DOMAIN/);
+  assert.match(source, /Domain=\$\{domain\}/);
+  assert.match(oauthSource, /SESSION_COOKIE_DOMAIN/);
+  assert.match(oauthSource, /\.\.\.\(domain \? \{ domain \} : \{\}\)/);
+});

@@ -70,15 +70,26 @@ function cookieValue(c: { req: { header(name: string): string | undefined } }, n
   return null;
 }
 
-function setSessionCookie(headers: Headers, token: string, maxAgeSeconds: number) {
+function sessionCookieDomain(env: Env): string {
+  return String(env.SESSION_COOKIE_DOMAIN || "").trim().replace(/^Domain=/i, "").replace(/;.*$/g, "");
+}
+
+function setSessionCookie(headers: Headers, env: Env, token: string, maxAgeSeconds: number) {
+  const domain = sessionCookieDomain(env);
+  const domainPart = domain ? `; Domain=${domain}` : "";
   headers.append(
     "set-cookie",
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Lax`,
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}${domainPart}; HttpOnly; Secure; SameSite=Lax`,
   );
 }
 
-function clearSessionCookie(headers: Headers) {
+function clearSessionCookie(headers: Headers, env: Env) {
+  const domain = sessionCookieDomain(env);
+  const domainPart = domain ? `; Domain=${domain}` : "";
   headers.append("set-cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+  if (domainPart) {
+    headers.append("set-cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0${domainPart}; HttpOnly; Secure; SameSite=Lax`);
+  }
 }
 
 function allowedNativeRedirect(env: Env, target: string): boolean {
@@ -430,7 +441,7 @@ app.post("/app/login", async (c) => {
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
-      setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+      setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
       return redirectWithSession(c.env, next, token, headers);
     }
   }
@@ -441,7 +452,7 @@ app.post("/app/login", async (c) => {
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
-  setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
   return redirectWithSession(c.env, next, token, headers);
 });
 
@@ -484,7 +495,7 @@ app.post("/auth/session/exchange", async (c) => {
     ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
     : await createOwnerToken(c.env, await currentOwner(c.env, token));
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, rotated, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, rotated, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
   return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
 });
 
@@ -494,13 +505,13 @@ app.post("/auth/session/login", async (c) => {
   if (!user || !(await verifyPassword(password, user.hashed_password))) fail(401, "Invalid credentials");
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
   return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 
 app.post("/auth/session/logout", (c) => {
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  clearSessionCookie(headers);
+  clearSessionCookie(headers, c.env);
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
 });
 
@@ -523,7 +534,7 @@ app.post("/auth/smoke-token", async (c) => {
   if (!user || !user.is_active) fail(404, "Smoke user not found");
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
   return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 
