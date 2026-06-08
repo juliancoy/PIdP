@@ -81,16 +81,50 @@ function clearSessionCookie(headers: Headers) {
   headers.append("set-cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
 }
 
-function redirectWithToken(next: string, token: string, headers = new Headers()): Response {
-  const fallback = "/";
-  let target = next || fallback;
+function allowedNativeRedirect(env: Env, target: string): boolean {
+  let parsed: URL;
   try {
-    target = new URL(target).toString();
+    parsed = new URL(target);
   } catch {
-    target = target.startsWith("/") ? target : fallback;
+    return false;
   }
-  const separator = target.includes("#") ? "&" : "#";
-  headers.set("location", `${target}${separator}token=${encodeURIComponent(token)}`);
+  const scheme = parsed.protocol.replace(/:$/g, "").toLowerCase();
+  if (!scheme || scheme === "http" || scheme === "https") return false;
+  const allowed = (env.NATIVE_REDIRECT_SCHEMES || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase().replace(/:$/g, ""))
+    .filter(Boolean);
+  return allowed.includes(scheme);
+}
+
+function sameOrigin(rawTarget: string, rawOrigin: string | undefined): boolean {
+  if (!rawOrigin) return false;
+  try {
+    const target = new URL(rawTarget);
+    const origin = new URL(rawOrigin);
+    return target.origin === origin.origin;
+  } catch {
+    return false;
+  }
+}
+
+function redirectTarget(env: Env, next: string): string {
+  const fallback = env.FRONTEND_REDIRECT_URL || "/";
+  const target = next.trim() || fallback;
+  if (target.startsWith("/")) return target;
+  if (allowedNativeRedirect(env, target)) return target;
+  if (sameOrigin(target, env.FRONTEND_REDIRECT_URL) || sameOrigin(target, env.PUBLIC_BASE_URL)) return target;
+  return fallback;
+}
+
+function redirectWithSession(env: Env, next: string, token: string, headers = new Headers()): Response {
+  const target = redirectTarget(env, next);
+  if (allowedNativeRedirect(env, target)) {
+    const separator = target.includes("#") ? "&" : "#";
+    headers.set("location", `${target}${separator}${new URLSearchParams({ token, token_type: "bearer" }).toString()}`);
+  } else {
+    headers.set("location", target);
+  }
   return new Response(null, { status: 303, headers });
 }
 
@@ -397,7 +431,7 @@ app.post("/app/login", async (c) => {
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
       setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
-      return redirectWithToken(next, token, headers);
+      return redirectWithSession(c.env, next, token, headers);
     }
   }
 
@@ -408,7 +442,7 @@ app.post("/app/login", async (c) => {
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
   setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
-  return redirectWithToken(next, token, headers);
+  return redirectWithSession(c.env, next, token, headers);
 });
 
 app.get("/auth/me", async (c) => {
