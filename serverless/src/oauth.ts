@@ -162,6 +162,53 @@ function socialIdentityPayload(profile: SocialProfile, schemaFields: Record<stri
   return validateIdentityData(payload, schemaFields);
 }
 
+function socialRawWithoutAvatar(profile: SocialProfile): Record<string, unknown> {
+  const raw = { ...(profile.raw || {}) };
+  delete raw.picture;
+  delete raw.avatar_url;
+  return raw;
+}
+
+function imageExtension(contentType: string): string {
+  const normalized = contentType.toLowerCase().split(";")[0].trim();
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  return "png";
+}
+
+async function storeSocialAvatar(env: Env, userId: string, provider: Provider, avatarUrl: string | null, publicOrigin: string): Promise<Record<string, unknown>> {
+  if (!avatarUrl) return {};
+  if (!env.AVATARS) {
+    return {
+      avatar_url: avatarUrl,
+      avatar_source: `${provider}-external`,
+    };
+  }
+
+  try {
+    const resp = await fetch(avatarUrl);
+    if (!resp.ok || !resp.body) throw new Error(`avatar fetch failed (${resp.status})`);
+    const contentType = resp.headers.get("content-type") || "image/png";
+    const objectKey = `avatars/${userId}/${crypto.randomUUID()}.${imageExtension(contentType)}`;
+    await env.AVATARS.put(objectKey, resp.body, {
+      httpMetadata: { contentType },
+    });
+    const publicBase = (env.PUBLIC_R2_BASE_URL || publicOrigin).replace(/\/+$/g, "");
+    return {
+      avatar_url: `${publicBase}/${objectKey}`,
+      avatar_object_key: objectKey,
+      avatar_source: provider,
+    };
+  } catch (error) {
+    console.error("OAuth avatar storage failed", { provider, userId, error });
+    return {
+      avatar_url: avatarUrl,
+      avatar_source: `${provider}-external`,
+    };
+  }
+}
+
 async function findWebsiteFromHost(env: Env, host: string | null): Promise<WebsiteRow | null> {
   if (!host) return null;
   const rows = await env.DB.prepare("SELECT * FROM websites ORDER BY created_at").all<WebsiteRow>();
@@ -173,12 +220,7 @@ async function findWebsiteFromHost(env: Env, host: string | null): Promise<Websi
 
 async function exchangeCode(env: Env, provider: Provider, code: string, redirectUri: string): Promise<string> {
   const cfg = providerConfig(env, provider);
-  const body = new URLSearchParams({
-    client_id: cfg.clientId,
-    client_secret: cfg.clientSecret,
-    code,
-    redirect_uri: redirectUri,
-  });
+  const body = tokenExchangeBody(cfg.clientId, cfg.clientSecret, code, redirectUri);
   const resp = await fetch(cfg.tokenUrl, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
@@ -188,6 +230,16 @@ async function exchangeCode(env: Env, provider: Provider, code: string, redirect
   const accessToken = String(data.access_token || "");
   if (!resp.ok || !accessToken) fail(400, `${provider} sign-in failed. Please try again.`);
   return accessToken;
+}
+
+function tokenExchangeBody(clientId: string, clientSecret: string, code: string, redirectUri: string): URLSearchParams {
+  return new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    redirect_uri: redirectUri,
+    grant_type: "authorization_code",
+  });
 }
 
 async function fetchSocialProfile(provider: Provider, accessToken: string): Promise<SocialProfile> {
@@ -283,15 +335,28 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   }
 
   if (loginWebsite) {
-    let websiteUser = await first<{ id: string }>(c.env.DB.prepare(
+    let websiteUser = await first<{ id: string; identity_data: string }>(c.env.DB.prepare(
       "SELECT * FROM website_users WHERE website_id = ? AND provider = ? AND provider_account_id = ?",
     ).bind(loginWebsite.id, provider, profile.provider_account_id));
     if (!websiteUser) {
-      websiteUser = await first<{ id: string }>(c.env.DB.prepare("SELECT * FROM website_users WHERE website_id = ? AND lower(email) = lower(?)").bind(loginWebsite.id, profile.email));
+      websiteUser = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM website_users WHERE website_id = ? AND lower(email) = lower(?)").bind(loginWebsite.id, profile.email));
     }
     const schema = schemaWithSystemFields(parseJson<Record<string, WebsiteSchemaField>>(loginWebsite.user_schema, SYSTEM_SCHEMA_FIELDS));
     const identity = socialIdentityPayload(profile, schema);
     const id = websiteUser?.id || crypto.randomUUID();
+    const existingIdentity = websiteUser ? parseJson<Record<string, unknown>>(websiteUser.identity_data, {}) : {};
+    const existingAvatarUrl = typeof existingIdentity.avatar_url === "string" ? existingIdentity.avatar_url : "";
+    const existingAvatarKey = typeof existingIdentity.avatar_object_key === "string" ? existingIdentity.avatar_object_key : "";
+    if ("avatar_url" in schema) {
+      if (existingAvatarKey) {
+        identity.avatar_object_key = existingAvatarKey;
+        if (existingAvatarUrl) identity.avatar_url = existingAvatarUrl;
+      } else if (profile.avatar_url) {
+        Object.assign(identity, await storeSocialAvatar(c.env, id, provider, profile.avatar_url, requestBase(c)));
+      } else if (existingAvatarUrl) {
+        identity.avatar_url = existingAvatarUrl;
+      }
+    }
     if (websiteUser) {
       await c.env.DB.prepare(
         "UPDATE website_users SET email = ?, full_name = ?, provider = ?, provider_account_id = ?, identity_data = ?, is_active = 1 WHERE id = ?",
@@ -308,8 +373,18 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   let user = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM users WHERE provider = ? AND provider_account_id = ?").bind(provider, profile.provider_account_id));
   if (!user) user = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").bind(profile.email));
   const id = user?.id || crypto.randomUUID();
-  const identity = { ...(user ? parseJson<Record<string, unknown>>(user.identity_data, {}) : {}), ...profile.raw };
-  if (profile.avatar_url && !identity.avatar_url) identity.avatar_url = profile.avatar_url;
+  const existingIdentity = user ? parseJson<Record<string, unknown>>(user.identity_data, {}) : {};
+  const existingAvatarUrl = typeof existingIdentity.avatar_url === "string" ? existingIdentity.avatar_url : "";
+  const existingAvatarKey = typeof existingIdentity.avatar_object_key === "string" ? existingIdentity.avatar_object_key : "";
+  const identity = { ...existingIdentity, ...socialRawWithoutAvatar(profile) };
+  if (existingAvatarKey) {
+    identity.avatar_object_key = existingAvatarKey;
+    if (existingAvatarUrl) identity.avatar_url = existingAvatarUrl;
+  } else if (profile.avatar_url) {
+    Object.assign(identity, await storeSocialAvatar(c.env, id, provider, profile.avatar_url, requestBase(c)));
+  } else if (existingAvatarUrl) {
+    identity.avatar_url = existingAvatarUrl;
+  }
   if (user) {
     await c.env.DB.prepare("UPDATE users SET email = ?, full_name = ?, provider = ?, provider_account_id = ?, identity_data = ? WHERE id = ?")
       .bind(profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), id).run();

@@ -80,10 +80,7 @@
                     <label for="state">State</label>
                     <input id="state" name="state" type="text" value="{{ profile_fields.state }}">
                 </div>
-                <div class="field">
-                    <label for="avatar_url">Avatar URL</label>
-                    <input id="avatar_url" name="avatar_url" type="url" value="{{ profile_fields.avatar_url }}">
-                </div>
+                <input id="avatar_url" name="avatar_url" type="hidden" value="{{ profile_fields.avatar_url }}">
                 <div class="field">
                     <label for="organizations">Organizations</label>
                     <input id="organizations" name="organizations" type="text" value="{{ profile_fields.organizations }}">

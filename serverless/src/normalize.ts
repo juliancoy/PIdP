@@ -49,8 +49,8 @@ export const SYSTEM_SCHEMA_FIELDS: Record<string, Required<WebsiteSchemaField>> 
   avatar_url: {
     type: "string",
     required: false,
-    label: "Avatar URL",
-    description: "Public profile image URL for the website user.",
+    label: "Profile Image",
+    description: "Public profile image for the website user.",
     system: true,
   },
   first_name: {
