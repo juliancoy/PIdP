@@ -6,6 +6,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WRANGLER = process.platform === "win32" ? "npx.cmd" : "npx";
+const REQUIRED_SECRETS = ["SECRET_KEY"];
 
 export function parseArgs(argv) {
   return {
@@ -115,6 +116,63 @@ export function validateConfig(config) {
   return problems;
 }
 
+export function parseSecretNames(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (item && typeof item === "object" && typeof item.name === "string") return item.name;
+          return "";
+        })
+        .filter(Boolean);
+    }
+    if (parsed && typeof parsed === "object") {
+      if (Array.isArray(parsed.secrets)) return parseSecretNames(JSON.stringify(parsed.secrets));
+      return Object.keys(parsed);
+    }
+  } catch {
+    // Fall through to loose parsing for human-readable Wrangler output.
+  }
+
+  return [...new Set(text.split(/[^A-Za-z0-9_]+/).filter((item) => /^[A-Z][A-Z0-9_]*$/.test(item)))];
+}
+
+export function missingRequiredSecrets(secretNames, required = REQUIRED_SECRETS) {
+  const available = new Set(secretNames);
+  return required.filter((name) => !available.has(name));
+}
+
+export function checkRequiredSecrets(env = process.env, required = REQUIRED_SECRETS) {
+  const result = spawnSync(
+    WRANGLER,
+    ["wrangler", "secret", "list", "--format", "json"],
+    { cwd: ROOT, env, encoding: "utf8" },
+  );
+
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      status: result.status || 1,
+      error: result.stderr || result.stdout || "Unable to inspect Worker secrets.",
+      missing: required,
+    };
+  }
+
+  const secretNames = parseSecretNames(result.stdout);
+  const missing = missingRequiredSecrets(secretNames, required);
+  return {
+    ok: missing.length === 0,
+    status: missing.length === 0 ? 0 : 2,
+    missing,
+    secretNames,
+  };
+}
+
 export function plannedCommands(options) {
   const status = [
     ["whoami", "wrangler whoami"],
@@ -162,6 +220,20 @@ export function main(argv = process.argv.slice(2)) {
     console.error("\nConfiguration is not ready for deployment:");
     for (const problem of problems) console.error(`- ${problem}`);
     return 2;
+  }
+
+  if (!options.checkOnly) {
+    console.log("\n==> secret-preflight: wrangler secret list");
+    const secretCheck = checkRequiredSecrets(env);
+    if (!secretCheck.ok) {
+      console.error("\nRequired Worker secrets are not ready for deployment:");
+      for (const secretName of secretCheck.missing || REQUIRED_SECRETS) {
+        console.error(`- Missing Worker secret: ${secretName}`);
+      }
+      if (secretCheck.error) console.error(String(secretCheck.error).trim());
+      console.error("Set missing secrets with: npx wrangler secret put SECRET_KEY");
+      return secretCheck.status || 1;
+    }
   }
 
   for (const [label, command] of plannedCommands(options)) {

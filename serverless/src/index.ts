@@ -518,8 +518,13 @@ app.post("/auth/session/logout", (c) => {
 app.get("/auth/session-token", async (c) => {
   const token = cookieValue(c, SESSION_COOKIE);
   if (!token) fail(401, "No active session");
-  await verifyJwt(c.env, token);
-  return c.json({ access_token: token, token_type: "bearer" });
+  const payload = await verifyJwt(c.env, token);
+  const rotated = payload.actor_type === "website_user"
+    ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
+    : await createOwnerToken(c.env, await currentOwner(c.env, token));
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
+  setSessionCookie(headers, c.env, rotated, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
 });
 
 app.post("/auth/smoke-token", async (c) => {
