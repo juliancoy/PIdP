@@ -34,6 +34,13 @@ function absoluteUrl(c: { req: { url: string } }, path: string): string {
   return new URL(path, c.req.url).toString();
 }
 
+function canonicalBase(c: { env: Env; req: { url: string } }): string {
+  const configured = c.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/g, "");
+  if (configured) return configured;
+  const url = new URL(c.req.url);
+  return `${url.protocol}//${url.host}`;
+}
+
 function svgAttachment(svg: string, filename: string): Response {
   return new Response(svg, {
     headers: {
@@ -349,7 +356,7 @@ app.get("/app/login", async (c) => {
   const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
   if (url.searchParams.get("auto") && (c.env.GOOGLE_CLIENT_ID || c.env.GITHUB_CLIENT_ID)) {
     const provider = c.env.GOOGLE_CLIENT_ID ? "google" : "github";
-    const redirect = new URL(`/auth/${provider}/login`, url.origin);
+    const redirect = new URL(`/auth/${provider}/login`, canonicalBase(c));
     redirect.searchParams.set("next", next);
     if (ownerMode) redirect.searchParams.set("owner", "1");
     else if (appSlug) redirect.searchParams.set("app", appSlug);

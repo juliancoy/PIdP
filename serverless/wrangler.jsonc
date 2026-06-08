@@ -15,6 +15,7 @@
     "ADMIN_EMAILS": "",
     "ADMIN_USER_IDS": "",
     "PUBLIC_R2_BASE_URL": "",
+    "PUBLIC_BASE_URL": "https://id.codecollective.us",
     "FRONTEND_REDIRECT_URL": "",
     "GOOGLE_REDIRECT_URI": "",
     "GITHUB_REDIRECT_URI": ""
