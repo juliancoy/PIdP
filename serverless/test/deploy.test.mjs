@@ -3,7 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadCloudflareEnv, parseArgs, parseEnvFile, plannedCommands, readWranglerConfig, stripJsoncComments, validateConfig } from "../scripts/deploy.mjs";
+import {
+  loadCloudflareEnv,
+  missingRequiredSecrets,
+  parseArgs,
+  parseEnvFile,
+  parseSecretNames,
+  plannedCommands,
+  readWranglerConfig,
+  stripJsoncComments,
+  validateConfig,
+} from "../scripts/deploy.mjs";
 
 test("parseArgs recognizes status and dry-run flags", () => {
   assert.deepEqual(parseArgs(["--check-only", "--dry-run", "--skip-status"]), {
@@ -95,4 +105,22 @@ test("loadCloudflareEnv reads .env.cloudflare when token is not exported", () =>
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("parseSecretNames reads Wrangler JSON secret list output", () => {
+  const output = JSON.stringify([
+    { name: "SECRET_KEY", type: "secret_text" },
+    { name: "GOOGLE_CLIENT_SECRET", type: "secret_text" },
+  ]);
+  assert.deepEqual(parseSecretNames(output), ["SECRET_KEY", "GOOGLE_CLIENT_SECRET"]);
+});
+
+test("parseSecretNames tolerates human-readable secret list output", () => {
+  const output = "Name\nSECRET_KEY\nGOOGLE_CLIENT_SECRET\n";
+  assert.deepEqual(parseSecretNames(output), ["SECRET_KEY", "GOOGLE_CLIENT_SECRET"]);
+});
+
+test("missingRequiredSecrets requires SECRET_KEY by default", () => {
+  assert.deepEqual(missingRequiredSecrets(["GOOGLE_CLIENT_SECRET"]), ["SECRET_KEY"]);
+  assert.deepEqual(missingRequiredSecrets(["SECRET_KEY"]), []);
 });
