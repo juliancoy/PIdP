@@ -15,6 +15,7 @@ export interface Env {
   PUBLIC_R2_BASE_URL?: string;
   PUBLIC_BASE_URL?: string;
   FRONTEND_REDIRECT_URL?: string;
+  NATIVE_REDIRECT_SCHEMES?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_REDIRECT_URI?: string;
