@@ -25,3 +25,13 @@ test("OAuth redirect targets allow explicit native app schemes", () => {
   assert.match(source, /allowedNativeRedirect/);
   assert.match(source, /allowed\.includes\(scheme\)/);
 });
+
+test("OAuth browser redirects use HTTP-only sessions instead of URL bearer tokens", () => {
+  const source = readFileSync(path.join(import.meta.dirname, "../src/oauth.ts"), "utf8");
+
+  assert.match(source, /SESSION_COOKIE/);
+  assert.match(source, /setLoginSession\(c,\s*token\)/);
+  assert.match(source, /httpOnly:\s*true/);
+  assert.match(source, /secure:\s*true/);
+  assert.doesNotMatch(source, /redirectLocationWithToken/);
+});

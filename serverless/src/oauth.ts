@@ -20,6 +20,7 @@ interface OAuthState {
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const COOKIE_NAME = "pidp_oauth_state";
+const SESSION_COOKIE = "pidp_session";
 
 function base64Url(bytes: ArrayBuffer | Uint8Array): string {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -120,12 +121,6 @@ function callbackUri(c: Context<{ Bindings: Env }>, provider: Provider, configur
   return configured || `${requestBase(c)}/auth/${provider}/callback`;
 }
 
-function redirectLocationWithToken(target: string | undefined, token: string): string {
-  const fallback = target || "/";
-  const separator = fallback.includes("#") ? "&" : "#";
-  return `${fallback}${separator}${new URLSearchParams({ token, token_type: "bearer" }).toString()}`;
-}
-
 function originOf(value: string | undefined): string | null {
   if (!value) return null;
   try {
@@ -134,6 +129,23 @@ function originOf(value: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+function redirectLocationForSession(env: Env, target: string | undefined, token: string): string {
+  const resolved = target || env.FRONTEND_REDIRECT_URL || "/";
+  if (!allowedNativeRedirect(env, resolved)) return resolved;
+  const separator = resolved.includes("#") ? "&" : "#";
+  return `${resolved}${separator}${new URLSearchParams({ token, token_type: "bearer" }).toString()}`;
+}
+
+function setLoginSession(c: Context<{ Bindings: Env }>, token: string) {
+  setCookie(c, SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    path: "/",
+    maxAge: Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60,
+  });
 }
 
 function allowedNativeRedirect(env: Env, target: string): boolean {
@@ -405,7 +417,8 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
       ).bind(id, loginWebsite.id, profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), nowIso()).run();
     }
     const token = await signJwt(c.env, { sub: id, email: profile.email, actor_type: "website_user", website_id: loginWebsite.id });
-    return c.redirect(redirectLocationWithToken(resolveRedirectTarget(c.env, state.next, loginWebsite), token), 303);
+    setLoginSession(c, token);
+    return c.redirect(redirectLocationForSession(c.env, resolveRedirectTarget(c.env, state.next, loginWebsite), token), 303);
   }
 
   let user = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM users WHERE provider = ? AND provider_account_id = ?").bind(provider, profile.provider_account_id));
@@ -432,5 +445,6 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
     ).bind(id, profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), nowIso()).run();
   }
   const token = await signJwt(c.env, { sub: id, email: profile.email });
-  return c.redirect(redirectLocationWithToken(resolveRedirectTarget(c.env, state.next, null), token), 303);
+  setLoginSession(c, token);
+  return c.redirect(redirectLocationForSession(c.env, resolveRedirectTarget(c.env, state.next, null), token), 303);
 }
