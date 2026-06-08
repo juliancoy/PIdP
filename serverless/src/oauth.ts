@@ -55,18 +55,26 @@ async function decodeState(env: Env, value: string | undefined): Promise<OAuthSt
   return state;
 }
 
-async function storeOAuthState(env: Env, state: OAuthState, stateValue: string): Promise<void> {
+async function storeOAuthState(env: Env, state: OAuthState, stateValue: string): Promise<{ codeChallenge: string }> {
+  const codeVerifier = generatePkceVerifier();
+  const codeChallenge = await pkceChallenge(codeVerifier);
   await env.DB.prepare("DELETE FROM oauth_states WHERE expires_at < ? OR consumed_at IS NOT NULL").bind(Math.floor(Date.now() / 1000)).run();
   await env.DB.prepare(
-    "INSERT INTO oauth_states (id, provider, nonce_hash, state_hash, expires_at) VALUES (?, ?, ?, ?, ?)",
-  ).bind(crypto.randomUUID(), state.provider, await sha256Hex(state.nonce), await sha256Hex(stateValue), state.exp).run();
+    "INSERT INTO oauth_states (id, provider, nonce_hash, state_hash, code_verifier, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(crypto.randomUUID(), state.provider, await sha256Hex(state.nonce), await sha256Hex(stateValue), codeVerifier, state.exp).run();
+  return { codeChallenge };
 }
 
-async function consumeOAuthState(env: Env, state: OAuthState, stateValue: string): Promise<void> {
+async function consumeOAuthState(env: Env, state: OAuthState, stateValue: string): Promise<string> {
+  const row = await env.DB.prepare(
+    "SELECT code_verifier FROM oauth_states WHERE provider = ? AND nonce_hash = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at >= ?",
+  ).bind(state.provider, await sha256Hex(state.nonce), await sha256Hex(stateValue), Math.floor(Date.now() / 1000)).first<{ code_verifier: string | null }>();
   const result = await env.DB.prepare(
     "UPDATE oauth_states SET consumed_at = ? WHERE provider = ? AND nonce_hash = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at >= ?",
   ).bind(nowIso(), state.provider, await sha256Hex(state.nonce), await sha256Hex(stateValue), Math.floor(Date.now() / 1000)).run();
   if (!result.meta?.changes) fail(400, `${state.provider} sign-in session expired. Please try again.`);
+  if (!row?.code_verifier) fail(400, `${state.provider} sign-in session expired. Please try again.`);
+  return row.code_verifier;
 }
 
 function truthy(value: string | undefined): boolean {
@@ -220,9 +228,17 @@ async function findWebsiteFromHost(env: Env, host: string | null): Promise<Websi
   return null;
 }
 
-async function exchangeCode(env: Env, provider: Provider, code: string, redirectUri: string): Promise<string> {
+function generatePkceVerifier(): string {
+  return base64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+async function pkceChallenge(codeVerifier: string): Promise<string> {
+  return base64Url(await crypto.subtle.digest("SHA-256", enc.encode(codeVerifier)));
+}
+
+async function exchangeCode(env: Env, provider: Provider, code: string, redirectUri: string, codeVerifier: string): Promise<string> {
   const cfg = providerConfig(env, provider);
-  const body = tokenExchangeBody(cfg.clientId, cfg.clientSecret, code, redirectUri);
+  const body = tokenExchangeBody(cfg.clientId, cfg.clientSecret, code, redirectUri, codeVerifier);
   const resp = await fetch(cfg.tokenUrl, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
@@ -234,13 +250,14 @@ async function exchangeCode(env: Env, provider: Provider, code: string, redirect
   return accessToken;
 }
 
-function tokenExchangeBody(clientId: string, clientSecret: string, code: string, redirectUri: string): URLSearchParams {
+function tokenExchangeBody(clientId: string, clientSecret: string, code: string, redirectUri: string, codeVerifier: string): URLSearchParams {
   return new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
     code,
     redirect_uri: redirectUri,
     grant_type: "authorization_code",
+    code_verifier: codeVerifier,
   });
 }
 
@@ -298,7 +315,7 @@ export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Respons
     exp: Math.floor(Date.now() / 1000) + 20 * 60,
   };
   const stateValue = await encodeState(c.env, state);
-  await storeOAuthState(c.env, state, stateValue);
+  const { codeChallenge } = await storeOAuthState(c.env, state, stateValue);
   setCookie(c, COOKIE_NAME, stateValue, { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: 20 * 60 });
 
   const authorize = new URL(cfg.authorizeUrl);
@@ -307,6 +324,8 @@ export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Respons
   authorize.searchParams.set("response_type", "code");
   authorize.searchParams.set("scope", cfg.scope);
   authorize.searchParams.set("state", stateValue);
+  authorize.searchParams.set("code_challenge", codeChallenge);
+  authorize.searchParams.set("code_challenge_method", "S256");
   if (cfg.provider === "google") authorize.searchParams.set("access_type", "online");
   return c.redirect(authorize.toString(), 303);
 }
@@ -324,9 +343,9 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   if (cookieState && returnedState !== cookieState) fail(400, `${provider} sign-in session expired. Please try again.`);
   const state = await decodeState(c.env, cookieState || returnedState);
   if (state.provider !== provider) fail(400, `${provider} sign-in session expired. Please try again.`);
-  await consumeOAuthState(c.env, state, returnedState);
+  const codeVerifier = await consumeOAuthState(c.env, state, returnedState);
 
-  const accessToken = await exchangeCode(c.env, cfg.provider, code, callbackUri(c, cfg.provider, cfg.redirectUri));
+  const accessToken = await exchangeCode(c.env, cfg.provider, code, callbackUri(c, cfg.provider, cfg.redirectUri), codeVerifier);
   const profile = await fetchSocialProfile(cfg.provider, accessToken);
   if (!profile.provider_account_id) fail(400, "Provider did not return an account id");
 
