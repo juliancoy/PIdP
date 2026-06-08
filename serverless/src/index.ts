@@ -305,6 +305,18 @@ app.get("/configuration", (c) => {
   });
 });
 
+app.get("/avatars/*", async (c) => {
+  if (!c.env.AVATARS) fail(404, "Avatar storage is not configured");
+  const objectKey = c.req.path.replace(/^\/+/, "");
+  if (!objectKey.startsWith("avatars/")) fail(404, "Avatar not found");
+  const object = await c.env.AVATARS.get(objectKey);
+  if (!object) fail(404, "Avatar not found");
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("cache-control", "public, max-age=31536000, immutable");
+  return new Response(object.body, { headers });
+});
+
 app.post("/auth/register", async (c) => {
   const payload = await readJson<Record<string, unknown>>(c);
   const email = String(payload.email || "").trim().toLowerCase();
@@ -456,6 +468,22 @@ app.get("/auth/session-token", async (c) => {
   if (!token) fail(401, "No active session");
   await verifyJwt(c.env, token);
   return c.json({ access_token: token, token_type: "bearer" });
+});
+
+app.post("/auth/smoke-token", async (c) => {
+  const configuredSecret = String(c.env.SMOKE_TEST_SECRET || "");
+  if (!configuredSecret) fail(404, "Smoke token endpoint is not configured");
+  const payload = await readJson<Record<string, unknown>>(c);
+  const suppliedSecret = String(payload.secret || "");
+  if (!suppliedSecret || suppliedSecret !== configuredSecret) fail(403, "Smoke token secret is invalid");
+  const email = String(payload.email || "").trim().toLowerCase();
+  if (!email) fail(422, "email is required");
+  const user = await userByEmail(c.env.DB, email);
+  if (!user || !user.is_active) fail(404, "Smoke user not found");
+  const token = await createOwnerToken(c.env, user);
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
+  setSessionCookie(headers, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 
 app.post("/auth/tokens", async (c) => {
@@ -619,10 +647,10 @@ app.post("/auth/avatar/upload-url", async (c) => {
   if (!c.env.AVATARS) fail(503, "R2 avatar bucket not configured");
   const payload = await verifyJwt(c.env, bearerToken(c));
   const objectKey = `avatars/${payload.sub}/${crypto.randomUUID()}.png`;
-  const publicBase = (c.env.PUBLIC_R2_BASE_URL || "").replace(/\/+$/g, "");
+  const publicBase = (c.env.PUBLIC_R2_BASE_URL || new URL(c.req.url).origin).replace(/\/+$/g, "");
   return c.json({
     upload_url: `/auth/avatar/upload/${objectKey}`,
-    public_url: publicBase ? `${publicBase}/${objectKey}` : objectKey,
+    public_url: `${publicBase}/${objectKey}`,
     object_key: objectKey,
   });
 });

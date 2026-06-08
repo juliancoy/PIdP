@@ -23,7 +23,7 @@
     {
       "binding": "DB",
       "database_name": "pidp",
-      "database_id": "replace-with-cloudflare-d1-database-id"
+      "database_id": "582fc740-4275-482a-bec0-a161a0aa6623"
     }
   ],
   "r2_buckets": [
