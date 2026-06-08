@@ -17,3 +17,11 @@ test("OAuth login and token exchange use PKCE S256", () => {
   assert.match(source, /code_verifier:\s*codeVerifier/);
   assert.match(source, /crypto\.subtle\.digest\("SHA-256"/);
 });
+
+test("OAuth redirect targets allow explicit native app schemes", () => {
+  const source = readFileSync(path.join(import.meta.dirname, "../src/oauth.ts"), "utf8");
+
+  assert.match(source, /NATIVE_REDIRECT_SCHEMES/);
+  assert.match(source, /allowedNativeRedirect/);
+  assert.match(source, /allowed\.includes\(scheme\)/);
+});

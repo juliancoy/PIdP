@@ -136,10 +136,27 @@ function originOf(value: string | undefined): string | null {
   }
 }
 
+function allowedNativeRedirect(env: Env, target: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return false;
+  }
+  const scheme = parsed.protocol.replace(/:$/g, "").toLowerCase();
+  if (!scheme || scheme === "http" || scheme === "https") return false;
+  const allowed = (env.NATIVE_REDIRECT_SCHEMES || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase().replace(/:$/g, ""))
+    .filter(Boolean);
+  return allowed.includes(scheme);
+}
+
 function resolveRedirectTarget(env: Env, rawTarget: string | undefined, website: WebsiteRow | null): string | undefined {
   const target = String(rawTarget || "").trim();
   if (!target) return env.FRONTEND_REDIRECT_URL || "/";
   if (target.startsWith("/")) return target;
+  if (allowedNativeRedirect(env, target)) return target;
   const targetOrigin = originOf(target);
   if (!targetOrigin) return env.FRONTEND_REDIRECT_URL || "/";
   const frontendOrigin = originOf(env.FRONTEND_REDIRECT_URL);
