@@ -134,7 +134,7 @@ Core settings:
 
 - `DATABASE_URL` (required): Async SQLAlchemy URL for Postgres.
 - `SECRET_KEY` (required): Secret for JWT signing and session middleware.
-- `ACCESS_TOKEN_EXPIRE_MINUTES` (optional, default `60`)
+- `ACCESS_TOKEN_EXPIRE_MINUTES` (optional, default `525600`, one year)
 - `TOKEN_ALGORITHM` (optional, default `HS256`)
 - `AUTO_CREATE_TABLES` (optional, default `false`)
 - `ALLOWED_ORIGINS` (optional, comma-separated)

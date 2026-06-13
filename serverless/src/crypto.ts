@@ -29,7 +29,7 @@ export async function sha256Hex(value: string): Promise<string> {
 }
 
 export async function signJwt(env: Env, payload: Omit<JwtPayload, "exp"> & { exp?: number }): Promise<string> {
-  const ttlMinutes = Number(env.ACCESS_TOKEN_EXPIRE_MINUTES || "60");
+  const ttlMinutes = Number(env.ACCESS_TOKEN_EXPIRE_MINUTES || "525600");
   const body: JwtPayload = {
     ...payload,
     exp: payload.exp ?? Math.floor(Date.now() / 1000) + ttlMinutes * 60,

@@ -17,6 +17,7 @@ const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
   org_admin: ["org:*", "org:admin.read", "org:admin.write", "org:mcp.use"],
 };
 const SESSION_COOKIE = "pidp_session";
+const DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES = 525600;
 
 app.use("*", async (c, next) => {
   const allowed = (c.env.ALLOWED_ORIGINS || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -81,6 +82,10 @@ function setSessionCookie(headers: Headers, env: Env, token: string, maxAgeSecon
     "set-cookie",
     `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}${domainPart}; HttpOnly; Secure; SameSite=Lax`,
   );
+}
+
+function sessionMaxAgeSeconds(env: Env): number {
+  return Number(env.ACCESS_TOKEN_EXPIRE_MINUTES || String(DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES)) * 60;
 }
 
 function clearSessionCookie(headers: Headers, env: Env) {
@@ -441,7 +446,7 @@ app.post("/app/login", async (c) => {
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
-      setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+      setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
       return redirectWithSession(c.env, next, token, headers);
     }
   }
@@ -452,7 +457,7 @@ app.post("/app/login", async (c) => {
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
-  setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
   return redirectWithSession(c.env, next, token, headers);
 });
 
@@ -495,7 +500,7 @@ app.post("/auth/session/exchange", async (c) => {
     ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
     : await createOwnerToken(c.env, await currentOwner(c.env, token));
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, rotated, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, rotated, sessionMaxAgeSeconds(c.env));
   return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
 });
 
@@ -505,7 +510,7 @@ app.post("/auth/session/login", async (c) => {
   if (!user || !(await verifyPassword(password, user.hashed_password))) fail(401, "Invalid credentials");
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
   return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 
@@ -523,7 +528,7 @@ app.get("/auth/session-token", async (c) => {
     ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
     : await createOwnerToken(c.env, await currentOwner(c.env, token));
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, rotated, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, rotated, sessionMaxAgeSeconds(c.env));
   return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
 });
 
@@ -539,7 +544,7 @@ app.post("/auth/smoke-token", async (c) => {
   if (!user || !user.is_active) fail(404, "Smoke user not found");
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, token, Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60);
+  setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
   return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 

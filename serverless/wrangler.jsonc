@@ -10,7 +10,7 @@
   "vars": {
     "APP_NAME": "PIdP",
     "ENV": "dev",
-    "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "525600",
     "ALLOWED_ORIGINS": "",
     "ADMIN_EMAILS": "",
     "ADMIN_USER_IDS": "",

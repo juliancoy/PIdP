@@ -4,13 +4,14 @@ import importlib
 import os
 import sys
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from starlette.responses import JSONResponse
+from jose import jwt
+from starlette.responses import JSONResponse, Response
 
 
 REPO_DIR = Path(__file__).resolve().parents[1]
@@ -177,6 +178,18 @@ class PidpSmokeTests(unittest.TestCase):
         self.assertEqual(payload["google_redirect_uri"], os.environ["GOOGLE_REDIRECT_URI"])
         self.assertEqual(payload["github_redirect_uri"], os.environ["GITHUB_REDIRECT_URI"])
         self.assertEqual(payload["frontend_redirect_url"], os.environ["FRONTEND_REDIRECT_URL"])
+
+    def test_default_session_cookie_and_token_last_one_year(self):
+        token = self.main.create_access_token(subject="user-1", email="user@example.com")
+        claims = jwt.get_unverified_claims(token)
+        expires_at = datetime.fromtimestamp(claims["exp"], UTC)
+        lifetime = expires_at - datetime.now(UTC)
+        self.assertGreaterEqual(lifetime.days, 364)
+
+        response = Response()
+        self.main._set_session_cookie(response, token)
+        cookie = response.headers["set-cookie"]
+        self.assertIn("Max-Age=31536000", cookie)
 
     def test_service_endpoints_accept_service_pat(self):
         owner = SimpleNamespace(
