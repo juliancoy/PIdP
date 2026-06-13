@@ -146,7 +146,7 @@ function setLoginSession(c: Context<{ Bindings: Env }>, token: string) {
     sameSite: "Lax",
     path: "/",
     ...(domain ? { domain } : {}),
-    maxAge: Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "60") * 60,
+    maxAge: Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "525600") * 60,
   });
 }
 

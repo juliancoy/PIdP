@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "PIdP"
     env: str = "dev"
     secret_key: str
-    access_token_expire_minutes: int = 60
+    access_token_expire_minutes: int = 525600
     token_algorithm: str = "RS256"
     jwt_private_key: str | None = None
     jwt_public_key: str | None = None

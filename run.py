@@ -392,7 +392,7 @@ def run(prefix, network_name):
             "ACCESS_TOKEN_EXPIRE_MINUTES": (
                 os.getenv("PIDP_PROD_ACCESS_TOKEN_EXPIRE_MINUTES")
                 or os.getenv("PIDP_ACCESS_TOKEN_EXPIRE_MINUTES")
-                or "60"
+                or "525600"
             ),
             "GOOGLE_REDIRECT_URI": prod_oauth["google"] or env_base.get("GOOGLE_REDIRECT_URI"),
             "GITHUB_REDIRECT_URI": prod_oauth["github"] or env_base.get("GITHUB_REDIRECT_URI"),
@@ -431,7 +431,7 @@ def run(prefix, network_name):
             "ACCESS_TOKEN_EXPIRE_MINUTES": (
                 os.getenv("PIDP_DEV_ACCESS_TOKEN_EXPIRE_MINUTES")
                 or os.getenv("PIDP_ACCESS_TOKEN_EXPIRE_MINUTES")
-                or "720"
+                or "525600"
             ),
             "GOOGLE_REDIRECT_URI": dev_oauth["google"] or env_base.get("GOOGLE_REDIRECT_URI"),
             "GITHUB_REDIRECT_URI": dev_oauth["github"] or env_base.get("GITHUB_REDIRECT_URI"),
