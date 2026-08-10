@@ -93,3 +93,29 @@ export function randomToken(prefix: string): string {
   const bytes = crypto.getRandomValues(new Uint8Array(40));
   return `${prefix}${base64Url(bytes)}`;
 }
+
+async function aesKey(secret: string): Promise<CryptoKey> {
+  const digest = await crypto.subtle.digest("SHA-256", enc.encode(secret));
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+export async function encryptString(env: Env, value: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(env.SECRET_KEY), enc.encode(value));
+  return `${base64Url(iv)}.${base64Url(ciphertext)}`;
+}
+
+export async function decryptString(env: Env, value: string): Promise<string> {
+  const [ivRaw, bodyRaw] = String(value || "").split(".");
+  if (!ivRaw || !bodyRaw) fail(400, "Encrypted value is invalid");
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(fromBase64Url(ivRaw)) },
+      await aesKey(env.SECRET_KEY),
+      fromBase64Url(bodyRaw),
+    );
+    return dec.decode(plaintext);
+  } catch {
+    fail(400, "Encrypted value is invalid");
+  }
+}
