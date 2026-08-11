@@ -67,6 +67,13 @@ export const SYSTEM_SCHEMA_FIELDS: Record<string, Required<WebsiteSchemaField>> 
     description: "Family name stored for the website user.",
     system: true,
   },
+  birth_date: {
+    type: "string",
+    required: false,
+    label: "Birthday",
+    description: "Birthday stored as YYYY-MM-DD for the website user.",
+    system: true,
+  },
   contact_email: {
     type: "string",
     required: false,

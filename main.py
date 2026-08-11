@@ -100,6 +100,13 @@ SYSTEM_SCHEMA_FIELDS = {
         description="Family name stored for the website user.",
         system=True,
     ).model_dump(),
+    "birth_date": WebsiteSchemaField(
+        type="string",
+        required=False,
+        label="Birthday",
+        description="Birthday stored as YYYY-MM-DD for the website user.",
+        system=True,
+    ).model_dump(),
 }
 
 

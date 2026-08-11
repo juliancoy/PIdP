@@ -25,14 +25,14 @@ def _load_main_module():
     os.environ["AUTO_CREATE_TABLES"] = "false"
     os.environ["GOOGLE_CLIENT_ID"] = "google-client-id"
     os.environ["GOOGLE_CLIENT_SECRET"] = "google-client-secret"
-    os.environ["GOOGLE_REDIRECT_URI"] = "https://dev.pidp.arkavo.org/auth/google/callback"
+    os.environ["GOOGLE_REDIRECT_URI"] = "https://id.codecollective.us/auth/google/callback"
     os.environ["GITHUB_CLIENT_ID"] = "github-client-id"
     os.environ["GITHUB_CLIENT_SECRET"] = "github-client-secret"
-    os.environ["GITHUB_REDIRECT_URI"] = "https://dev.pidp.arkavo.org/auth/github/callback"
-    os.environ["FRONTEND_REDIRECT_URL"] = "https://dev.pidp.arkavo.org/auth/callback"
+    os.environ["GITHUB_REDIRECT_URI"] = "https://id.codecollective.us/auth/github/callback"
+    os.environ["FRONTEND_REDIRECT_URL"] = "https://id.codecollective.us/auth/callback"
     os.environ["MINIO_ENDPOINT"] = "http://minio:9000"
     os.environ["MINIO_BUCKET"] = "pidp-avatars"
-    os.environ["MINIO_PUBLIC_BASE_URL"] = "https://dev.pidp.arkavo.org/s3"
+    os.environ["MINIO_PUBLIC_BASE_URL"] = "https://id.codecollective.us/s3"
 
     for module_name in ("config", "db", "encrypted_json", "main", "models"):
         if module_name in sys.modules:
@@ -109,7 +109,7 @@ class PidpSmokeTests(unittest.TestCase):
             self.main.oauth.create_client = original_create_client
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
-    def test_social_login_drops_cross_lane_next_before_oauth(self):
+    def test_social_login_preserves_next_before_oauth_without_website_allowlist(self):
         class _FakeOAuthClient:
             async def authorize_redirect(self, request, redirect_uri):
                 return JSONResponse(
@@ -128,22 +128,22 @@ class PidpSmokeTests(unittest.TestCase):
         try:
             with TestClient(self.main.app) as client:
                 response = client.get(
-                    "/auth/google/login?next=https://dev.portal.arkavo.org/admin",
+                    "/auth/google/login?next=https://evil.example/admin",
                     headers={
-                        "host": "pidp.arkavo.org",
+                        "host": "id.codecollective.us",
                         "x-forwarded-proto": "https",
                     },
                     follow_redirects=False,
                 )
-            self.assertEqual(response.status_code, 303)
-            location = response.headers.get("location", "")
-            self.assertTrue(location.startswith("/app/login?error="))
-            self.assertNotIn("dev.pidp.arkavo.org", location)
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["saved_next"], "https://evil.example/admin")
+            self.assertEqual(payload["redirect_uri"], os.environ["GOOGLE_REDIRECT_URI"])
         finally:
             self.main.oauth.create_client = original_create_client
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
-    def test_app_login_drops_cross_lane_next(self):
+    def test_app_login_preserves_next_without_website_allowlist(self):
         original_resolve_login_website_from_host = self.main._resolve_login_website_from_host
         async def _fake_resolve_login_website_from_host(_session, _request):
             return None
@@ -151,15 +151,15 @@ class PidpSmokeTests(unittest.TestCase):
         try:
             with TestClient(self.main.app) as client:
                 response = client.get(
-                    "/app/login?next=https://dev.portal.arkavo.org/admin",
+                    "/app/login?next=https://evil.example/admin",
                     headers={
-                        "host": "pidp.arkavo.org",
+                        "host": "id.codecollective.us",
                         "x-forwarded-proto": "https",
                     },
                     follow_redirects=False,
                 )
             self.assertEqual(response.status_code, 200)
-            self.assertNotIn('value="https://dev.portal.arkavo.org/admin"', response.text)
+            self.assertIn('value="https://evil.example/admin"', response.text)
         finally:
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
@@ -168,13 +168,13 @@ class PidpSmokeTests(unittest.TestCase):
             response = client.get(
                 "/configuration",
                 headers={
-                    "host": "dev.pidp.arkavo.org",
+                    "host": "id.codecollective.us",
                     "x-forwarded-proto": "https",
                 },
             )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["base_addr"], "https://dev.pidp.arkavo.org/")
+        self.assertEqual(payload["base_addr"], "https://id.codecollective.us/")
         self.assertEqual(payload["google_redirect_uri"], os.environ["GOOGLE_REDIRECT_URI"])
         self.assertEqual(payload["github_redirect_uri"], os.environ["GITHUB_REDIRECT_URI"])
         self.assertEqual(payload["frontend_redirect_url"], os.environ["FRONTEND_REDIRECT_URL"])
@@ -282,8 +282,8 @@ class PidpSmokeTests(unittest.TestCase):
             name="Code Collective",
             slug="code-collective",
             description="Portal sign-in for Code Collective",
-            login_hosts=["portal.arkavo.org"],
-            allowed_redirect_origins=["https://portal.arkavo.org"],
+            login_hosts=["codecollective.us"],
+            allowed_redirect_origins=["https://codecollective.us"],
             user_schema={},
             max_users=10,
             created_at=datetime.utcnow(),
@@ -313,8 +313,8 @@ class PidpSmokeTests(unittest.TestCase):
             name="Code Collective",
             slug="code-collective",
             description="Portal sign-in for Code Collective",
-            login_hosts=["portal.arkavo.org"],
-            allowed_redirect_origins=["https://portal.arkavo.org"],
+            login_hosts=["codecollective.us"],
+            allowed_redirect_origins=["https://codecollective.us"],
             user_schema={},
             max_users=10,
             created_at=datetime.utcnow(),
@@ -327,7 +327,7 @@ class PidpSmokeTests(unittest.TestCase):
         self.main._resolve_login_website_from_host = _fake_resolve_login_website_from_host
         try:
             with TestClient(self.main.app) as client:
-                response = client.get("/app/login", headers={"host": "portal.arkavo.org"})
+                response = client.get("/app/login", headers={"host": "codecollective.us"})
             self.assertEqual(response.status_code, 200)
             self.assertIn("Code Collective", response.text)
             self.assertIn("name=\"app\" value=\"code-collective\"", response.text)
@@ -341,8 +341,8 @@ class PidpSmokeTests(unittest.TestCase):
             name="Code Collective",
             slug="code-collective",
             description="Portal sign-in for Code Collective",
-            login_hosts=["portal.arkavo.org"],
-            allowed_redirect_origins=["https://portal.arkavo.org"],
+            login_hosts=["codecollective.us"],
+            allowed_redirect_origins=["https://codecollective.us"],
             user_schema={},
             max_users=10,
             created_at=datetime.utcnow(),

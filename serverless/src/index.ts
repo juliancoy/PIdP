@@ -9,16 +9,28 @@ import { oauthCallback, oauthLogin } from "./oauth";
 import { renderProfilePage, renderProfileQrSvg } from "./profilePage";
 import {
   createGoogleCalendarBooking,
+  createGoogleCalendarPortalEvent,
   disconnectGoogleCalendar,
   exchangeGoogleCalendarCode,
   fetchGoogleUserProfile,
   googleCalendarScopes,
   googleCalendarStatus,
+  listGoogleCalendarEvents,
   publishGoogleCalendarAvailability,
   setGoogleCalendarSyncBusy,
   upsertGoogleCalendarConnection,
   googleCalendarBusy,
 } from "./googleCalendar";
+import {
+  createMicrosoftCalendarPortalEvent,
+  disconnectMicrosoftCalendar,
+  exchangeMicrosoftCalendarCode,
+  fetchMicrosoftUserProfile,
+  listMicrosoftCalendarEvents,
+  microsoftCalendarScopes,
+  microsoftCalendarStatus,
+  upsertMicrosoftCalendarConnection,
+} from "./microsoftCalendar";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -30,9 +42,17 @@ const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
 };
 const SESSION_COOKIE = "pidp_session";
 const GOOGLE_CALENDAR_STATE_COOKIE = "pidp_google_calendar_state";
+const MICROSOFT_CALENDAR_STATE_COOKIE = "pidp_microsoft_calendar_state";
 const DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES = 525600;
 
 type GoogleCalendarConnectState = {
+  owner_user_id: string;
+  next: string;
+  nonce: string;
+  exp: number;
+};
+
+type MicrosoftCalendarConnectState = {
   owner_user_id: string;
   next: string;
   nonce: string;
@@ -110,6 +130,23 @@ async function decodeGoogleCalendarState(env: Env, raw: string | null): Promise<
   const state = JSON.parse(json) as GoogleCalendarConnectState;
   if (!state.owner_user_id || !state.nonce || !state.exp || state.exp < Math.floor(Date.now() / 1000)) {
     fail(400, "Google Calendar connection expired. Please try again.");
+  }
+  return state;
+}
+
+async function encodeMicrosoftCalendarState(env: Env, state: MicrosoftCalendarConnectState): Promise<string> {
+  const body = btoa(JSON.stringify(state)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return `${body}.${await hmacState(env, body)}`;
+}
+
+async function decodeMicrosoftCalendarState(env: Env, raw: string | null): Promise<MicrosoftCalendarConnectState> {
+  if (!raw) fail(400, "Microsoft Calendar connection expired. Please try again.");
+  const [body, signature] = raw.split(".");
+  if (!body || !signature || signature !== await hmacState(env, body)) fail(400, "Microsoft Calendar connection expired. Please try again.");
+  const json = atob(body.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(body.length / 4) * 4, "="));
+  const state = JSON.parse(json) as MicrosoftCalendarConnectState;
+  if (!state.owner_user_id || !state.nonce || !state.exp || state.exp < Math.floor(Date.now() / 1000)) {
+    fail(400, "Microsoft Calendar connection expired. Please try again.");
   }
   return state;
 }
@@ -568,6 +605,58 @@ app.delete("/auth/google-calendar", async (c) => {
   return c.json(await disconnectGoogleCalendar(c.env.DB, owner.id));
 });
 
+app.get("/auth/google-calendar/events", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  const limit = Number(c.req.query("limit") || 12);
+  return c.json(await listGoogleCalendarEvents(c.env, owner.id, limit));
+});
+
+app.post("/auth/google-calendar/events", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  const payload = await readJson<Record<string, unknown>>(c);
+  return c.json(await createGoogleCalendarPortalEvent(c.env, {
+    owner_user_id: owner.id,
+    external_event_id: String(payload.external_event_id || "").trim(),
+    summary: String(payload.summary || "").trim(),
+    description: String(payload.description || "").trim(),
+    starts_at: String(payload.starts_at || "").trim(),
+    ends_at: String(payload.ends_at || "").trim(),
+    location: payload.location ? String(payload.location) : null,
+    source_url: payload.source_url ? String(payload.source_url) : null,
+  }));
+});
+
+app.get("/auth/microsoft-calendar", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  return c.json(await microsoftCalendarStatus(c.env.DB, owner.id));
+});
+
+app.delete("/auth/microsoft-calendar", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  return c.json(await disconnectMicrosoftCalendar(c.env.DB, owner.id));
+});
+
+app.get("/auth/microsoft-calendar/events", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  const limit = Number(c.req.query("limit") || 12);
+  return c.json(await listMicrosoftCalendarEvents(c.env, owner.id, limit));
+});
+
+app.post("/auth/microsoft-calendar/events", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  const payload = await readJson<Record<string, unknown>>(c);
+  return c.json(await createMicrosoftCalendarPortalEvent(c.env, {
+    owner_user_id: owner.id,
+    external_event_id: String(payload.external_event_id || "").trim(),
+    summary: String(payload.summary || "").trim(),
+    description: String(payload.description || "").trim(),
+    starts_at: String(payload.starts_at || "").trim(),
+    ends_at: String(payload.ends_at || "").trim(),
+    location: payload.location ? String(payload.location) : null,
+    source_url: payload.source_url ? String(payload.source_url) : null,
+  }));
+});
+
 app.get("/auth/google-calendar/connect", async (c) => {
   const owner = await currentOwner(c.env, sessionOrBearerToken(c));
   if (!c.env.GOOGLE_CLIENT_ID || !c.env.GOOGLE_CLIENT_SECRET) fail(400, "Google OAuth is not configured");
@@ -595,6 +684,31 @@ app.get("/auth/google-calendar/connect", async (c) => {
   return new Response(null, { status: 303, headers });
 });
 
+app.get("/auth/microsoft-calendar/connect", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  if (!c.env.MICROSOFT_CLIENT_ID || !c.env.MICROSOFT_CLIENT_SECRET) fail(400, "Microsoft OAuth is not configured");
+  const next = redirectTarget(c.env, c.req.query("next") || c.env.FRONTEND_REDIRECT_URL || "/");
+  const state = await encodeMicrosoftCalendarState(c.env, {
+    owner_user_id: owner.id,
+    next,
+    nonce: crypto.randomUUID(),
+    exp: Math.floor(Date.now() / 1000) + 10 * 60,
+  });
+  const callback = c.env.MICROSOFT_CALENDAR_REDIRECT_URI || `${canonicalBase(c)}/auth/microsoft-calendar/callback`;
+  const authorize = new URL("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
+  authorize.searchParams.set("client_id", c.env.MICROSOFT_CLIENT_ID || "");
+  authorize.searchParams.set("redirect_uri", callback);
+  authorize.searchParams.set("response_type", "code");
+  authorize.searchParams.set("scope", microsoftCalendarScopes().join(" "));
+  authorize.searchParams.set("response_mode", "query");
+  authorize.searchParams.set("state", state);
+  const headers = new Headers({ location: authorize.toString() });
+  const domain = sessionCookieDomain(c.env);
+  const domainPart = domain ? `; Domain=${domain}` : "";
+  headers.append("set-cookie", `${MICROSOFT_CALENDAR_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/; Max-Age=600${domainPart}; HttpOnly; Secure; SameSite=Lax`);
+  return new Response(null, { status: 303, headers });
+});
+
 app.get("/auth/google-calendar/callback", async (c) => {
   const queryState = c.req.query("state") || "";
   const storedStateRaw = cookieValue(c, GOOGLE_CALENDAR_STATE_COOKIE);
@@ -613,6 +727,27 @@ app.get("/auth/google-calendar/callback", async (c) => {
   const domainPart = domain ? `; Domain=${domain}` : "";
   headers.append("set-cookie", `${GOOGLE_CALENDAR_STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
   if (domainPart) headers.append("set-cookie", `${GOOGLE_CALENDAR_STATE_COOKIE}=; Path=/; Max-Age=0${domainPart}; HttpOnly; Secure; SameSite=Lax`);
+  return new Response(null, { status: 303, headers });
+});
+
+app.get("/auth/microsoft-calendar/callback", async (c) => {
+  const queryState = c.req.query("state") || "";
+  const storedStateRaw = cookieValue(c, MICROSOFT_CALENDAR_STATE_COOKIE);
+  const state = await decodeMicrosoftCalendarState(c.env, storedStateRaw);
+  if (!queryState || queryState !== storedStateRaw) fail(400, "Microsoft Calendar connection expired. Please try again.");
+  const code = c.req.query("code") || "";
+  if (!code) fail(400, "Microsoft Calendar authorization code is missing");
+  const callback = c.env.MICROSOFT_CALENDAR_REDIRECT_URI || `${canonicalBase(c)}/auth/microsoft-calendar/callback`;
+  const token = await exchangeMicrosoftCalendarCode(c.env, code, callback);
+  const profile = await fetchMicrosoftUserProfile(String(token.access_token || ""));
+  const refreshToken = String(token.refresh_token || "").trim();
+  if (!refreshToken) fail(400, "Microsoft did not return a refresh token. Revoke the app grant and try again.");
+  await upsertMicrosoftCalendarConnection(c.env, state.owner_user_id, profile, refreshToken, String(token.scope || ""));
+  const headers = new Headers({ location: state.next });
+  const domain = sessionCookieDomain(c.env);
+  const domainPart = domain ? `; Domain=${domain}` : "";
+  headers.append("set-cookie", `${MICROSOFT_CALENDAR_STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+  if (domainPart) headers.append("set-cookie", `${MICROSOFT_CALENDAR_STATE_COOKIE}=; Path=/; Max-Age=0${domainPart}; HttpOnly; Secure; SameSite=Lax`);
   return new Response(null, { status: 303, headers });
 });
 
