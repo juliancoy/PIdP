@@ -19,6 +19,9 @@
     "FRONTEND_REDIRECT_URL": "",
     "NATIVE_REDIRECT_SCHEMES": "org.arkavo.portal,codecollective",
     "GOOGLE_REDIRECT_URI": "",
+    "GOOGLE_CALENDAR_REDIRECT_URI": "",
+    "MICROSOFT_REDIRECT_URI": "",
+    "MICROSOFT_CALENDAR_REDIRECT_URI": "",
     "GITHUB_REDIRECT_URI": ""
   },
   "d1_databases": [

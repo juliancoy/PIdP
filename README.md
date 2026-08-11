@@ -210,7 +210,7 @@ Deployment behavior:
 - Social sign-in is disabled unless provider client id and secret are set.
 - PIdP only stores hashed passwords; plaintext is never persisted.
 - Identity data can be stored in the `identity_data` JSONB column.
-- `websites.login_hosts` maps inbound hosts (for example `portal.arkavo.org`) to an app login experience.
+- `websites.login_hosts` maps inbound hosts (for example `codecollective.us`) to an app login experience.
 - `websites.allowed_redirect_origins` allowlists absolute `next=` redirect origins for auth flows.
 - `websites.branding` stores client personalization used by `/app/login` (logo URL, hero text, button text, colors, and background style).
 - When no redirect allowlist is configured for a website, PiDP allows redirects in compatibility mode and logs a warning.
@@ -222,7 +222,7 @@ This repository includes a stdio MCP server at `mcp_server.py` for safe PiDP adm
 
 ### Environment variables
 
-- `PIDP_BASE_URL` (optional, default `https://pidp.arkavo.org`)
+- `PIDP_BASE_URL` (optional, default `https://id.codecollective.us`)
 - `PIDP_PAT` (required; service token, e.g. `pidp_pat_...`)
 
 ### Run

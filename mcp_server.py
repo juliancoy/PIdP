@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 
 def _base_url() -> str:
-    return os.getenv("PIDP_BASE_URL", "https://pidp.arkavo.org").rstrip("/")
+    return os.getenv("PIDP_BASE_URL", "https://id.codecollective.us").rstrip("/")
 
 
 def _pat() -> str:

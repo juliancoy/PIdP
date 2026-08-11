@@ -68,6 +68,28 @@ export type CreateBookingInput = {
   attendee_email: string | null;
 };
 
+export type GoogleCalendarListItem = {
+  id: string;
+  summary: string;
+  description: string | null;
+  location: string | null;
+  html_link: string | null;
+  status: string | null;
+  starts_at: string | null;
+  ends_at: string | null;
+};
+
+export type CreatePortalEventCalendarInput = {
+  owner_user_id: string;
+  external_event_id: string;
+  summary: string;
+  description: string;
+  starts_at: string;
+  ends_at: string;
+  location: string | null;
+  source_url: string | null;
+};
+
 const GOOGLE_CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const GOOGLE_CALENDAR_FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
 const GOOGLE_CALENDAR_SCOPES = [GOOGLE_CALENDAR_EVENTS_SCOPE, GOOGLE_CALENDAR_FREEBUSY_SCOPE];
@@ -343,4 +365,117 @@ export async function createGoogleCalendarBooking(env: Env, input: CreateBooking
     { method: "POST", body: JSON.stringify(body) },
   );
   return { connected: true, event_id: created.id, html_link: created.htmlLink || null };
+}
+
+export async function listGoogleCalendarEvents(env: Env, ownerUserId: string, limit = 12) {
+  const connection = await googleCalendarConnection(env.DB, ownerUserId);
+  if (!connection) return { connected: false, calendar_id: null, events: [] as GoogleCalendarListItem[] };
+  const maxResults = Math.max(1, Math.min(Number.isFinite(limit) ? Math.trunc(limit) : 12, 25));
+  const query = new URLSearchParams({
+    singleEvents: "true",
+    orderBy: "startTime",
+    timeMin: new Date().toISOString(),
+    maxResults: String(maxResults),
+  });
+  const payload = await googleCalendarRequest<{
+    items?: Array<{
+      id?: string;
+      summary?: string;
+      description?: string;
+      location?: string;
+      htmlLink?: string;
+      status?: string;
+      start?: { dateTime?: string; date?: string };
+      end?: { dateTime?: string; date?: string };
+    }>;
+  }>(
+    env,
+    ownerUserId,
+    `/calendars/${encodeURIComponent(connection.calendar_id)}/events?${query.toString()}`,
+  );
+  const events = Array.isArray(payload.items)
+    ? payload.items
+      .filter((item) => item?.id)
+      .map((item) => ({
+        id: String(item.id),
+        summary: String(item.summary || "Untitled event"),
+        description: item.description || null,
+        location: item.location || null,
+        html_link: item.htmlLink || null,
+        status: item.status || null,
+        starts_at: item.start?.dateTime || item.start?.date || null,
+        ends_at: item.end?.dateTime || item.end?.date || null,
+      }))
+    : [];
+  return { connected: true, calendar_id: connection.calendar_id, events };
+}
+
+function portalEventBody(input: CreatePortalEventCalendarInput) {
+  const details = [
+    input.description.trim(),
+    input.location ? `Location: ${input.location}` : "",
+    input.source_url ? `Source: ${input.source_url}` : "",
+    "Saved from Code Collective portal.",
+  ].filter(Boolean);
+  return {
+    summary: input.summary,
+    description: details.join("\n\n"),
+    location: input.location || undefined,
+    start: { dateTime: input.starts_at, timeZone: "UTC" },
+    end: { dateTime: input.ends_at, timeZone: "UTC" },
+    extendedProperties: {
+      private: {
+        source: "codecollective-portal-event",
+        external_event_id: input.external_event_id,
+      },
+    },
+  };
+}
+
+export async function createGoogleCalendarPortalEvent(env: Env, input: CreatePortalEventCalendarInput) {
+  const connection = await googleCalendarConnection(env.DB, input.owner_user_id);
+  if (!connection) return { connected: false, event_id: null, html_link: null };
+  const existing = await first<GoogleCalendarServiceLinkRow>(
+    env.DB.prepare("SELECT * FROM google_calendar_service_links WHERE owner_user_id = ? AND external_service_id = ?")
+      .bind(input.owner_user_id, input.external_event_id),
+  );
+  const body = portalEventBody(input);
+  let eventId = existing?.google_event_id || null;
+  let htmlLink: string | null = null;
+  if (eventId) {
+    try {
+      const updated = await googleCalendarRequest<{ id: string; htmlLink?: string }>(
+        env,
+        input.owner_user_id,
+        `/calendars/${encodeURIComponent(connection.calendar_id)}/events/${encodeURIComponent(eventId)}`,
+        { method: "PUT", body: JSON.stringify(body) },
+      );
+      eventId = updated.id;
+      htmlLink = updated.htmlLink || null;
+    } catch {
+      eventId = null;
+    }
+  }
+  if (!eventId) {
+    const created = await googleCalendarRequest<{ id: string; htmlLink?: string }>(
+      env,
+      input.owner_user_id,
+      `/calendars/${encodeURIComponent(connection.calendar_id)}/events`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    eventId = created.id;
+    htmlLink = created.htmlLink || null;
+  }
+  const now = nowIso();
+  await env.DB.prepare(
+    `INSERT INTO google_calendar_service_links
+      (owner_user_id, external_service_id, calendar_id, google_event_id, summary, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(owner_user_id, external_service_id) DO UPDATE SET
+       calendar_id = excluded.calendar_id,
+       google_event_id = excluded.google_event_id,
+       summary = excluded.summary,
+       updated_at = excluded.updated_at`,
+  ).bind(input.owner_user_id, input.external_event_id, connection.calendar_id, eventId, input.summary, now, now).run();
+  return { connected: true, event_id: eventId, html_link: htmlLink || null };
 }
