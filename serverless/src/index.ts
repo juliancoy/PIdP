@@ -7,6 +7,18 @@ import { hashPassword, randomToken, sha256Hex, signJwt, verifyJwt, verifyPasswor
 import { DEFAULT_MAX_USERS_PER_WEBSITE, MAX_WEBSITES_PER_OWNER, PROFILE_LINK_FIELDS, SYSTEM_SCHEMA_FIELDS, normalizeBranding, normalizeHostList, normalizeOriginList, normalizeSlug, normalizeWebsiteSchema, schemaWithSystemFields, validateIdentityData } from "./normalize";
 import { oauthCallback, oauthLogin } from "./oauth";
 import { renderProfilePage, renderProfileQrSvg } from "./profilePage";
+import {
+  createGoogleCalendarBooking,
+  disconnectGoogleCalendar,
+  exchangeGoogleCalendarCode,
+  fetchGoogleUserProfile,
+  googleCalendarScopes,
+  googleCalendarStatus,
+  publishGoogleCalendarAvailability,
+  setGoogleCalendarSyncBusy,
+  upsertGoogleCalendarConnection,
+  googleCalendarBusy,
+} from "./googleCalendar";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -17,7 +29,15 @@ const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
   org_admin: ["org:*", "org:admin.read", "org:admin.write", "org:mcp.use"],
 };
 const SESSION_COOKIE = "pidp_session";
+const GOOGLE_CALENDAR_STATE_COOKIE = "pidp_google_calendar_state";
 const DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES = 525600;
+
+type GoogleCalendarConnectState = {
+  owner_user_id: string;
+  next: string;
+  nonce: string;
+  exp: number;
+};
 
 app.use("*", async (c, next) => {
   const allowed = (c.env.ALLOWED_ORIGINS || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -69,6 +89,29 @@ function cookieValue(c: { req: { header(name: string): string | undefined } }, n
     if (key === name) return decodeURIComponent(rest.join("="));
   }
   return null;
+}
+
+async function hmacState(env: Env, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.SECRET_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return btoa(String.fromCharCode(...new Uint8Array(signature))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function encodeGoogleCalendarState(env: Env, state: GoogleCalendarConnectState): Promise<string> {
+  const body = btoa(JSON.stringify(state)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return `${body}.${await hmacState(env, body)}`;
+}
+
+async function decodeGoogleCalendarState(env: Env, raw: string | null): Promise<GoogleCalendarConnectState> {
+  if (!raw) fail(400, "Google Calendar connection expired. Please try again.");
+  const [body, signature] = raw.split(".");
+  if (!body || !signature || signature !== await hmacState(env, body)) fail(400, "Google Calendar connection expired. Please try again.");
+  const json = atob(body.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(body.length / 4) * 4, "="));
+  const state = JSON.parse(json) as GoogleCalendarConnectState;
+  if (!state.owner_user_id || !state.nonce || !state.exp || state.exp < Math.floor(Date.now() / 1000)) {
+    fail(400, "Google Calendar connection expired. Please try again.");
+  }
+  return state;
 }
 
 function sessionCookieDomain(env: Env): string {
@@ -244,6 +287,15 @@ function apiTokenPublic(row: UserApiTokenRow) {
   };
 }
 
+function sessionOrBearerToken(c: { env: Env; req: { header(name: string): string | undefined } }) {
+  const auth = c.req.header("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(auth);
+  if (match) return match[1].trim();
+  const session = cookieValue(c, SESSION_COOKIE);
+  if (session) return session;
+  fail(401, "Authentication required");
+}
+
 async function currentOwner(env: Env, token: string): Promise<UserRow> {
   if (token.startsWith("pidp_pat_")) {
     const owner = await ownerFromPat(env, token);
@@ -281,6 +333,13 @@ async function ownerFromPat(env: Env, rawToken: string): Promise<{ user: UserRow
   const user = await userById(env.DB, tokenRow.owner_id);
   if (!user) fail(401, "Invalid API token");
   return { user, tokenRow };
+}
+
+async function requireServicePat(env: Env, token: string): Promise<UserRow> {
+  if (!token.startsWith("pidp_pat_")) fail(403, "Service token required");
+  const { user, tokenRow } = await ownerFromPat(env, token);
+  if (tokenRow.scope !== "service") fail(403, "PAT scope does not permit service access");
+  return user;
 }
 
 async function ownedWebsite(env: Env, ownerId: string, websiteId: string): Promise<WebsiteRow> {
@@ -493,6 +552,70 @@ app.put("/auth/me", async (c) => {
   return c.json(userPublic(c.env, (await userById(c.env.DB, owner.id))!));
 });
 
+app.get("/auth/google-calendar", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  return c.json(await googleCalendarStatus(c.env.DB, owner.id));
+});
+
+app.patch("/auth/google-calendar", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  const payload = await readJson<Record<string, unknown>>(c);
+  return c.json(await setGoogleCalendarSyncBusy(c.env.DB, owner.id, payload.sync_busy !== false));
+});
+
+app.delete("/auth/google-calendar", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  return c.json(await disconnectGoogleCalendar(c.env.DB, owner.id));
+});
+
+app.get("/auth/google-calendar/connect", async (c) => {
+  const owner = await currentOwner(c.env, sessionOrBearerToken(c));
+  if (!c.env.GOOGLE_CLIENT_ID || !c.env.GOOGLE_CLIENT_SECRET) fail(400, "Google OAuth is not configured");
+  const next = redirectTarget(c.env, c.req.query("next") || c.env.FRONTEND_REDIRECT_URL || "/");
+  const state = await encodeGoogleCalendarState(c.env, {
+    owner_user_id: owner.id,
+    next,
+    nonce: crypto.randomUUID(),
+    exp: Math.floor(Date.now() / 1000) + 10 * 60,
+  });
+  const callback = c.env.GOOGLE_CALENDAR_REDIRECT_URI || `${canonicalBase(c)}/auth/google-calendar/callback`;
+  const authorize = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authorize.searchParams.set("client_id", c.env.GOOGLE_CLIENT_ID || "");
+  authorize.searchParams.set("redirect_uri", callback);
+  authorize.searchParams.set("response_type", "code");
+  authorize.searchParams.set("scope", googleCalendarScopes().join(" "));
+  authorize.searchParams.set("access_type", "offline");
+  authorize.searchParams.set("prompt", "consent");
+  authorize.searchParams.set("include_granted_scopes", "true");
+  authorize.searchParams.set("state", state);
+  const headers = new Headers({ location: authorize.toString() });
+  const domain = sessionCookieDomain(c.env);
+  const domainPart = domain ? `; Domain=${domain}` : "";
+  headers.append("set-cookie", `${GOOGLE_CALENDAR_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/; Max-Age=600${domainPart}; HttpOnly; Secure; SameSite=Lax`);
+  return new Response(null, { status: 303, headers });
+});
+
+app.get("/auth/google-calendar/callback", async (c) => {
+  const queryState = c.req.query("state") || "";
+  const storedStateRaw = cookieValue(c, GOOGLE_CALENDAR_STATE_COOKIE);
+  const state = await decodeGoogleCalendarState(c.env, storedStateRaw);
+  if (!queryState || queryState !== storedStateRaw) fail(400, "Google Calendar connection expired. Please try again.");
+  const code = c.req.query("code") || "";
+  if (!code) fail(400, "Google Calendar authorization code is missing");
+  const callback = c.env.GOOGLE_CALENDAR_REDIRECT_URI || `${canonicalBase(c)}/auth/google-calendar/callback`;
+  const token = await exchangeGoogleCalendarCode(c.env, code, callback);
+  const profile = await fetchGoogleUserProfile(String(token.access_token || ""));
+  const refreshToken = String(token.refresh_token || "").trim();
+  if (!refreshToken) fail(400, "Google did not return a refresh token. Disconnect the app in Google and try again.");
+  await upsertGoogleCalendarConnection(c.env, state.owner_user_id, profile, refreshToken, String(token.scope || ""));
+  const headers = new Headers({ location: state.next });
+  const domain = sessionCookieDomain(c.env);
+  const domainPart = domain ? `; Domain=${domain}` : "";
+  headers.append("set-cookie", `${GOOGLE_CALENDAR_STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+  if (domainPart) headers.append("set-cookie", `${GOOGLE_CALENDAR_STATE_COOKIE}=; Path=/; Max-Age=0${domainPart}; HttpOnly; Secure; SameSite=Lax`);
+  return new Response(null, { status: 303, headers });
+});
+
 app.post("/auth/session/exchange", async (c) => {
   const token = bearerToken(c);
   const payload = await verifyJwt(c.env, token);
@@ -614,6 +737,47 @@ app.get("/service/websites", async (c) => {
   const owner = await currentOwner(c.env, bearerToken(c));
   const rows = await all<WebsiteRow>(c.env.DB.prepare("SELECT * FROM websites WHERE owner_id = ? ORDER BY created_at").bind(owner.id));
   return c.json(rows.map(websitePublic));
+});
+
+app.post("/service/google-calendar/availability", async (c) => {
+  await requireServicePat(c.env, bearerToken(c));
+  const payload = await readJson<Record<string, unknown>>(c);
+  return c.json(await publishGoogleCalendarAvailability(c.env, {
+    owner_user_id: String(payload.owner_user_id || "").trim(),
+    external_service_id: String(payload.external_service_id || "").trim(),
+    summary: String(payload.summary || "").trim(),
+    description: String(payload.description || "").trim(),
+    timezone: String(payload.timezone || "UTC").trim() || "UTC",
+    weekdays: Array.isArray(payload.weekdays) ? payload.weekdays.map((value) => Number(value)).filter((value) => Number.isInteger(value)) : [],
+    starts_at: String(payload.starts_at || "").trim(),
+    ends_at: String(payload.ends_at || "").trim(),
+  }));
+});
+
+app.post("/service/google-calendar/busy-check", async (c) => {
+  await requireServicePat(c.env, bearerToken(c));
+  const payload = await readJson<Record<string, unknown>>(c);
+  return c.json(await googleCalendarBusy(
+    c.env,
+    String(payload.owner_user_id || "").trim(),
+    String(payload.starts_at || "").trim(),
+    String(payload.ends_at || "").trim(),
+  ));
+});
+
+app.post("/service/google-calendar/bookings", async (c) => {
+  await requireServicePat(c.env, bearerToken(c));
+  const payload = await readJson<Record<string, unknown>>(c);
+  return c.json(await createGoogleCalendarBooking(c.env, {
+    owner_user_id: String(payload.owner_user_id || "").trim(),
+    external_service_id: String(payload.external_service_id || "").trim(),
+    service_name: String(payload.service_name || "").trim(),
+    service_description: String(payload.service_description || "").trim(),
+    starts_at: String(payload.starts_at || "").trim(),
+    ends_at: String(payload.ends_at || "").trim(),
+    attendee_name: String(payload.attendee_name || "").trim(),
+    attendee_email: payload.attendee_email ? String(payload.attendee_email) : null,
+  }));
 });
 
 app.post("/service/websites", async (c) => {
