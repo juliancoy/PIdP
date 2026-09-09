@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { mcpAuthorization } from "./mcpAuthorization";
 import { cors } from "hono/cors";
 import type { Env, UserApiTokenRow, UserRow, WebsiteRow, WebsiteSchemaField, WebsiteUserRow } from "./types";
 import { buildMetadata } from "./generated/buildMetadata.ts";
@@ -34,6 +35,7 @@ import {
 } from "./microsoftCalendar";
 
 const app = new Hono<{ Bindings: Env }>();
+app.route('/', mcpAuthorization);
 
 const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
   service: ["service:*"],
@@ -463,7 +465,6 @@ app.get("/version", (c) => {
   return c.json(healthPayload(c));
 });
 
-app.get("/.well-known/jwks.json", (c) => c.json({ keys: [] }));
 
 app.get("/configuration", (c) => {
   const url = new URL(c.req.url);
