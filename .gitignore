@@ -18,4 +18,5 @@ htmlcov/
 .pytest_cache/
 playwright-report/
 test-results/
+serverless/src/generated/
 .env

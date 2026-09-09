@@ -1,5 +1,6 @@
 interface Env {
   DB: D1Database;
+  CF_VERSION_METADATA?: { id: string };
   AVATARS?: R2Bucket;
   APP_NAME?: string;
   ENV?: string;
