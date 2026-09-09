@@ -9,6 +9,7 @@ export interface Env {
   SECRET_KEY: string;
   ACCESS_TOKEN_EXPIRE_MINUTES?: string;
   SESSION_COOKIE_DOMAIN?: string;
+  PORTAL_AUTH_ORIGINS?: string;
   ALLOWED_ORIGINS?: string;
   ADMIN_EMAILS?: string;
   ADMIN_USER_IDS?: string;
