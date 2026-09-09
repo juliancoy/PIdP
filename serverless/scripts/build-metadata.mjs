@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../", import.meta.url));
 
 function git(...args) {
   return execFileSync("git", ["-c", `safe.directory=${root}`, "-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -17,8 +17,8 @@ try {
   commit = sha;
   dirty = Boolean(git("status", "--porcelain", "--untracked-files=normal"));
 } catch {
-  const explicit = process.env.ORGPORTAL_BUILD_COMMIT;
-  if (explicit && !/^[a-f0-9]{40,64}$/i.test(explicit)) throw new Error("ORGPORTAL_BUILD_COMMIT must be a full Git SHA");
+  const explicit = process.env.PIDP_BUILD_COMMIT;
+  if (explicit && !/^[a-f0-9]{40,64}$/i.test(explicit)) throw new Error("PIDP_BUILD_COMMIT must be a full Git SHA");
   commit = explicit ? explicit.toLowerCase() : null;
   dirty = null;
 }
