@@ -4,8 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:metadata": "node scripts/build-metadata.mjs",
+    "pretypecheck": "npm run build:metadata",
+    "pretest": "npm run build:metadata",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "predeploy": "npm run build:metadata",
     "deploy:serverless": "node scripts/deploy.mjs",
     "deploy:status": "node scripts/deploy.mjs --check-only",
     "typecheck": "tsc --noEmit",

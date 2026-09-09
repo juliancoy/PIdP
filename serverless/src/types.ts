@@ -3,6 +3,7 @@ export type ActorType = "owner" | "website_user";
 
 export interface Env {
   DB: D1Database;
+  CF_VERSION_METADATA?: { id: string };
   AVATARS?: R2Bucket;
   APP_NAME?: string;
   ENV?: string;

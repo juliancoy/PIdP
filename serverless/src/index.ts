@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env, UserApiTokenRow, UserRow, WebsiteRow, WebsiteSchemaField, WebsiteUserRow } from "./types";
+import { buildMetadata } from "./generated/buildMetadata.ts";
 import { all, apiTokenById, countWhere, first, normalizeScope, nowIso, parseJson, userByEmail, userById, websiteById, websiteBySlug, websiteUserByEmail, websiteUserById } from "./db";
 import { bearerToken, fail, formCredentials, jsonError, readJson } from "./http";
 import { hashPassword, randomToken, sha256Hex, signJwt, verifyJwt, verifyPassword } from "./crypto";
@@ -439,7 +440,28 @@ async function createWebsiteFromPayload(env: Env, owner: UserRow, payload: Recor
   return row;
 }
 
-app.get("/health", (c) => c.json({ status: "ok" }));
+function healthPayload(c: { env: Env; req: { url: string } }) {
+  const url = new URL(c.req.url);
+  return {
+    ok: true,
+    service: "pidp-codecollective",
+    time: new Date().toISOString(),
+    ...buildMetadata,
+    workerVersionId: c.env.CF_VERSION_METADATA?.id ?? null,
+    hostname: url.hostname,
+    environment: c.env.ENV || "production",
+  };
+}
+
+app.get("/health", (c) => {
+  c.header("Cache-Control", "no-store");
+  return c.json(healthPayload(c));
+});
+
+app.get("/version", (c) => {
+  c.header("Cache-Control", "no-store");
+  return c.json(healthPayload(c));
+});
 
 app.get("/.well-known/jwks.json", (c) => c.json({ keys: [] }));
 
