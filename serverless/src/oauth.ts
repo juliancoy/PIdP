@@ -14,6 +14,7 @@ interface OAuthState {
   app_slug?: string;
   force_owner?: boolean;
   next?: string;
+  portal_origin?: string;
   exp: number;
 }
 
@@ -131,6 +132,16 @@ function originOf(value: string | undefined): string | null {
   }
 }
 
+function portalAuthOrigins(env: Env): string[] {
+  return (env.PORTAL_AUTH_ORIGINS || "").split(",").map(value => value.trim()).filter(Boolean);
+}
+
+export function portalRequestOrigin(c: Context<{ Bindings: Env }>): string | undefined {
+  const host = c.req.header("x-forwarded-host");
+  const origin = host && c.req.header("x-forwarded-proto") === "https" ? `https://${host}` : new URL(c.req.url).origin;
+  return portalAuthOrigins(c.env).includes(origin) ? origin : undefined;
+}
+
 function redirectLocationForSession(env: Env, target: string | undefined, token: string): string {
   const resolved = target || env.FRONTEND_REDIRECT_URL || "/";
   if (!allowedNativeRedirect(env, resolved)) return resolved;
@@ -173,6 +184,7 @@ function resolveRedirectTarget(env: Env, rawTarget: string | undefined, website:
   if (allowedNativeRedirect(env, target)) return target;
   const targetOrigin = originOf(target);
   if (!targetOrigin) return env.FRONTEND_REDIRECT_URL || "/";
+  if (portalAuthOrigins(env).includes(targetOrigin)) return target;
   const frontendOrigin = originOf(env.FRONTEND_REDIRECT_URL);
   if (frontendOrigin && targetOrigin === frontendOrigin) return target;
   if (website) {
@@ -343,6 +355,7 @@ export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Respons
     app_slug: appSlug || undefined,
     force_owner: truthy(url.searchParams.get("owner") || undefined),
     next: url.searchParams.get("next") || undefined,
+    portal_origin: portalRequestOrigin(c),
     exp: Math.floor(Date.now() / 1000) + 20 * 60,
   };
   const stateValue = await encodeState(c.env, state);
@@ -369,11 +382,25 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   const code = url.searchParams.get("code");
   const returnedState = url.searchParams.get("state") || "";
   const cookieState = getCookie(c, COOKIE_NAME);
-  deleteCookie(c, COOKIE_NAME, { path: "/" });
   if (!code || !returnedState) fail(400, `${provider} sign-in session expired. Please try again.`);
-  if (cookieState && returnedState !== cookieState) fail(400, `${provider} sign-in session expired. Please try again.`);
-  const state = await decodeState(c.env, cookieState || returnedState);
+  const state = await decodeState(c.env, returnedState);
   if (state.provider !== provider) fail(400, `${provider} sign-in session expired. Please try again.`);
+  // Return the provider's one-use code to the portal that began sign-in, before
+  // exchanging it. Its original state cookie binds the login to that browser.
+  if (state.portal_origin) {
+    if (!portalAuthOrigins(c.env).includes(state.portal_origin)) fail(400, "Portal sign-in is not configured");
+    if (portalRequestOrigin(c) !== state.portal_origin) {
+      const callback = new URL(`/pidp/auth/${provider}/callback`, state.portal_origin);
+      callback.searchParams.set("code", code);
+      callback.searchParams.set("state", returnedState);
+      c.header("cache-control", "no-store");
+      c.header("referrer-policy", "no-referrer");
+      return c.redirect(callback.toString(), 303);
+    }
+    if (!cookieState) fail(400, "Sign-in must finish in the browser where it started. Please try again.");
+  }
+  deleteCookie(c, COOKIE_NAME, { path: "/" });
+  if (cookieState && returnedState !== cookieState) fail(400, `${provider} sign-in session expired. Please try again.`);
   const codeVerifier = await consumeOAuthState(c.env, state, returnedState);
 
   const accessToken = await exchangeCode(c.env, cfg.provider, code, callbackUri(c, cfg.provider, cfg.redirectUri), codeVerifier);

@@ -5,7 +5,7 @@ import { all, apiTokenById, countWhere, first, normalizeScope, nowIso, parseJson
 import { bearerToken, fail, formCredentials, jsonError, readJson } from "./http";
 import { hashPassword, randomToken, sha256Hex, signJwt, verifyJwt, verifyPassword } from "./crypto";
 import { DEFAULT_MAX_USERS_PER_WEBSITE, MAX_WEBSITES_PER_OWNER, PROFILE_LINK_FIELDS, SYSTEM_SCHEMA_FIELDS, normalizeBranding, normalizeHostList, normalizeOriginList, normalizeSlug, normalizeWebsiteSchema, schemaWithSystemFields, validateIdentityData } from "./normalize";
-import { oauthCallback, oauthLogin } from "./oauth";
+import { oauthCallback, oauthLogin, portalRequestOrigin } from "./oauth";
 import { renderProfilePage, renderProfileQrSvg } from "./profilePage";
 import {
   createGoogleCalendarBooking,
@@ -502,7 +502,10 @@ app.get("/app/login", async (c) => {
   const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
   if (url.searchParams.get("auto") && (c.env.GOOGLE_CLIENT_ID || c.env.GITHUB_CLIENT_ID)) {
     const provider = c.env.GOOGLE_CLIENT_ID ? "google" : "github";
-    const redirect = new URL(`/auth/${provider}/login`, canonicalBase(c));
+    const portalOrigin = portalRequestOrigin(c);
+    const redirect = portalOrigin
+      ? new URL(`/pidp/auth/${provider}/login`, portalOrigin)
+      : new URL(`/auth/${provider}/login`, canonicalBase(c));
     redirect.searchParams.set("next", next);
     if (ownerMode) redirect.searchParams.set("owner", "1");
     else if (appSlug) redirect.searchParams.set("app", appSlug);
