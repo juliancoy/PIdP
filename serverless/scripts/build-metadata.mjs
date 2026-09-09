@@ -10,6 +10,7 @@ function git(...args) {
 
 let commit = null;
 let dirty = null;
+const explicitDirty = process.env.PIDP_BUILD_DIRTY?.toLowerCase();
 try {
   if (realpathSync(git("rev-parse", "--show-toplevel")) !== realpathSync(root)) throw new Error("Not an OrgPortal Git checkout");
   const sha = git("rev-parse", "HEAD");
@@ -20,7 +21,7 @@ try {
   const explicit = process.env.PIDP_BUILD_COMMIT;
   if (explicit && !/^[a-f0-9]{40,64}$/i.test(explicit)) throw new Error("PIDP_BUILD_COMMIT must be a full Git SHA");
   commit = explicit ? explicit.toLowerCase() : null;
-  dirty = null;
+  dirty = explicitDirty === "true" ? true : explicitDirty === "false" ? false : null;
 }
 
 const metadata = { commit, dirty, builtAt: new Date().toISOString() };
