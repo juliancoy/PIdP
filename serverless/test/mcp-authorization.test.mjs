@@ -42,7 +42,9 @@ async function fixture() {
     const nonce = await consent();
     const response = await post('/oauth/mcp/authorize', { request: nonce, decision: 'allow' }, { cookie, origin: issuer });
     assert.equal(response.status, 303); const location = new URL(response.headers.get('location'));
-    assert.equal(location.searchParams.get('state'), 'original-state'); return location.searchParams.get('code');
+    assert.equal(location.searchParams.get('state'), 'original-state');
+    assert.equal(location.searchParams.get('iss'), issuer);
+    return location.searchParams.get('code');
   }
   const exchange = (code, changes = {}) => post('/oauth/mcp/token', { grant_type: 'authorization_code', code,
     client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars', redirect_uri: params.redirect_uri, resource, code_verifier: verifier, ...changes });
@@ -59,6 +61,7 @@ test('discovery and full consent/PKCE flow issue verifiable, audience-bound toke
     assert.equal(health.headers.get('content-security-policy'), null);
     const discovery = await (await f.request('/.well-known/oauth-authorization-server')).json();
     assert.deepEqual(discovery.code_challenge_methods_supported, ['S256']);
+    assert.equal(discovery.authorization_response_iss_parameter_supported, true);
     const jwks = await (await f.request('/.well-known/jwks.json')).json();
     assert.equal(jwks.keys[0].d, undefined);
     const code = await f.code(); const result = await f.exchange(code);
@@ -98,7 +101,9 @@ test('consent denial, client revocation, account deactivation and protected intr
   const f = await fixture(); try {
     const nonce = await f.consent();
     const denied = await f.post('/oauth/mcp/authorize', { request: nonce, decision: 'deny' }, { cookie: f.cookie, origin: f.issuer });
-    assert.equal(new URL(denied.headers.get('location')).searchParams.get('error'), 'access_denied');
+    const deniedLocation = new URL(denied.headers.get('location'));
+    assert.equal(deniedLocation.searchParams.get('error'), 'access_denied');
+    assert.equal(deniedLocation.searchParams.get('iss'), f.issuer);
     assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM mcp_oauth_codes').get().n, 0);
     const tokens = await (await f.exchange(await f.code())).json();
     assert.equal((await f.post('/oauth/mcp/introspect', { token: tokens.access_token, resource: f.resource })).status, 401);
