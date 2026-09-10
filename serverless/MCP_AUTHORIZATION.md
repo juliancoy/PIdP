@@ -64,7 +64,7 @@ revokes grants. No access-token revocation hint is advertised.
     "name": "ChatGPT · OrgPortal events",
     "secretHash": "SHA256_OF_CHATGPT_CLIENT_SECRET",
     "redirectUris": ["EXACT_HTTPS_CALLBACK_FROM_CHATGPT"],
-    "resources": ["https://community.medtech.social/api/org/mcp"],
+    "resources": ["https://medtech.social/api/org/mcp"],
     "scopes": ["org:events.read", "org:events.write"]
   }
 }
@@ -72,7 +72,7 @@ revokes grants. No access-token revocation hint is advertised.
 
 ```json
 {
-  "https://community.medtech.social/api/org/mcp": {
+  "https://medtech.social/api/org/mcp": {
     "secretHash": "SHA256_OF_ORGPORTAL_INTROSPECTION_SECRET"
   }
 }
@@ -82,7 +82,7 @@ revokes grants. No access-token revocation hint is advertised.
 
 | Setting | Value |
 | --- | --- |
-| `MCP_PUBLIC_URL` | `https://community.medtech.social/api/org/mcp` |
+| `MCP_PUBLIC_URL` | `https://medtech.social/api/org/mcp` |
 | `MCP_OAUTH_ISSUER` | `https://id.codecollective.us` |
 | `MCP_OAUTH_JWKS_URL` | `https://id.codecollective.us/.well-known/jwks.json` |
 | `MCP_OAUTH_INTROSPECTION_URL` | `https://id.codecollective.us/oauth/mcp/introspect` |
