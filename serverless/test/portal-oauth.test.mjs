@@ -10,8 +10,8 @@ const directory = await mkdtemp(`${tmpdir()}/portal-oauth-`);
 await build({ entryPoints: [new URL('../src/oauth.ts', import.meta.url).pathname], outfile: `${directory}/oauth.mjs`, bundle: true, platform: 'node', format: 'esm' });
 const { oauthLogin, oauthCallback } = await import(pathToFileURL(`${directory}/oauth.mjs`).href);
 await rm(directory, { recursive: true });
-const portal = 'https://community.medtech.social';
-const forwarded = { 'x-forwarded-host': 'community.medtech.social', 'x-forwarded-proto': 'https' };
+const portal = 'https://medtech.social';
+const forwarded = { 'x-forwarded-host': 'medtech.social', 'x-forwarded-proto': 'https' };
 
 function fixture() {
   let verifier, consumed = false;
