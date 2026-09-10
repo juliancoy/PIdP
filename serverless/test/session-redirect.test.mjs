@@ -27,3 +27,10 @@ test("browser sessions can be scoped to the parent portal domain", () => {
   assert.match(oauthSource, /SESSION_COOKIE_DOMAIN/);
   assert.match(oauthSource, /\.\.\.\(domain \? \{ domain \} : \{\}\)/);
 });
+
+test("browser app login can return to configured tenant portal origins", () => {
+  const source = readFileSync(path.join(import.meta.dirname, "../src/index.ts"), "utf8");
+
+  assert.match(source, /function portalAuthOrigins/);
+  assert.match(source, /portalAuthOrigins\(env\)\.includes\(targetOrigin\)/);
+});

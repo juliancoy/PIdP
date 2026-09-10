@@ -207,11 +207,27 @@ function sameOrigin(rawTarget: string, rawOrigin: string | undefined): boolean {
   }
 }
 
+function originOf(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return null;
+  }
+}
+
+function portalAuthOrigins(env: Env): string[] {
+  return (env.PORTAL_AUTH_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
+}
+
 function redirectTarget(env: Env, next: string): string {
   const fallback = env.FRONTEND_REDIRECT_URL || "/";
   const target = next.trim() || fallback;
   if (target.startsWith("/")) return target;
   if (allowedNativeRedirect(env, target)) return target;
+  const targetOrigin = originOf(target);
+  if (targetOrigin && portalAuthOrigins(env).includes(targetOrigin)) return target;
   if (sameOrigin(target, env.FRONTEND_REDIRECT_URL) || sameOrigin(target, env.PUBLIC_BASE_URL)) return target;
   return fallback;
 }
