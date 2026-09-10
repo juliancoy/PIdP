@@ -116,6 +116,7 @@ mcpAuthorization.get('/.well-known/oauth-authorization-server', c => {
     revocation_endpoint: `${base}/revoke`, introspection_endpoint: `${base}/introspect`, jwks_uri: `${cfg.issuer}/.well-known/jwks.json`,
     response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'], scopes_supported: scopes,
+    authorization_response_iss_parameter_supported: true,
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'] });
 });
 mcpAuthorization.get('/.well-known/jwks.json', c => c.json({ keys: authorizationConfig(c.env).keys }));
@@ -153,7 +154,8 @@ mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   if (!client || !client.redirectUris.includes(row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_request');
   const redirect = new URL(row.redirect_uri); redirect.searchParams.set('state', row.state);
   if (p.get('decision') === 'deny') redirect.searchParams.set('error', 'access_denied');
-  else {
+  redirect.searchParams.set('iss', cfg.issuer);
+  if (p.get('decision') !== 'deny') {
     const code = randomToken('mcp_code_');
     await c.env.DB.prepare('INSERT INTO mcp_oauth_codes VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .bind(await sha256Hex(code), row.subject, row.client_id, row.redirect_uri, row.resource, row.scope, row.challenge, now() + 120).run();
