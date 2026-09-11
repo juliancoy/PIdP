@@ -4,7 +4,7 @@ import { importJWK, SignJWT, jwtVerify, type JWK } from 'jose';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import type { Env } from './types';
 
-const scopes = ['org:events.read', 'org:events.write'];
+const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'];
 const now = () => Math.floor(Date.now() / 1000);
 type Client = { name: string; redirectUris: string[]; resources: string[]; scopes: string[]; secretHash: string };
 type Config = { issuer: string; key: JWK; keys: JWK[]; clients: Record<string, Client>; resources: Record<string, { secretHash: string }> };
@@ -140,7 +140,13 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const nonce = randomToken('consent_');
   await c.env.DB.prepare('INSERT INTO mcp_oauth_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .bind(await sha256Hex(nonce), actor.hash, actor.subject, id, redirect, resource, requested.join(' '), challenge, p.get('state') || '', now() + 600).run();
-  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize event access · PIdP</title><main><h1>Allow ${escape(client.name)} to access your events?</h1><p>Account: ${escape(actor.display)}</p><p>Service: ${escape(resource)}</p><ul><li>Read events in organizations you manage.</li>${requested.includes(scopes[1]) ? '<li>Change events and invite collaborators in organizations you manage.</li>' : ''}</ul><p>Your organization permissions still apply. You can revoke this connection in PIdP.</p><form method="post" action="/oauth/mcp/authorize"><input type="hidden" name="request" value="${nonce}"><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny">Deny</button></form></main></html>`);
+  const permissionItems = [
+    requested.includes('org:events.read') ? '<li>Read events in organizations you manage.</li>' : '',
+    requested.includes('org:events.write') ? '<li>Change events and invite collaborators in organizations you manage.</li>' : '',
+    requested.includes('org:portal.read') ? '<li>Read portal setup and homepage settings for organizations you manage.</li>' : '',
+    requested.includes('org:portal.write') ? '<li>Change portal setup, homepage settings, and custom-domain requests for organizations you manage.</li>' : '',
+  ].join('');
+  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize OrgPortal access · PIdP</title><main><h1>Allow ${escape(client.name)} to access OrgPortal?</h1><p>Account: ${escape(actor.display)}</p><p>Service: ${escape(resource)}</p><ul>${permissionItems}</ul><p>Your organization permissions still apply. You can revoke this connection in PIdP.</p><form method="post" action="/oauth/mcp/authorize"><input type="hidden" name="request" value="${nonce}"><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny">Deny</button></form></main></html>`);
 });
 mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env);
