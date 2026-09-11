@@ -3,7 +3,7 @@
 PIdP now contains an OAuth authorization server for event MCP clients, alongside
 its existing Google/GitHub and password login. Existing HS256 portal sessions and
 PAT permissions are unchanged. New MCP access tokens are ES256 JWTs, with a
-separate private key, issuer, exact resource audience, subject and event scopes.
+separate private key, issuer, exact resource audience, subject, event, and portal scopes.
 This is OAuth authorization-server discovery, not a general OpenID Connect server;
 there is no ID token or `openid` scope.
 
@@ -61,11 +61,11 @@ revokes grants. No access-token revocation hint is advertised.
 ```json
 {
   "chatgpt-orgportal": {
-    "name": "ChatGPT · OrgPortal events",
+    "name": "ChatGPT · OrgPortal",
     "secretHash": "SHA256_OF_CHATGPT_CLIENT_SECRET",
     "redirectUris": ["EXACT_HTTPS_CALLBACK_FROM_CHATGPT"],
     "resources": ["https://medtech.social/api/org/mcp"],
-    "scopes": ["org:events.read", "org:events.write"]
+    "scopes": ["org:events.read", "org:events.write", "org:portal.read", "org:portal.write"]
   }
 }
 ```
@@ -93,7 +93,7 @@ PIdP subjects are `owner:<user-id>` or `website:<website-id>:<website-user-id>` 
 avoid conflating separate identity namespaces. Use the correct existing OrgPortal
 identity: for example `{"owner:ACTUAL_ID":"ACTUAL_ID"}`. Never map a name or email
 by guesswork. OrgPortal still checks organization management permissions and
-event scopes; PIdP consent grants no organization administration privileges.
+event and portal scopes; PIdP consent grants no organization administration privileges.
 Complete the existing `EVENT_INTEGRATIONS_JSON`, `EVENT_KEY_*`, approved branding,
 and event audit migrations separately. This OAuth change creates no events.
 

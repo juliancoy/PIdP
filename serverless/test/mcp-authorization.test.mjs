@@ -22,14 +22,14 @@ async function fixture() {
   const env = { DB: db, SECRET_KEY: 'test-session-key', MCP_OAUTH_ISSUER: issuer,
     MCP_OAUTH_PRIVATE_JWK: JSON.stringify(key),
     MCP_OAUTH_CLIENTS_JSON: JSON.stringify({ chatgpt: { name: '<ChatGPT>', secretHash: await sha256Hex('client-secret-for-tests-at-least-32-chars'),
-      redirectUris: ['https://chatgpt.example/callback'], resources: [resource], scopes: ['org:events.read', 'org:events.write'] } }),
+      redirectUris: ['https://chatgpt.example/callback'], resources: [resource], scopes: ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'] } }),
     MCP_OAUTH_RESOURCES_JSON: JSON.stringify({ [resource]: { secretHash: await sha256Hex('resource-secret-for-tests-at-least-32-chars') } }) };
   const cookie = `pidp_session=${await signJwt(env, { sub: 'alice' })}`;
   const bobCookie = `pidp_session=${await signJwt(env, { sub: 'bob' })}`;
   const verifier = 'v'.repeat(43);
   const challenge = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))).toString('base64url');
   const params = { response_type: 'code', client_id: 'chatgpt', redirect_uri: 'https://chatgpt.example/callback',
-    resource, scope: 'org:events.read org:events.write', code_challenge: challenge, code_challenge_method: 'S256', state: 'original-state' };
+    resource, scope: 'org:events.read org:events.write org:portal.read org:portal.write', code_challenge: challenge, code_challenge_method: 'S256', state: 'original-state' };
   const request = (path, init = {}) => app.request(issuer + path, init, env);
   const post = (path, body, headers = {}) => request(path, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body) });
   async function consent() {
