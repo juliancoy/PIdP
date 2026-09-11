@@ -10,18 +10,30 @@ function git(...args) {
 
 let commit = null;
 let dirty = null;
+const explicit = process.env.PIDP_BUILD_COMMIT;
 const explicitDirty = process.env.PIDP_BUILD_DIRTY?.toLowerCase();
-try {
-  if (realpathSync(git("rev-parse", "--show-toplevel")) !== realpathSync(root)) throw new Error("Not an OrgPortal Git checkout");
-  const sha = git("rev-parse", "HEAD");
-  if (!/^[a-f0-9]{40,64}$/.test(sha)) throw new Error("Invalid commit");
-  commit = sha;
-  dirty = Boolean(git("status", "--porcelain", "--untracked-files=normal"));
-} catch {
-  const explicit = process.env.PIDP_BUILD_COMMIT;
-  if (explicit && !/^[a-f0-9]{40,64}$/i.test(explicit)) throw new Error("PIDP_BUILD_COMMIT must be a full Git SHA");
-  commit = explicit ? explicit.toLowerCase() : null;
-  dirty = explicitDirty === "true" ? true : explicitDirty === "false" ? false : null;
+if (explicit && !/^[a-f0-9]{40,64}$/i.test(explicit)) throw new Error("PIDP_BUILD_COMMIT must be a full Git SHA");
+if (explicit) {
+  commit = explicit.toLowerCase();
+} else {
+  try {
+    if (realpathSync(git("rev-parse", "--show-toplevel")) !== realpathSync(root)) throw new Error("Not a PIdP Git checkout");
+    const sha = git("rev-parse", "HEAD");
+    if (!/^[a-f0-9]{40,64}$/.test(sha)) throw new Error("Invalid commit");
+    commit = sha;
+  } catch {
+    commit = null;
+  }
+}
+if (explicitDirty === "true" || explicitDirty === "false") {
+  dirty = explicitDirty === "true";
+} else {
+  try {
+    if (realpathSync(git("rev-parse", "--show-toplevel")) !== realpathSync(root)) throw new Error("Not a PIdP Git checkout");
+    dirty = Boolean(git("status", "--porcelain", "--untracked-files=normal"));
+  } catch {
+    dirty = null;
+  }
 }
 
 const metadata = { commit, dirty, builtAt: new Date().toISOString() };
