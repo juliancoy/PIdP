@@ -16,11 +16,15 @@ there is no ID token or `openid` scope.
 | `/oauth/mcp/authorize` | GET login/consent, POST allow/deny |
 | `/oauth/mcp/token` | Authorization-code and rotating refresh-token grants |
 | `/oauth/mcp/introspect` | Authenticated resource-server check for active grants/accounts |
+| `/oauth/mcp/handoff` | Portal-session confirmation of a browser-bound login request |
+| `/oauth/mcp/resume` | One-use return to issuer-side consent in the original browser |
 | `/oauth/mcp/revoke` | Authenticated client revokes its refresh token's entire grant |
 | `/oauth/mcp/connections` | Signed-in user lists/revokes their own connections |
 
 Pre-registered confidential and native public clients are supported. Optional
 Dynamic Client Registration is described in [account authorization](../docs/account-oauth.md#automatic-mcp-client-registration).
+Configure deployed portal login with `MCP_OAUTH_PORTALS_JSON` and migration 0008;
+see [portal browser login](../docs/account-oauth.md#portal-browser-login).
 For manually registered confidential clients, configure the client ID
 and secret manually in the ChatGPT connection. Client-metadata URL fetching is
 not supported. Copy the exact callback URL from the

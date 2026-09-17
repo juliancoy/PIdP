@@ -21,9 +21,11 @@ from config import settings
 from db import get_session
 from models import Base, User, WebsiteUser
 from security import safe_decode_token
+from consent_page import render_consent_page
 
 SCOPES = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write']
-HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'no-referrer',
+# no-referrer makes browser form POSTs send Origin: null, breaking origin-bound CSRF checks.
+HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'same-origin',
            'X-Content-Type-Options': 'nosniff',
            'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}
 
@@ -49,6 +51,14 @@ Table('mcp_oauth_clients', Base.metadata, Column('id', Text, primary_key=True),
 Table('mcp_oauth_registration_limits', Base.metadata, Column('id', Text, primary_key=True),
       Column('window_start', Integer, nullable=False), Column('requests', Integer, nullable=False))
 Index('mcp_oauth_registration_limits_window', Base.metadata.tables['mcp_oauth_registration_limits'].c.window_start)
+Table('mcp_oauth_logins', Base.metadata, Column('id', Text, primary_key=True),
+      Column('browser_hash', Text, nullable=False), Column('resource', Text, nullable=False),
+      Column('return_path', Text, nullable=False), Column('subject', Text), Column('display', Text),
+      Column('code_hash', Text, unique=True), Column('expires_at', Integer, nullable=False))
+Index('mcp_oauth_logins_expiry', Base.metadata.tables['mcp_oauth_logins'].c.expires_at)
+Index('mcp_oauth_logins_browser', Base.metadata.tables['mcp_oauth_logins'].c.browser_hash)
+BROWSER_COOKIE = '__Host-pidp_mcp_browser'
+SESSION_COOKIE = '__Host-pidp_mcp_session'
 
 
 class OAuthError(Exception):
@@ -58,6 +68,14 @@ class OAuthError(Exception):
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def consent_headers(redirect):
+    # Browser form-action also covers the redirect after the consent POST.
+    target = urlsplit(redirect)
+    origin = target.scheme + '://' + quote(target.netloc, safe='[]:.-')
+    return {**HEADERS, 'Content-Security-Policy':
+            f"default-src 'none'; form-action 'self' {origin}; frame-ancestors 'none'; base-uri 'none'"}
 
 
 def https(value):
@@ -103,6 +121,13 @@ def configuration():
                 for k in [key, *(k for k in old if k['kid'] != key['kid'])]]
         clients = json.loads(settings.mcp_oauth_clients_json)
         resources = json.loads(settings.mcp_oauth_resources_json)
+        portals = json.loads(settings.mcp_oauth_portals_json)
+        for resource, portal in portals.items():
+            if resource not in resources or not isinstance(portal['name'], str) or not portal['name'].strip() or len(portal['name']) > 120:
+                raise ValueError()
+            target = urlsplit(https(portal['loginUrl']))
+            if target.query or not target.path.endswith('/users/mcp-connect'):
+                raise ValueError()
         if not clients or not resources:
             raise ValueError()
         for resource, binding in resources.items():
@@ -122,7 +147,7 @@ def configuration():
                     https(value)
             if any(r not in resources for r in client['resources']) or any(s not in SCOPES for s in client['scopes']):
                 raise ValueError()
-        return dict(issuer=issuer, key=key, keys=keys, clients=clients, resources=resources)
+        return dict(issuer=issuer, key=key, keys=keys, clients=clients, resources=resources, portals=portals)
     except (ValueError, TypeError, KeyError, AttributeError):
         raise OAuthError('authorization_server_not_configured', 503)
 
@@ -149,7 +174,7 @@ async def active_subject(db, subject):
     return (await db.execute(statement)).scalar_one_or_none() is not None
 
 
-async def session(request, db):
+async def identity_session(request, db):
     token = request.cookies.get('pidp_token')
     payload = safe_decode_token(token) if token else None
     if not payload:
@@ -159,6 +184,95 @@ async def session(request, db):
     if not await active_subject(db, subject):
         return None
     return dict(subject=subject, display=str(payload.get('email') or payload['sub']), hash=digest(token))
+
+
+async def session(request, db, resource=None):
+    cfg = configuration()
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        try:
+            if jwt.get_unverified_header(token).get('typ') != 'mcp-session+jwt':
+                raise ValueError()
+            payload = jwt.decode(token, cfg['keys'][0], algorithms=['ES256'], issuer=cfg['issuer'], audience=cfg['issuer'],
+                                 options={'require_exp': True, 'require_sub': True})
+            if (not resource or payload.get('resource') == resource) and payload.get('resource') in cfg['portals'] and await active_subject(db, payload['sub']):
+                return dict(subject=payload['sub'], display=str(payload.get('display') or payload['sub']), hash=digest(token))
+        except Exception:
+            pass
+    if resource in cfg['portals'] or (not resource and cfg['portals']):
+        return None
+    return await identity_session(request, db)
+
+
+async def start_login(request, db, cfg, resource, return_path):
+    portal = cfg['portals'].get(resource)
+    if not portal:
+        raise OAuthError('portal_login_not_configured', 503)
+    await anonymous_limit(request, db, 'login:', 30, 1000)
+    browser = request.cookies.get(BROWSER_COOKIE, '')
+    if not re.fullmatch('[A-Za-z0-9_-]{43,100}', browser):
+        browser = secrets.token_urlsafe(40)
+    now = int(time.time())
+    await query(db, 'DELETE FROM mcp_oauth_logins WHERE expires_at < :now', now=now)
+    login_id = 'login_' + secrets.token_urlsafe(40)
+    rows = await query(db, '''INSERT INTO mcp_oauth_logins (id, browser_hash, resource, return_path, expires_at)
+        SELECT :id, :browser, :resource, :return_path, :expires WHERE
+        (SELECT COUNT(*) FROM mcp_oauth_logins WHERE browser_hash = :browser) < 20
+        AND (SELECT COUNT(*) FROM mcp_oauth_logins) < 10000 RETURNING id''',
+        id=digest(login_id), browser=digest(browser), resource=resource, return_path=return_path, expires=now + 600)
+    if not rows:
+        raise OAuthError('too_many_requests', 429)
+    result = RedirectResponse(portal['loginUrl'] + '?' + urlencode({'request': login_id}), status_code=303, headers=HEADERS)
+    result.set_cookie(BROWSER_COOKIE, browser, max_age=600, httponly=True, secure=True, samesite='lax', path='/')
+    return result
+
+
+async def login_handoff(request, db, cfg):
+    now = int(time.time())
+    if request.method not in ('GET', 'POST'):
+        raise OAuthError('invalid_request')
+    p = await form(request) if request.method == 'POST' else parameters(request.query_params.multi_items())
+    rows = await query(db, 'SELECT * FROM mcp_oauth_logins WHERE id = :id AND expires_at >= :now AND code_hash IS NULL',
+                       id=digest(p.get('request', '')), now=now)
+    row = rows[0] if rows else None
+    portal = cfg['portals'].get(row['resource']) if row else None
+    if not portal:
+        raise OAuthError('login_expired')
+    url = urlsplit(portal['loginUrl'])
+    origin = f'{url.scheme}://{url.netloc}'
+    if request.method == 'POST' and request.headers.get('origin') != origin:
+        raise OAuthError('invalid_request', 403)
+    actor = await identity_session(request, db)
+    if not actor:
+        raise OAuthError('login_required', 401)
+    if request.method == 'GET':
+        return response(dict(portal=portal['name'], portal_origin=origin, issuer=cfg['issuer'], account=actor['display']))
+    code = 'handoff_' + secrets.token_urlsafe(40)
+    rows = await query(db, '''UPDATE mcp_oauth_logins SET subject = :subject, display = :display, code_hash = :code, expires_at = :expires
+        WHERE id = :id AND code_hash IS NULL AND expires_at >= :now RETURNING id''',
+        subject=actor['subject'], display=actor['display'], code=digest(code), expires=min(row['expires_at'], now + 120), id=row['id'], now=now)
+    if not rows:
+        raise OAuthError('login_expired')
+    return response(dict(redirect_url=cfg['issuer'] + '/oauth/mcp/resume?' + urlencode({'code': code})))
+
+
+async def resume_login(request, db, cfg):
+    p = parameters(request.query_params.multi_items())
+    browser = request.cookies.get(BROWSER_COOKIE)
+    if request.method != 'GET' or str(request.base_url).rstrip('/') != cfg['issuer'] or not browser or 'code' not in p:
+        raise OAuthError('invalid_request')
+    now = int(time.time())
+    rows = await query(db, '''DELETE FROM mcp_oauth_logins WHERE code_hash = :code AND browser_hash = :browser
+        AND expires_at >= :now RETURNING *''', code=digest(p['code']), browser=digest(browser), now=now)
+    row = rows[0] if rows else None
+    if not row or not row['subject'] or row['resource'] not in cfg['portals'] or not await active_subject(db, row['subject']):
+        raise OAuthError('login_expired')
+    token = jwt.encode(dict(sub=row['subject'], display=row['display'], resource=row['resource'], iss=cfg['issuer'],
+                            aud=cfg['issuer'], iat=now, exp=now + 600, jti=str(uuid4())), cfg['key'], algorithm='ES256',
+                       headers={'kid': cfg['key']['kid'], 'typ': 'mcp-session+jwt'})
+    result = RedirectResponse(row['return_path'], status_code=303, headers=HEADERS)
+    result.set_cookie(SESSION_COOKIE, token, max_age=600, httponly=True, secure=True, samesite='lax', path='/')
+    return result
 
 
 def parameters(pairs):
@@ -197,12 +311,10 @@ async def get_client(db, cfg, client_id):
     return {**client, 'dynamic': True, 'resources': [r for r in client['resources'] if r in cfg['resources']]}
 
 
-async def register_client(request, db, cfg):
-    if not settings.mcp_oauth_dynamic_registration:
-        raise OAuthError('registration_not_supported', 403)
+async def anonymous_limit(request, db, prefix='', ip_limit=10, global_limit=100):
     window = int(time.time()) // 3600
     await query(db, 'DELETE FROM mcp_oauth_registration_limits WHERE window_start < :window', window=window - 1)
-    for key, limit in ((digest(request.client.host if request.client else 'unknown'), 10), ('global', 100)):
+    for key, limit in ((prefix + digest(request.client.host if request.client else 'unknown'), ip_limit), (prefix + 'global', global_limit)):
         row = await query(db, '''INSERT INTO mcp_oauth_registration_limits (id, window_start, requests)
             VALUES (:id, :window, 1) ON CONFLICT(id) DO UPDATE SET window_start = excluded.window_start,
             requests = CASE WHEN mcp_oauth_registration_limits.window_start = excluded.window_start THEN mcp_oauth_registration_limits.requests + 1 ELSE 1 END
@@ -210,6 +322,12 @@ async def register_client(request, db, cfg):
             id=key, window=window, limit=limit)
         if not row:
             raise OAuthError('too_many_requests', 429)
+
+
+async def register_client(request, db, cfg):
+    if not settings.mcp_oauth_dynamic_registration:
+        raise OAuthError('registration_not_supported', 403)
+    await anonymous_limit(request, db)
     if not request.headers.get('content-type', '').startswith('application/json'):
         raise OAuthError('invalid_client_metadata')
     try:
@@ -349,6 +467,10 @@ async def dispatch(request: Request, endpoint: str = '', db=Depends(get_session)
 async def handle(request, endpoint, db):
     cfg = configuration()
     issuer, now = cfg['issuer'], int(time.time())
+    if endpoint == 'handoff':
+        return await login_handoff(request, db, cfg)
+    if endpoint == 'resume':
+        return await resume_login(request, db, cfg)
     if not endpoint:
         return response(dict(issuer=issuer, authorization_endpoint=issuer + '/oauth/mcp/authorize',
             **({'registration_endpoint': issuer + '/oauth/mcp/register'} if settings.mcp_oauth_dynamic_registration else {}),
@@ -365,10 +487,20 @@ async def handle(request, endpoint, db):
     if endpoint in ('authorize', 'connections'):
         if endpoint == 'authorize' and request.method == 'GET':
             p, client, requested = await authorization_request(request, cfg, db)
-        actor = await session(request, db)
+        resource = p['resource'] if endpoint == 'authorize' and request.method == 'GET' else None
+        actor = None if resource and p.get('prompt') == 'login' else await session(request, db, resource)
         if request.method == 'GET' and not actor:
-            return RedirectResponse(issuer + '/app/login?owner=1&next=' + quote(request.url.path +
-                ('?' + request.url.query if request.url.query else ''), safe=''), status_code=303, headers=HEADERS)
+            params = dict(request.query_params)
+            params.pop('prompt', None)
+            return_path = request.url.path + ('?' + urlencode(params) if params else '')
+            if resource in cfg['portals']:
+                return await start_login(request, db, cfg, resource, return_path)
+            if endpoint == 'connections' and cfg['portals']:
+                resource = request.query_params.get('resource')
+                if not resource and len(cfg['portals']) == 1:
+                    resource = next(iter(cfg['portals']))
+                return await start_login(request, db, cfg, resource, return_path)
+            return RedirectResponse(issuer + '/app/login?next=' + quote(return_path, safe=''), status_code=303, headers=HEADERS)
         if request.method == 'POST':
             if request.headers.get('origin') != issuer:
                 raise OAuthError('invalid_request', 403)
@@ -395,11 +527,13 @@ async def handle(request, endpoint, db):
             await query(db, 'INSERT INTO mcp_oauth_requests VALUES (:id, :session_hash, :subject, :client_id, :redirect_uri, :resource, :scope, :challenge, :state, :expires_at)',
                 id=digest(nonce), session_hash=actor['hash'], subject=actor['subject'], client_id=p['client_id'],
                 redirect_uri=p['redirect_uri'], resource=p['resource'], scope=' '.join(requested), challenge=p['code_challenge'], state=p.get('state', ''), expires_at=now + 600)
-            permissions = {'org:events.read': 'Read events in organizations you manage.', 'org:events.write': 'Change events, upload event photos, and invite collaborators in organizations you manage.',
-                           'org:portal.read': 'Read portal settings in organizations you manage.', 'org:portal.write': 'Change portal settings in organizations you manage.'}
-            items = ''.join(f'<li>{permissions[s]}</li>' for s in requested)
-            notice = f'<p>This client name is self-reported, not verified by PIdP.</p><p>Callback: {html.escape(p["redirect_uri"])}</p>' if client.get('dynamic') else ''
-            return HTMLResponse(f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize OrgPortal access</title><main><h1>Allow {html.escape(client["name"])} to access OrgPortal?</h1>{notice}<p>Account: {html.escape(actor["display"])}</p><p>Service: {html.escape(p["resource"])}</p><ul>{items}</ul><p>Your organization permissions still apply. You can revoke this connection in PIdP.</p><form method="post" action="/oauth/mcp/authorize"><input type="hidden" name="request" value="{nonce}"><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny">Deny</button></form></main></html>', headers=HEADERS)
+            portal = cfg['portals'].get(p['resource'])
+            markup, policy = render_consent_page(client=client['name'], account=actor['display'], resource=p['resource'],
+                callback=p['redirect_uri'], request=nonce, change_account='/oauth/mcp/authorize?' + urlencode({**p, 'prompt': 'login'}),
+                requested=requested, dynamic=bool(client.get('dynamic')), portal=portal)
+            headers = consent_headers(p['redirect_uri'])
+            headers['Content-Security-Policy'] += '; ' + policy
+            return HTMLResponse(markup, headers=headers)
         p = await form(request)
         if p.get('decision') not in ('allow', 'deny'):
             raise OAuthError('invalid_request')
@@ -421,7 +555,7 @@ async def handle(request, endpoint, db):
             await query(db, 'INSERT INTO mcp_oauth_codes VALUES (:hash, :subject, :client_id, :redirect_uri, :resource, :scope, :challenge, :expires_at)',
                 hash=digest(code), **{k: row[k] for k in ('subject', 'client_id', 'redirect_uri', 'resource', 'scope', 'challenge')}, expires_at=now + 120)
             params['code'] = code
-        return RedirectResponse(urlunsplit(target._replace(query=urlencode(params))), status_code=303, headers=HEADERS)
+        return RedirectResponse(urlunsplit(target._replace(query=urlencode(params))), status_code=303, headers=consent_headers(row['redirect_uri']))
     if request.method != 'POST':
         return Response(status_code=405, headers=HEADERS)
     p = await form(request)

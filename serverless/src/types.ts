@@ -8,6 +8,7 @@ export interface Env {
   MCP_OAUTH_CLIENTS_JSON?: string;
   MCP_OAUTH_DYNAMIC_REGISTRATION?: string;
   MCP_OAUTH_RESOURCES_JSON?: string;
+  MCP_OAUTH_PORTALS_JSON?: string;
   DB: D1Database;
   CF_VERSION_METADATA?: { id: string };
   AVATARS?: R2Bucket;

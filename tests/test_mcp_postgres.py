@@ -47,10 +47,11 @@ class PostgresOAuthTests(unittest.IsolatedAsyncioTestCase):
             app.dependency_overrides[oauth.get_session] = session
             with patch.multiple(oauth.settings, mcp_oauth_issuer=issuer, mcp_oauth_private_jwk=json.dumps(key),
                 mcp_oauth_dynamic_registration=True,
+                mcp_oauth_portals_json=json.dumps({resource: {'name': 'Portal', 'loginUrl': 'https://portal.example/users/mcp-connect'}}),
                 mcp_oauth_clients_json=json.dumps({'native': dict(name='Test', tokenEndpointAuthMethod='none',
                     redirectUris=['http://127.0.0.1/callback'], resources=[resource], scopes=oauth.SCOPES)}),
                 mcp_oauth_resources_json=json.dumps({resource: {'secretHash': oauth.digest('resource-secret-at-least-32-characters')}})), \
-                patch.object(oauth, 'session', AsyncMock(return_value=dict(subject='owner:alice', display='Alice', hash='session-hash'))), \
+                patch.object(oauth, 'identity_session', AsyncMock(return_value=dict(subject='owner:alice', display='Alice', hash='session-hash'))), \
                 patch.object(oauth, 'active_subject', AsyncMock(return_value=True)):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url=issuer) as client:
                     registration = await client.post('/oauth/mcp/register', json=dict(client_name='Postgres test', token_endpoint_auth_method='none', redirect_uris=['http://127.0.0.1/callback']))
@@ -59,6 +60,15 @@ class PostgresOAuthTests(unittest.IsolatedAsyncioTestCase):
                         resource=resource, scope='org:events.read org:events.write', state='state', code_challenge_method='S256',
                         code_challenge=base64.urlsafe_b64encode(hashlib.sha256(b'v' * 43).digest()).decode().rstrip('='))
                     params['client_id'] = registration.json()['client_id']
+                    start = await client.get('/oauth/mcp/authorize', params=params)
+                    self.assertEqual(start.status_code, 303, start.text)
+                    request = parse_qs(urlsplit(start.headers['location']).query)['request'][0]
+                    confirmations = await asyncio.gather(*(client.post('/oauth/mcp/handoff', data={'request': request},
+                        headers={'origin': 'https://portal.example'}) for _ in range(2)))
+                    self.assertEqual(sorted(r.status_code for r in confirmations), [200, 400])
+                    resume = next(r.json()['redirect_url'] for r in confirmations if r.status_code == 200)
+                    resumes = await asyncio.gather(*(client.get(resume) for _ in range(2)))
+                    self.assertEqual(sorted(r.status_code for r in resumes), [303, 400])
                     consent = await client.get('/oauth/mcp/authorize', params=params)
                     self.assertEqual(consent.status_code, 200, consent.text)
                     nonce = re.search('name="request" value="([^"]+)"', consent.text)[1]

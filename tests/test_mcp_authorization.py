@@ -29,6 +29,7 @@ class Database:
         self.db.row_factory = sqlite3.Row
         self.db.executescript((Path(__file__).parents[1] / 'serverless/migrations/0006_mcp_authorization.sql').read_text())
         self.db.executescript((Path(__file__).parents[1] / 'serverless/migrations/0007_mcp_client_registration.sql').read_text())
+        self.db.executescript((Path(__file__).parents[1] / 'serverless/migrations/0008_mcp_login_handoff.sql').read_text())
 
     async def execute(self, sql, params):
         cursor = self.db.execute(str(sql), params)
@@ -55,7 +56,7 @@ class OAuthTests(unittest.TestCase):
         self.client_config = dict(name='Uploader', tokenEndpointAuthMethod='none', redirectUris=['http://127.0.0.1/callback'],
             resources=[self.resource], scopes=oauth.SCOPES)
         self.setting_patch = patch.multiple(oauth.settings, mcp_oauth_issuer=self.issuer, mcp_oauth_private_jwk=json.dumps(key),
-            mcp_oauth_dynamic_registration=False,
+            mcp_oauth_dynamic_registration=False, mcp_oauth_portals_json='{}',
             mcp_oauth_clients_json=json.dumps({'native': self.client_config}),
             mcp_oauth_resources_json=json.dumps({self.resource: {'secretHash': oauth.digest('resource-secret-at-least-32-characters')}}))
         self.setting_patch.start()
@@ -79,6 +80,9 @@ class OAuthTests(unittest.TestCase):
     def code(self):
         consent = self.client.get('/oauth/mcp/authorize', params=self.params)
         self.assertEqual(consent.status_code, 200, consent.text)
+        self.assertEqual(consent.headers['referrer-policy'], 'same-origin')
+        target = urlsplit(self.params['redirect_uri'])
+        self.assertIn("form-action 'self' " + target.scheme + '://' + target.netloc, consent.headers['content-security-policy'])
         nonce = re.search('name="request" value="([^"]+)"', consent.text)[1]
         response = self.post('authorize', dict(request=nonce, decision='allow'), headers={'origin': self.issuer})
         self.assertEqual(response.status_code, 303, response.text)
@@ -94,6 +98,58 @@ class OAuthTests(unittest.TestCase):
 
     def introspect(self, token):
         return self.post('introspect', dict(token=token, resource=self.resource), headers={'authorization': 'Bearer resource-secret-at-least-32-characters'}).json()
+
+    def test_portal_handoff_preserves_identity_and_completes_consent(self):
+        self.actor.stop()
+        with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
+                'name': 'MedTech', 'loginUrl': 'https://portal.example/users/mcp-connect'}})), \
+                patch.object(oauth, 'identity_session', AsyncMock(return_value=None)) as identity:
+            start = self.client.get('/oauth/mcp/authorize', params=self.params, follow_redirects=False)
+            self.assertEqual(start.status_code, 303, start.text)
+            target = urlsplit(start.headers['location'])
+            self.assertEqual(target.netloc, 'portal.example')
+            request = parse_qs(target.query)['request'][0]
+            self.assertIn('HttpOnly', start.headers['set-cookie'])
+            self.assertNotIn('Domain=', start.headers['set-cookie'])
+            browser = self.client.cookies.get(oauth.BROWSER_COOKIE)
+            self.assertEqual(self.post('handoff', {'request': request}, headers={'origin': 'https://portal.example'}).status_code, 401)
+            identity.return_value = dict(subject='website:portal-site:member', display='member@example.test', hash='portal-session')
+            metadata = self.client.get('/oauth/mcp/handoff', params={'request': request}).json()
+            self.assertEqual(metadata['account'], 'member@example.test')
+            self.assertEqual(metadata['portal'], 'MedTech')
+            self.assertEqual(self.post('handoff', {'request': request}, headers={'origin': 'https://evil.example'}).status_code, 403)
+            self.assertEqual(self.post('handoff', {'request': request}).status_code, 403)
+            result = self.post('handoff', {'request': request}, headers={'origin': 'https://portal.example'})
+            self.assertEqual(result.status_code, 200, result.text)
+            resume = result.json()['redirect_url']
+            self.assertEqual(self.post('handoff', {'request': request}, headers={'origin': 'https://portal.example'}).status_code, 400)
+            self.client.cookies.clear()
+            self.assertEqual(self.client.get(resume, follow_redirects=False).status_code, 400)
+            self.client.cookies.set(oauth.BROWSER_COOKIE, 'z' * 54)
+            self.assertEqual(self.client.get(resume, follow_redirects=False).status_code, 400)
+            self.client.cookies.set(oauth.BROWSER_COOKIE, browser)
+            resumed = self.client.get(resume, follow_redirects=False)
+            self.assertEqual(resumed.status_code, 303, resumed.text)
+            self.assertIn(oauth.SESSION_COOKIE, resumed.headers['set-cookie'])
+            self.assertFalse(self.introspect(self.client.cookies.get(oauth.SESSION_COOKIE))['active'])
+            self.assertEqual(self.client.get(resume, follow_redirects=False).status_code, 400)
+            tokens = self.exchange(self.code()).json()
+            claims = jwt.decode(tokens['access_token'], oauth.configuration()['keys'][0], algorithms=['ES256'], issuer=self.issuer, audience=self.resource)
+            self.assertEqual(claims['sub'], 'website:portal-site:member')
+            self.assertTrue(self.introspect(tokens['access_token'])['active'])
+            self.assertEqual(self.client.get('/oauth/mcp/connections').status_code, 200)
+
+    def test_portal_handoff_expiry_and_invalid_configuration(self):
+        self.actor.stop()
+        with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
+                'name': 'MedTech', 'loginUrl': 'https://portal.example/users/mcp-connect'}})):
+            start = self.client.get('/oauth/mcp/authorize', params=self.params, follow_redirects=False)
+            request = parse_qs(urlsplit(start.headers['location']).query)['request'][0]
+            self.db.db.execute('UPDATE mcp_oauth_logins SET expires_at = 0')
+            self.assertEqual(self.post('handoff', {'request': request}, headers={'origin': 'https://portal.example'}).status_code, 400)
+        with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
+                'name': 'Bad', 'loginUrl': 'https://portal.example/users/mcp-connect?next=https://evil.example'}})):
+            self.assertEqual(self.client.get('/oauth/mcp/authorize', params=self.params).status_code, 503)
 
     def test_native_flow_rotation_replay_and_revocation(self):
         discovery = self.client.get('/.well-known/oauth-authorization-server').json()
@@ -239,12 +295,12 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase):
             async with AsyncSession(engine) as db:
                 token = create_access_token(owner)
                 request = Request({'type': 'http', 'headers': [(b'cookie', f'pidp_token={token}'.encode())]})
-                actor = await oauth.session(request, db)
+                actor = await oauth.identity_session(request, db)
                 self.assertEqual(actor['subject'], f'owner:{owner}')
                 self.assertTrue(await oauth.active_subject(db, f'website:{site}:{owner}'))
                 self.assertFalse(await oauth.active_subject(db, f'website:{owner}:{owner}'))
                 await db.execute(text('UPDATE users SET is_active=0')); await db.commit()
-                self.assertIsNone(await oauth.session(request, db))
+                self.assertIsNone(await oauth.identity_session(request, db))
                 self.assertTrue(await oauth.active_subject(db, f'website:{site}:{owner}'))
                 self.assertFalse(await oauth.active_subject(db, 'owner:not-a-uuid'))
         finally:

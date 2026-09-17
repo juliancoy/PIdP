@@ -13,6 +13,7 @@ async function fixture() {
     CREATE TABLE website_users(id TEXT, website_id TEXT, is_active INTEGER);`);
   sql.exec(readFileSync(new URL('../migrations/0006_mcp_authorization.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0007_mcp_client_registration.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../migrations/0008_mcp_login_handoff.sql', import.meta.url), 'utf8'));
   const db = { prepare(query) { const stmt = sql.prepare(query); return { bind(...params) { return {
     async first() { return stmt.get(...params) ?? null; }, async all() { return { results: stmt.all(...params) }; },
     async run() { return { meta: stmt.run(...params) }; },
@@ -53,6 +54,86 @@ async function fixture() {
   const introspect = token => post('/oauth/mcp/introspect', { token, resource }, { authorization: 'Bearer resource-secret-for-tests-at-least-32-chars' });
   return { sql, env, issuer, resource, request, post, cookie, bobCookie, params, consent, code, exchange, refresh, introspect };
 }
+
+test('portal login preserves website identity, binds the browser, and completes consent and token exchange', async () => {
+  const f = await fixture(); try {
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: { name: 'MedTech', loginUrl: 'https://portal.example/users/mcp-connect' } });
+    f.sql.exec("INSERT INTO website_users VALUES ('member','portal-site',1)");
+    const portalCookie = `pidp_session=${await signJwt(f.env, { sub: 'member', actor_type: 'website_user', website_id: 'portal-site', email: 'member@example.test' })}`;
+    const start = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } });
+    assert.equal(start.status, 303);
+    const target = new URL(start.headers.get('location'));
+    assert.equal(target.origin, 'https://portal.example');
+    assert.equal(target.pathname, '/users/mcp-connect');
+    assert.equal(target.searchParams.has('owner'), false);
+    assert.equal((await f.post('/oauth/mcp/handoff', { request: target.searchParams.get('request') },
+      { authorization: 'Bearer ' + f.cookie.split('=')[1], origin: target.origin })).status, 401);
+    const browser = start.headers.get('set-cookie').split(';')[0];
+    assert.match(start.headers.get('set-cookie'), /HttpOnly/);
+    assert.doesNotMatch(start.headers.get('set-cookie'), /Domain=/i);
+    const request = target.searchParams.get('request');
+    assert.equal((await f.request('/oauth/mcp/handoff?' + new URLSearchParams({ request }))).status, 401);
+    const metadata = await (await f.request('/oauth/mcp/handoff?' + new URLSearchParams({ request }), { headers: { cookie: portalCookie } })).json();
+    assert.equal(metadata.account, 'member@example.test');
+    assert.equal(metadata.portal, 'MedTech');
+    assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie })).status, 403);
+    const response = await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: target.origin });
+    assert.equal(response.status, 200);
+    const resume = new URL((await response.json()).redirect_url);
+    assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: target.origin })).status, 400);
+    assert.equal((await f.request(resume.pathname + resume.search)).status, 400);
+    assert.equal((await f.request(resume.pathname + resume.search, { headers: { cookie: '__Host-pidp_mcp_browser=' + 'z'.repeat(54) } })).status, 400);
+    const resumed = await f.request(resume.pathname + resume.search, { headers: { cookie: browser } });
+    assert.equal(resumed.status, 303);
+    const cookie = resumed.headers.get('set-cookie').split(';')[0];
+    assert.ok(cookie.startsWith('__Host-pidp_mcp_session='));
+    assert.equal((await (await f.introspect(decodeURIComponent(cookie.split('=')[1]))).json()).active, false);
+    assert.equal((await f.request(resume.pathname + resume.search, { headers: { cookie: browser } })).status, 400);
+    const consent = await f.request(resumed.headers.get('location'), { headers: { cookie } });
+    assert.equal(consent.status, 200);
+    assert.equal(consent.headers.get('referrer-policy'), 'same-origin');
+    const html = await consent.text(); assert.match(html, /member@example.test/);
+    const nonce = html.match(/name="request" value="([^"]+)"/)[1];
+    const allowed = await f.post('/oauth/mcp/authorize', { request: nonce, decision: 'allow' }, { cookie, origin: f.issuer });
+    const code = new URL(allowed.headers.get('location')).searchParams.get('code');
+    const tokens = await (await f.exchange(code)).json();
+    const keys = await (await f.request('/.well-known/jwks.json')).json();
+    const verified = await jwtVerify(tokens.access_token, await importJWK(keys.keys[0]), { issuer: f.issuer, audience: f.resource });
+    assert.equal(verified.payload.sub, 'website:portal-site:member');
+    assert.equal((await f.request('/oauth/mcp/connections', { headers: { cookie } })).status, 200);
+    f.sql.exec("UPDATE website_users SET is_active = 0");
+    assert.equal((await (await f.introspect(tokens.access_token)).json()).active, false);
+  } finally { f.sql.close(); }
+});
+
+test('portal login rejects expired requests and unconfigured destinations', async () => {
+  const f = await fixture(); try {
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: { name: 'MedTech', loginUrl: 'https://portal.example/users/mcp-connect' } });
+    const start = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params));
+    const request = new URL(start.headers.get('location')).searchParams.get('request');
+    f.sql.exec('UPDATE mcp_oauth_logins SET expires_at = 0');
+    assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: f.cookie, origin: 'https://portal.example' })).status, 400);
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: { name: 'Bad', loginUrl: 'https://evil.example/users/mcp-connect?next=https://evil.example' } });
+    assert.equal((await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params))).status, 503);
+  } finally { f.sql.close(); }
+});
+
+test('portal login is bounded per browser and account deactivation blocks resume', async () => {
+  const f = await fixture(); try {
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: { name: 'Portal', loginUrl: 'https://portal.example/users/mcp-connect' } });
+    const url = '/oauth/mcp/authorize?' + new URLSearchParams(f.params);
+    const start = await f.request(url);
+    const browser = start.headers.get('set-cookie').split(';')[0];
+    for (let i = 1; i < 20; i++) assert.equal((await f.request(url, { headers: { cookie: browser } })).status, 303);
+    assert.equal((await f.request(url, { headers: { cookie: browser } })).status, 429);
+    const request = new URL(start.headers.get('location')).searchParams.get('request');
+    const confirmed = await f.post('/oauth/mcp/handoff', { request }, { cookie: f.cookie, origin: 'https://portal.example' });
+    const resume = new URL((await confirmed.json()).redirect_url);
+    f.sql.exec("UPDATE users SET is_active = 0 WHERE id = 'alice'");
+    assert.equal((await f.request(resume.pathname + resume.search, { headers: { cookie: browser } })).status, 400);
+  } finally { f.sql.close(); }
+});
 
 test('discovery and full consent/PKCE flow issue verifiable, audience-bound tokens; refresh rotates and replay revokes', async () => {
   const f = await fixture(); try {

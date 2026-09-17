@@ -1,0 +1,35 @@
+{
+  "brands": {
+    "medtech.social": {
+      "name": "Baltimore MedTech",
+      "shortName": "MedTech",
+      "tagline": "HEALTH × MEDICINE × BIOTECH",
+      "logo": "https://medtech.social/images/baltimore-medtech-logo-square.jpg"
+    }
+  },
+  "permissions": {
+    "org:events.read": ["View events", "Read events in organizations you manage."],
+    "org:events.write": ["Manage events and photos", "Change events, upload event photos, and invite collaborators in organizations you manage."],
+    "org:portal.read": ["View portal settings", "Read portal setup and homepage settings for organizations you manage."],
+    "org:portal.write": ["Manage your portal", "Change portal setup, homepage settings, and custom-domain requests for organizations you manage."]
+  },
+  "css": [
+    "*{box-sizing:border-box}html{color-scheme:light}body{margin:0;background:#fff;color:#192d38;font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;letter-spacing:0}a{color:#086c7b;text-underline-offset:3px}a:hover{text-decoration-thickness:2px}a:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid #0b8f9e;outline-offset:4px}button,a,summary{-webkit-tap-highlight-color:transparent}",
+    ".brandbar{border-top:4px solid #0b8492;border-bottom:1px solid #dce5e8;background:#f8fbfc}.brand{max-width:680px;margin:auto;padding:20px 32px;display:flex;align-items:center;gap:14px;text-decoration:none;color:#096c7b}.brand img{width:52px;height:52px;object-fit:contain;border-radius:4px;flex:none}.brand strong{display:block;font-size:18px;line-height:1.3}.tagline{display:block;margin-top:4px;font-size:10px;letter-spacing:0;color:#526b77}",
+    "main{max-width:680px;margin:0 auto;padding:34px 32px 24px}.eyebrow{font-size:12px;font-weight:650;color:#58717c;margin:0 0 8px}h1{font-size:28px;line-height:1.25;font-weight:700;margin:0 0 12px;overflow-wrap:anywhere}h2{font-size:15px;line-height:1.4;margin:0 0 14px}.intro{color:#526975;margin:0 0 24px}.account{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 0;border-top:1px solid #dce5e8;border-bottom:1px solid #dce5e8;margin-bottom:26px}.account-label{display:block;font-size:12px;color:#617782}.account strong{display:block;font-size:15px;overflow-wrap:anywhere}.account a{font-size:13px;flex:none}",
+    ".permissions{list-style:none;padding:0;margin:0}.permissions li{display:grid;grid-template-columns:24px minmax(0,1fr);column-gap:12px;margin:0;padding:0 0 18px}.check{color:#087787;font-size:18px;line-height:24px}.permissions strong{display:block;font-size:14px}.permissions p{font-size:14px;color:#526975;line-height:1.5;margin:3px 0 0}.assurance{padding:14px 16px;background:#f1f7f7;border-left:3px solid #0b8492;color:#355b63;font-size:13px;margin:4px 0 18px}.client-notice{font-size:12px;color:#65737a;margin:0 0 18px}",
+    "details{border-top:1px solid #dce5e8;border-bottom:1px solid #dce5e8;padding:12px 0;margin-bottom:24px;font-size:13px}summary{cursor:pointer;font-weight:600;color:#405e6b}dl{margin:14px 0 2px}dt{font-size:12px;color:#65737a;margin-top:10px}dd{margin:2px 0 0;overflow-wrap:anywhere;color:#344e5a}.actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}.actions button{font:650 14px/1.4 system-ui,sans-serif;letter-spacing:0;min-height:46px;padding:12px 18px;border-radius:6px;cursor:pointer;white-space:normal}.allow{background:#087c89;color:white;border:1px solid #087c89}.allow:hover{background:#066874}.deny{background:white;color:#36515e;border:1px solid #b9cbd1}.deny:hover{background:#f2f6f8}.footer{max-width:680px;margin:0 auto;padding:0 32px 28px;display:flex;justify-content:space-between;gap:16px;color:#657982;font-size:12px}.footer a{color:inherit}.footer strong{color:#36515e;font-weight:600}",
+    "@media(max-width:480px){.brand{padding:16px 20px}.brand img{width:44px;height:44px}.brand strong{font-size:16px}main{padding:26px 20px 22px}h1{font-size:25px}.account{align-items:flex-start;flex-direction:column;gap:8px}.permissions li{gap:8px}.footer{padding:0 20px 24px;flex-wrap:wrap}.actions button{padding:12px 10px}}"
+  ],
+  "html": [
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Connect {{client}} to {{shortName}}</title><style>{{css}}</style></head><body>",
+    "<header class=\"brandbar\"><a class=\"brand\" href=\"{{portalUrl}}\">{{logo}}<span><strong>{{brandName}}</strong><span class=\"tagline\">{{tagline}}</span></span></a></header>",
+    "<main><p class=\"eyebrow\">ACCOUNT CONNECTION</p><h1>Connect {{client}} to {{shortName}}</h1><p class=\"intro\">Review the access requested for your account.</p>",
+    "<div class=\"account\"><div><span class=\"account-label\">Signed in as</span><strong>{{account}}</strong></div><a href=\"{{changeAccount}}\">Use a different account</a></div>",
+    "<section aria-labelledby=\"permissions-title\"><h2 id=\"permissions-title\">{{client}} will be able to:</h2><ul class=\"permissions\">{{permissions}}</ul></section>",
+    "<p class=\"assurance\">Your organization permissions still apply. You can revoke this connection at any time in PIdP.</p>{{notice}}",
+    "<details><summary>Connection details</summary><dl><dt>Portal</dt><dd>{{portalHost}}</dd><dt>Service</dt><dd>{{resource}}</dd><dt>Callback</dt><dd>{{callback}}</dd></dl></details>",
+    "<form method=\"post\" action=\"/oauth/mcp/authorize\"><input type=\"hidden\" name=\"request\" value=\"{{request}}\"><div class=\"actions\"><button class=\"deny\" name=\"decision\" value=\"deny\">Deny</button><button class=\"allow\" name=\"decision\" value=\"allow\">Allow access</button></div></form></main>",
+    "<footer class=\"footer\"><span>Identity secured by <strong>PIdP</strong></span><a href=\"/oauth/mcp/connections\">Connected apps</a></footer></body></html>"
+  ]
+}

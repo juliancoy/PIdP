@@ -11,11 +11,66 @@ It now also supports self-service website onboarding:
 
 ## Features
 
+See [Account Boundaries](#account-boundaries) before adding account or portal
+functionality. PIdP has both Python and Cloudflare Worker implementations.
+
 - JWT access tokens
 - Password hashing with bcrypt
 - Postgres-backed identity store
 - Optional social sign-in (Google, GitHub) toggled by env vars
 - Async FastAPI stack
+
+## Account Boundaries
+
+PIdP owns reusable identity and account security, not the organizations that an
+identity participates in. OrgPortal is the separate application in `../OrgPortal`.
+The following is the ownership contract and migration direction; it does not
+imply that every account screen has already moved here.
+
+| PIdP owns | OrgPortal owns |
+| --- | --- |
+| Credentials, social sign-in/callbacks, verification, recovery, and authentication sessions | Organizations, invitations, membership, roles, and domain permissions |
+| Stable identity subjects, core profile/avatar, and linked login providers | Member directories and organization-specific profiles/preferences |
+| Reusable sign-in and account-security screens | Tenant branding, sign-in entry points, navigation, and application return routes |
+| OAuth client registration, consent, PKCE, token issuance/refresh, and grant revocation | MCP tools and domain APIs, permission checks, and preview/apply receipts |
+| Existing identity/provider credential interfaces | Governance, chat, calendar/event workflows, event providers, and gallery storage |
+
+Move reusable authentication and account-security experiences from the portal
+into PIdP rather than maintaining two implementations. OrgPortal may present a
+branded sign-in entry point and compose an account page, but identity changes
+must use PIdP interfaces. Organization-specific settings remain in OrgPortal.
+Do not move event galleries or medical datasets into identity storage; MedTech
+owns medical data/presentation and consumes OrgPortal's shared services.
+
+The intended MCP browser flow is client -> PIdP authorization -> existing account
+sign-in -> explicit consent -> client callback. Keep the requesting portal's
+trusted branding/return context and account namespace. A website-user account
+must not silently become an owner account. Cross-origin portal sessions require
+an explicit validated handoff, not an assumption that issuer cookies are shared.
+Preserve OAuth state, exact registered redirects, and PKCE throughout the flow;
+do not accept arbitrary return URLs or expose session tokens in browser URLs.
+
+PIdP answers who authenticated and what scopes they delegated. OrgPortal decides
+what that identity may do using its explicit subject mapping, current membership,
+and domain authorization. Consent is not membership or administrator access;
+email matching must not be used to invent privileged account mappings.
+
+MCP resources configured in `MCP_OAUTH_PORTALS_JSON` use the deployed portal's
+existing login through a one-use, browser-bound handoff. PIdP then hosts consent
+and token issuance. No portal session token crosses origins in a URL, and the
+portal's exact account subject is preserved. Migrate reusable account UI upstream
+incrementally, retaining stable subjects and testing social/password login,
+return routing, consent, and denial.
+
+Python and serverless must implement the same identity and OAuth contracts,
+including validation, scope/resource binding, revocation, and account namespaces.
+Database, cookie, and framework details may differ; deployment sessions are not
+automatically portable. Do not split one issuer across independent grant stores.
+Release PIdP separately; release the shared portal through CodeCollective, never
+through MedTech's static-site deployment.
+
+See [account authorization and backend parity](docs/account-oauth.md) and the
+[OrgPortal ownership contract](../OrgPortal/README.md#account-and-service-boundaries).
 
 ## Architecture Diagrams
 

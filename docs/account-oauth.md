@@ -2,7 +2,7 @@
 
 The Python server (`mcp_authorization.py`) and Worker
 (`serverless/src/mcpAuthorization.ts`) implement the same account authorization
-contract. The browser uses the existing PIdP login and shows the signed-in account,
+contract. Configured resources use the deployed portal login and show the signed-in account,
 client, resource and requested permissions before consent. Neither a client ID nor
 OAuth consent grants organization membership or event-management permissions.
 
@@ -19,6 +19,60 @@ The Python server keeps its existing `pidp_token` session cookie; the Worker kee
 namespaces are `owner:<id>` and `website:<website-id>:<id>` in both implementations.
 OrgPortal's explicit subject mapping must point to the same existing account; do
 not map by email or silently assign administrator privileges.
+
+The portal handoff creates a separate `__Host-pidp_mcp_session` cookie on the
+issuer in both runtimes. It does not copy, replace, or broaden the portal session.
+
+## Portal browser login
+
+Configure `MCP_OAUTH_PORTALS_JSON` with operator-controlled mappings from each
+MCP resource to its deployed portal confirmation page:
+
+```json
+{
+  "https://medtech.social/api/org/mcp": {
+    "name": "MedTech",
+    "loginUrl": "https://medtech.social/users/mcp-connect"
+  }
+}
+```
+
+The URL must be HTTPS, without credentials, query or fragment, and end in
+`/users/mcp-connect` (a `/p/` mount is supported). Dynamic clients cannot set
+these mappings. Apply Worker migration `0008_mcp_login_handoff.sql`, or run the
+Python OAuth migration helper, before enabling the mapping. Release OrgPortal's
+confirmation route through CodeCollective before enabling the PIdP mapping.
+
+1. PIdP validates the client's authorization request and stores a ten-minute
+   login handoff, binding it to a random, host-only HttpOnly browser cookie.
+2. The browser visits the configured portal route. Its existing authenticated
+   route guard uses the normal social/password login and preserves the return path.
+3. The portal displays the authenticated account and requires an explicit
+   continuation. Its same-origin `/pidp/oauth/mcp/handoff` POST uses the existing
+   HttpOnly portal session. PIdP checks the configured portal Origin and active
+   account; neither bearer tokens nor a client-supplied identity are accepted.
+4. PIdP returns a one-use code, valid for at most two minutes. Only the original
+   issuer browser can redeem it at `/oauth/mcp/resume`. The stored namespaced
+   subject becomes a ten-minute, resource-bound MCP browser session, not a normal
+   portal session or API access token. Owner and website-user subjects are retained
+   exactly as authenticated by the portal; no email-based remapping takes place.
+5. PIdP resumes the original authorization request and requires separate consent
+   before issuing the client's PKCE-bound authorization code. Existing membership,
+   scope, introspection and preview/apply requirements remain unchanged.
+
+Login records and codes are hashed and atomically claimed. Login creation is
+bounded to 20 pending records per browser, 30 starts per IP per hour, 1,000 starts
+globally per hour, and 10,000 pending records globally. Expired records are pruned.
+The Python service must receive a trusted ASGI peer address for its IP limit.
+The portal proxy must preserve the browser Origin and forward the portal cookie;
+do not replace either with a service credential or broadly enable credentialed CORS.
+
+`prompt=login` returns to the portal confirmation page even when an MCP browser
+session exists. The page offers account switching through the existing logout
+flow. Expired or consumed links require a fresh login from the MCP client.
+`/oauth/mcp/connections` uses the same bridge when a session is absent; operators
+with multiple portal mappings must select a resource using its `resource` query.
+Resources without a mapping retain the existing PIdP login path for compatibility.
 
 ## Automatic MCP client registration
 
@@ -102,7 +156,7 @@ signing keys and registrations when adding a client.
 
 For Python, run `python scripts/migrate_mcp_oauth.py` against the intended database
 as an explicit release step. It creates only the OAuth tables and indexes;
-`AUTO_CREATE_TABLES` need not be enabled. The Worker uses D1 migration 0006.
+`AUTO_CREATE_TABLES` need not be enabled. The Worker uses D1 migrations 0006-0008.
 The schemas share names and semantics but use their own backend databases.
 Do not load balance OAuth traffic across independent grant databases, or switch
 backends without migrating grants and preserving keys. Otherwise reconnect users.
@@ -117,6 +171,47 @@ configure OrgPortal subject mappings/introspection, and test browser consent,
 permission denial, one approved gallery upload, and account revocation.
 
 ## Tests
+
+The login handoff is covered by both OAuth suites, a real-PostgreSQL atomic-claim
+test, and OrgPortal's `web/tests/e2e/mcp-login.spec.ts` on desktop and mobile.
+Browser tests mock authentication and provider responses; a real user's final
+social sign-in and consent remain a separate production acceptance step.
+
+PIdP also has a Chromium consent-form regression, including a real loopback
+callback and revocation POST. Run from `serverless/`:
+
+```sh
+npx playwright install chromium
+npm run test:browser
+```
+
+Consent pages use `Referrer-Policy: same-origin`, not `no-referrer`: Chromium
+otherwise sends `Origin: null` on form POSTs and the CSRF check rejects them.
+The consent CSP permits only self and the validated callback origin for
+`form-action`, because Chromium also checks the post-consent redirect against
+that directive. Callback URI validation, same-origin POST checks, and one-use
+session-bound consent receipts remain required. Cross-site referrers are omitted.
+
+Consent presentation is shared in `shared/mcp-consent.json`, rendered by
+`consent_page.py` and `serverless/src/consentPage.ts`. The trusted MedTech host
+uses the existing Baltimore MedTech logo and branding; other portals retain
+their configured name. Inline CSS is authorized by its SHA-256 CSP hash, with
+no inline scripts or unsafe-inline exception. The browser test checks desktop
+and mobile layout, logo loading, and continued form/callback operation.
+
+### Production release: 2026-09-17
+
+- CodeCollective frontend: `3525612c-f95f-4230-a75a-87824e2868ee`.
+- PIdP Worker: `a6882337-f566-472c-8df6-08abc270713b` (includes MedTech consent
+  branding and the browser Origin/callback-CSP corrections).
+- D1 migration 0008 applied; MedTech's mapping above enabled with existing
+  variables and signing/client secrets preserved.
+- Live MedTech login renders its branding, Google and GitHub options, and the
+  MCP return route at desktop and mobile sizes. User consent is not automated.
+- Codex completed the real browser authorization and reported a successful
+  login to `medtech`. This verifies OAuth login, not event-management permissions
+  or gallery uploads; OrgPortal's subject mapping and permissions still apply.
+- The Python implementation is tested, not deployed by this Worker release.
 
 Use Python 3.11+ with the project's requirements installed:
 

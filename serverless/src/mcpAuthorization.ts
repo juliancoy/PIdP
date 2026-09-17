@@ -1,13 +1,18 @@
 import { Hono, type Context } from 'hono';
-import { getCookie } from 'hono/cookie';
+import { getCookie, setCookie } from 'hono/cookie';
 import { importJWK, SignJWT, jwtVerify, type JWK } from 'jose';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import type { Env } from './types';
+import { renderConsentPage } from './consentPage';
 
 const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'];
 const now = () => Math.floor(Date.now() / 1000);
 type Client = { name: string; redirectUris: string[]; resources: string[]; scopes: string[]; secretHash?: string; tokenEndpointAuthMethod?: 'none' | 'client_secret_basic' | 'client_secret_post'; dynamic?: boolean };
-type Config = { issuer: string; key: JWK; keys: JWK[]; clients: Record<string, Client>; resources: Record<string, { secretHash: string }> };
+type Portal = { name: string; loginUrl: string };
+type Config = { issuer: string; key: JWK; keys: JWK[]; clients: Record<string, Client>; resources: Record<string, { secretHash: string }>; portals: Record<string, Portal> };
+type Login = { id: string; browser_hash: string; resource: string; return_path: string; subject: string | null; display: string | null; code_hash: string | null; expires_at: number };
+const browserCookie = '__Host-pidp_mcp_browser';
+const sessionCookie = '__Host-pidp_mcp_session';
 type Grant = { id: string; subject: string; client_id: string; resource: string; scope: string; expires_at: number; revoked: number };
 type Pending = { id: string; session_hash: string; subject: string; client_id: string; redirect_uri: string; resource: string; scope: string; challenge: string; state: string; expires_at: number };
 class OAuthError extends Error {
@@ -45,6 +50,12 @@ export function authorizationConfig(env: Env): Config {
     if (!Array.isArray(old) || old.some((k: JWK) => k.d || k.kty !== 'EC' || k.crv !== 'P-256' || !k.x || !k.y || !k.kid)) throw new Error();
     const clients = JSON.parse(env.MCP_OAUTH_CLIENTS_JSON!);
     const resources = JSON.parse(env.MCP_OAUTH_RESOURCES_JSON!);
+    const portals = JSON.parse(env.MCP_OAUTH_PORTALS_JSON || '{}');
+    for (const [resource, portal] of Object.entries(portals) as [string, Portal][]) {
+      if (!Object.hasOwn(resources, resource) || typeof portal.name !== 'string' || !portal.name.trim() || portal.name.length > 120) throw new Error();
+      const url = new URL(https(portal.loginUrl));
+      if (url.search || !url.pathname.endsWith('/users/mcp-connect')) throw new Error();
+    }
     if (!Object.keys(clients).length || !Object.keys(resources).length) throw new Error();
     for (const [url, resource] of Object.entries(resources) as [string, { secretHash: string }][]) {
       https(url); if (!/^[a-f0-9]{64}$/.test(resource.secretHash)) throw new Error();
@@ -60,7 +71,7 @@ export function authorizationConfig(env: Env): Config {
       if (client.resources.some(r => !Object.hasOwn(resources, r)) || client.scopes.some(s => !scopes.includes(s))) throw new Error();
     }
     return { issuer, key, keys: [publicKey, ...old.filter((k: JWK) => k.kid !== key.kid).map((k: JWK) =>
-      ({ kty: k.kty, crv: k.crv, x: k.x, y: k.y, kid: k.kid, alg: 'ES256', use: 'sig' }))], clients, resources };
+      ({ kty: k.kty, crv: k.crv, x: k.x, y: k.y, kid: k.kid, alg: 'ES256', use: 'sig' }))], clients, resources, portals };
   } catch { throw new OAuthError('authorization_server_not_configured', 503); }
 }
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -86,10 +97,10 @@ async function getClient(env: Env, cfg: Config, id: string): Promise<Client | un
   const client: Client = JSON.parse(row.client_json);
   return { ...client, dynamic: true, resources: client.resources.filter(r => Object.hasOwn(cfg.resources, r)) };
 }
-async function registrationLimit(env: Env, ip: string) {
+async function registrationLimit(env: Env, ip: string, prefix = '', ipLimit = 10, globalLimit = 100) {
   const window = Math.floor(now() / 3600);
   await env.DB.prepare('DELETE FROM mcp_oauth_registration_limits WHERE window_start < ?').bind(window - 1).run();
-  for (const [id, limit] of [[await sha256Hex(ip), 10], ['global', 100]] as const) {
+  for (const [id, limit] of [[prefix + await sha256Hex(ip), ipLimit], [prefix + 'global', globalLimit]] as const) {
     const row = await env.DB.prepare(`INSERT INTO mcp_oauth_registration_limits (id, window_start, requests)
       VALUES (?, ?, 1) ON CONFLICT(id) DO UPDATE SET window_start = excluded.window_start,
       requests = CASE WHEN mcp_oauth_registration_limits.window_start = excluded.window_start THEN mcp_oauth_registration_limits.requests + 1 ELSE 1 END
@@ -104,7 +115,7 @@ async function activeSubject(env: Env, subject: string) {
   if (actor === 'website' && site && id) return Boolean(await env.DB.prepare('SELECT id FROM website_users WHERE website_id = ? AND id = ? AND is_active = 1').bind(site, id).first());
   return false;
 }
-async function session(c: Context<{ Bindings: Env }>) {
+async function identitySession(c: Context<{ Bindings: Env }>) {
   const token = getCookie(c, 'pidp_session');
   if (!token) return null;
   try {
@@ -113,6 +124,38 @@ async function session(c: Context<{ Bindings: Env }>) {
     if (!await activeSubject(c.env, subject)) return null;
     return { subject, display: String(payload.email || payload.sub), hash: await sha256Hex(token) };
   } catch { return null; }
+}
+async function session(c: Context<{ Bindings: Env }>, resource?: string) {
+  const cfg = authorizationConfig(c.env);
+  const token = getCookie(c, sessionCookie);
+  if (token) try {
+    const { payload } = await jwtVerify(token, await importJWK(cfg.keys[0], 'ES256'),
+      { algorithms: ['ES256'], issuer: cfg.issuer, audience: cfg.issuer, typ: 'mcp-session+jwt', requiredClaims: ['sub', 'exp', 'iat', 'jti'] });
+    if ((!resource || payload.resource === resource) && typeof payload.sub === 'string'
+        && Object.hasOwn(cfg.portals, String(payload.resource)) && await activeSubject(c.env, payload.sub)) {
+      return { subject: payload.sub, display: String(payload.display || payload.sub), hash: await sha256Hex(token) };
+    }
+  } catch { /* Expired bridge sessions require portal sign-in again. */ }
+  if ((resource && Object.hasOwn(cfg.portals, resource)) || (!resource && Object.keys(cfg.portals).length)) return null;
+  return identitySession(c);
+}
+async function startLogin(c: Context<{ Bindings: Env }>, cfg: Config, resource: string, returnPath: string) {
+  const portal = cfg.portals[resource];
+  if (!portal) throw new OAuthError('portal_login_not_configured', 503);
+  await registrationLimit(c.env, c.req.header('cf-connecting-ip') || 'unknown', 'login:', 30, 1000);
+  let browser = getCookie(c, browserCookie);
+  if (!browser || !/^[A-Za-z0-9_-]{43,100}$/.test(browser)) browser = randomToken('');
+  const browserHash = await sha256Hex(browser);
+  await c.env.DB.prepare('DELETE FROM mcp_oauth_logins WHERE expires_at < ?').bind(now()).run();
+  const id = randomToken('login_');
+  const inserted = await c.env.DB.prepare(`INSERT INTO mcp_oauth_logins (id, browser_hash, resource, return_path, expires_at)
+    SELECT ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM mcp_oauth_logins WHERE browser_hash = ?) < 20
+    AND (SELECT COUNT(*) FROM mcp_oauth_logins) < 10000 RETURNING id`)
+    .bind(await sha256Hex(id), browserHash, resource, returnPath, now() + 600, browserHash).first();
+  if (!inserted) throw new OAuthError('too_many_requests', 429);
+  setCookie(c, browserCookie, browser, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
+  const url = new URL(portal.loginUrl); url.searchParams.set('request', id);
+  return c.redirect(url.toString(), 303);
 }
 async function authenticateClient(c: Context<{ Bindings: Env }>, p: URLSearchParams, config: Config) {
   let id = p.get('client_id') || '', secret = p.get('client_secret') || '';
@@ -154,7 +197,8 @@ export const mcpAuthorization = new Hono<{ Bindings: Env }>();
 mcpAuthorization.use('*', async (c, next) => {
   if (!c.req.path.startsWith('/oauth/mcp/') && !['/.well-known/oauth-authorization-server', '/.well-known/jwks.json'].includes(c.req.path)) return next();
   c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache');
-  c.header('Referrer-Policy', 'no-referrer'); c.header('X-Content-Type-Options', 'nosniff');
+  // Preserve Origin on same-origin form POSTs without sending cross-site referrers.
+  c.header('Referrer-Policy', 'same-origin'); c.header('X-Content-Type-Options', 'nosniff');
   c.header('Content-Security-Policy', "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   await next();
 });
@@ -207,6 +251,40 @@ mcpAuthorization.post('/oauth/mcp/register', async c => {
     ...(secret ? { client_secret: secret, client_secret_expires_at: 0 } : {}) }, 201);
 });
 mcpAuthorization.get('/.well-known/jwks.json', c => c.json({ keys: authorizationConfig(c.env).keys }));
+mcpAuthorization.on(['GET', 'POST'], '/oauth/mcp/handoff', async c => {
+  const cfg = authorizationConfig(c.env);
+  const p = c.req.method === 'POST' ? await form(c) : new URL(c.req.url).searchParams;
+  if (p.getAll('request').length !== 1) throw new OAuthError('invalid_request');
+  const row = await c.env.DB.prepare('SELECT * FROM mcp_oauth_logins WHERE id = ? AND expires_at >= ? AND code_hash IS NULL')
+    .bind(await sha256Hex(p.get('request') || ''), now()).first<Login>();
+  const portal = row && cfg.portals[row.resource];
+  if (!row || !portal) throw new OAuthError('login_expired');
+  const origin = new URL(portal.loginUrl).origin;
+  if (c.req.method === 'POST' && c.req.header('origin') !== origin) throw new OAuthError('invalid_request', 403);
+  const actor = await identitySession(c);
+  if (!actor) throw new OAuthError('login_required', 401);
+  if (c.req.method === 'GET') return c.json({ portal: portal.name, portal_origin: origin, issuer: cfg.issuer, account: actor.display });
+  const code = randomToken('handoff_');
+  const claimed = await c.env.DB.prepare(`UPDATE mcp_oauth_logins SET subject = ?, display = ?, code_hash = ?, expires_at = ?
+    WHERE id = ? AND code_hash IS NULL AND expires_at >= ? RETURNING id`)
+    .bind(actor.subject, actor.display, await sha256Hex(code), Math.min(row.expires_at, now() + 120), row.id, now()).first();
+  if (!claimed) throw new OAuthError('login_expired');
+  return c.json({ redirect_url: `${cfg.issuer}/oauth/mcp/resume?code=${encodeURIComponent(code)}` });
+});
+mcpAuthorization.get('/oauth/mcp/resume', async c => {
+  const cfg = authorizationConfig(c.env); const u = new URL(c.req.url);
+  const browser = getCookie(c, browserCookie);
+  if (u.origin !== cfg.issuer || !browser || u.searchParams.getAll('code').length !== 1) throw new OAuthError('invalid_request');
+  const row = await c.env.DB.prepare(`DELETE FROM mcp_oauth_logins WHERE code_hash = ? AND browser_hash = ?
+    AND expires_at >= ? RETURNING *`).bind(await sha256Hex(u.searchParams.get('code') || ''), await sha256Hex(browser), now()).first<Login>();
+  if (!row?.subject || !cfg.portals[row.resource] || !await activeSubject(c.env, row.subject)) throw new OAuthError('login_expired');
+  const token = await new SignJWT({ resource: row.resource, display: row.display })
+    .setProtectedHeader({ alg: 'ES256', kid: cfg.key.kid, typ: 'mcp-session+jwt' }).setSubject(row.subject)
+    .setIssuer(cfg.issuer).setAudience(cfg.issuer).setIssuedAt().setExpirationTime(now() + 600).setJti(crypto.randomUUID())
+    .sign(await importJWK(cfg.key, 'ES256'));
+  setCookie(c, sessionCookie, token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
+  return c.redirect(row.return_path, 303);
+});
 mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env); const u = new URL(c.req.url); const p = u.searchParams;
   if (u.origin !== cfg.issuer || u.search.length > 8192) throw new OAuthError('invalid_request');
@@ -219,8 +297,12 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   if (!requested.includes(scopes[0]) || requested.some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_scope');
   const challenge = p.get('code_challenge') || '';
   if (p.get('response_type') !== 'code' || p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new OAuthError('invalid_request');
-  const actor = await session(c);
-  if (!actor) return c.redirect(`${cfg.issuer}/app/login?owner=1&next=${encodeURIComponent(u.pathname + u.search)}`, 303);
+  const actor = p.get('prompt') === 'login' ? null : await session(c, resource);
+  if (!actor) {
+    p.delete('prompt');
+    if (cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search);
+    return c.redirect(`${cfg.issuer}/app/login?next=${encodeURIComponent(u.pathname + u.search)}`, 303);
+  }
   // Bound persisted pending requests per session; expired records are cheap to remove.
   await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE expires_at < ?').bind(now()).run();
   const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM mcp_oauth_requests WHERE session_hash = ?').bind(actor.hash).first<{ n: number }>();
@@ -228,13 +310,13 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const nonce = randomToken('consent_');
   await c.env.DB.prepare('INSERT INTO mcp_oauth_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .bind(await sha256Hex(nonce), actor.hash, actor.subject, id, redirect, resource, requested.join(' '), challenge, p.get('state') || '', now() + 600).run();
-  const permissionItems = [
-    requested.includes('org:events.read') ? '<li>Read events in organizations you manage.</li>' : '',
-    requested.includes('org:events.write') ? '<li>Change events, upload event photos, and invite collaborators in organizations you manage.</li>' : '',
-    requested.includes('org:portal.read') ? '<li>Read portal setup and homepage settings for organizations you manage.</li>' : '',
-    requested.includes('org:portal.write') ? '<li>Change portal setup, homepage settings, and custom-domain requests for organizations you manage.</li>' : '',
-  ].join('');
-  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize OrgPortal access · PIdP</title><main><h1>Allow ${escape(client.name)} to access OrgPortal?</h1>${client.dynamic ? `<p>This client name is self-reported, not verified by PIdP.</p><p>Callback: ${escape(redirect)}</p>` : ''}<p>Account: ${escape(actor.display)}</p><p>Service: ${escape(resource)}</p><ul>${permissionItems}</ul><p>Your organization permissions still apply. You can revoke this connection in PIdP.</p><form method="post" action="/oauth/mcp/authorize"><input type="hidden" name="request" value="${nonce}"><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny">Deny</button></form></main></html>`);
+  const portal = cfg.portals[resource];
+  const changeAccount = new URL(u); changeAccount.searchParams.set('prompt', 'login');
+  const page = await renderConsentPage({ client: client.name, account: actor.display, resource, callback: redirect,
+    request: nonce, changeAccount: changeAccount.pathname + changeAccount.search, requested, dynamic: Boolean(client.dynamic), portal });
+  // Chromium applies form-action to the redirect after the same-origin consent POST.
+  c.header('Content-Security-Policy', `default-src 'none'; form-action 'self' ${new URL(redirect).origin}; frame-ancestors 'none'; base-uri 'none'; ${page.policy}`);
+  return c.html(page.html);
 });
 mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env);
@@ -247,6 +329,7 @@ mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const client = await getClient(c.env, cfg, row.client_id);
   if (!client || !redirectAllowed(client, row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_request');
   const redirect = new URL(row.redirect_uri); redirect.searchParams.set('state', row.state);
+  c.header('Content-Security-Policy', `default-src 'none'; form-action 'self' ${redirect.origin}; frame-ancestors 'none'; base-uri 'none'`);
   if (p.get('decision') === 'deny') redirect.searchParams.set('error', 'access_denied');
   redirect.searchParams.set('iss', cfg.issuer);
   if (p.get('decision') !== 'deny') {
@@ -301,7 +384,12 @@ mcpAuthorization.post('/oauth/mcp/revoke', async c => {
 });
 // Account-controlled revocation uses the existing session and same-origin POST.
 mcpAuthorization.get('/oauth/mcp/connections', async c => {
-  const cfg = authorizationConfig(c.env); const actor = await session(c); if (!actor) return c.redirect(`${cfg.issuer}/app/login?owner=1&next=/oauth/mcp/connections`, 303);
+  const cfg = authorizationConfig(c.env); const actor = await session(c);
+  if (!actor) {
+    const resources = Object.keys(cfg.portals);
+    if (resources.length) return startLogin(c, cfg, c.req.query('resource') || (resources.length === 1 ? resources[0] : ''), '/oauth/mcp/connections');
+    return c.redirect(`${cfg.issuer}/app/login?next=/oauth/mcp/connections`, 303);
+  }
   const rows = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE subject = ? AND revoked = 0 AND expires_at > ? ORDER BY expires_at DESC LIMIT 100').bind(actor.subject, now()).all<Grant>();
   const csrf = await sha256Hex(`${actor.hash}:mcp-revoke`);
   return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Connected apps · PIdP</title><main><h1>Connected event apps</h1>${rows.results.map(g => `<form method="post"><p>${escape(g.client_id)} — ${escape(g.resource)} (${escape(g.scope)})</p><input type="hidden" name="grant" value="${escape(g.id)}"><input type="hidden" name="csrf" value="${csrf}"><button>Revoke access</button></form>`).join('') || '<p>No active connections.</p>'}</main></html>`);
