@@ -146,6 +146,32 @@ Core settings:
 - `PIDP_PROD_PUBLIC_BASE_URL` (optional explicit prod callback base, e.g. `https://pidp.example.com/`)
 - `PIDP_DEV_PUBLIC_BASE_URL` (optional explicit dev callback base, e.g. `https://dev.pidp.example.com/`)
 
+Email verification for password accounts:
+
+- `EMAIL_VERIFICATION_REQUIRED` (optional, default `true`)
+- `EMAIL_VERIFICATION_TOKEN_MINUTES` (optional, default `1440`)
+- `EMAIL_VERIFICATION_DELIVERY` (optional, default `log`; set `google_workspace` for Google Workspace SMTP)
+- `GOOGLE_WORKSPACE_SMTP_USERNAME` (Workspace mailbox, e.g. `identity@example.com`)
+- `GOOGLE_WORKSPACE_SMTP_PASSWORD` (mailbox app password or SMTP credential)
+- `GOOGLE_WORKSPACE_EMAIL_FROM` (optional sender address; defaults to `GOOGLE_WORKSPACE_SMTP_USERNAME`)
+- `GOOGLE_WORKSPACE_ALLOWED_SENDERS` (optional comma-separated senders shown in the admin UI)
+
+The launcher also accepts the same settings with a `PIDP_` prefix, for example
+`PIDP_EMAIL_VERIFICATION_DELIVERY=google_workspace` and
+`PIDP_GOOGLE_WORKSPACE_SMTP_USERNAME=identity@example.com`.
+
+Google Workspace delivery uses `smtp.gmail.com:587` with STARTTLS by default.
+For low-volume account verification, use a dedicated Workspace mailbox or alias
+and keep the app password in your secret manager. Larger deployments can switch
+to the generic SMTP settings (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
+`SMTP_PASSWORD`, `EMAIL_FROM`) for a Workspace SMTP relay without changing the
+verification flow.
+
+PIdP sysadmins can choose the delivery mode and outbound sender on the Profile
+page. The UI never stores SMTP passwords; it only stores the selected mode and
+sender in `system_settings`, while credentials remain in environment variables
+or your secret manager.
+
 Social sign-in (set both client id/secret to enable):
 
 - `GOOGLE_CLIENT_ID`

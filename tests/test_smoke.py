@@ -7,6 +7,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -190,6 +191,76 @@ class PidpSmokeTests(unittest.TestCase):
         self.main._set_session_cookie(response, token)
         cookie = response.headers["set-cookie"]
         self.assertIn("Max-Age=31536000", cookie)
+
+    def test_email_verification_state_hashes_tokens_and_oauth_bypasses(self):
+        request = SimpleNamespace(
+            headers={"host": "id.codecollective.us", "x-forwarded-proto": "https"},
+            url=SimpleNamespace(scheme="https", netloc="id.codecollective.us"),
+        )
+        user = SimpleNamespace(
+            email="new-user@example.com",
+            provider=None,
+            provider_account_id=None,
+            identity_data={},
+        )
+
+        verification_url = self.main._prepare_email_verification(user, request)
+        parsed = urlparse(verification_url)
+        raw_token = parse_qs(parsed.query)["token"][0]
+
+        self.assertFalse(self.main._is_email_verified(user))
+        self.assertNotIn(raw_token, str(user.identity_data))
+        self.assertEqual(
+            user.identity_data["email_verification"]["token_hash"],
+            self.main._verification_token_hash(raw_token),
+        )
+
+        user.identity_data = self.main._verified_identity(user.identity_data)
+        self.assertTrue(self.main._is_email_verified(user))
+
+        oauth_user = SimpleNamespace(
+            email="oauth-user@example.com",
+            provider="google",
+            provider_account_id="google-123",
+            identity_data={},
+        )
+        self.assertTrue(self.main._is_email_verified(oauth_user))
+
+    def test_google_workspace_email_delivery_uses_workspace_smtp_defaults(self):
+        original_delivery = self.main.settings.email_verification_delivery
+        original_username = self.main.settings.google_workspace_smtp_username
+        original_password = self.main.settings.google_workspace_smtp_password
+        original_from = self.main.settings.google_workspace_email_from
+        original_allowed = self.main.settings.google_workspace_allowed_senders
+        original_smtp_host = self.main.settings.smtp_host
+        try:
+            self.main.settings.email_verification_delivery = "google_workspace"
+            self.main.settings.google_workspace_smtp_username = "identity@example.com"
+            self.main.settings.google_workspace_smtp_password = "app-password"
+            self.main.settings.google_workspace_email_from = ""
+            self.main.settings.google_workspace_allowed_senders = "noreply@example.com, identity@example.com"
+            self.main.settings.smtp_host = None
+
+            settings_payload = self.main._normalize_email_delivery_settings(
+                {"delivery": "google_workspace", "sender": "noreply@example.com"}
+            )
+            config = self.main._email_delivery_config(settings_payload)
+            self.assertEqual(config["host"], "smtp.gmail.com")
+            self.assertEqual(config["port"], 587)
+            self.assertEqual(config["from_email"], "noreply@example.com")
+            self.assertEqual(config["username"], "identity@example.com")
+            self.assertTrue(config["starttls"])
+
+            admin_state = self.main._email_delivery_admin_state(settings_payload)
+            self.assertTrue(admin_state["secret_present"])
+            self.assertIn("noreply@example.com", admin_state["senders"])
+        finally:
+            self.main.settings.email_verification_delivery = original_delivery
+            self.main.settings.google_workspace_smtp_username = original_username
+            self.main.settings.google_workspace_smtp_password = original_password
+            self.main.settings.google_workspace_email_from = original_from
+            self.main.settings.google_workspace_allowed_senders = original_allowed
+            self.main.settings.smtp_host = original_smtp_host
 
     def test_service_endpoints_accept_service_pat(self):
         owner = SimpleNamespace(

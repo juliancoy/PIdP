@@ -14,6 +14,7 @@ export function parseArgs(argv) {
     skipMigrations: argv.includes("--skip-migrations"),
     skipStatus: argv.includes("--skip-status"),
     dryRun: argv.includes("--dry-run"),
+    keepVars: argv.includes("--keep-vars"),
   };
 }
 
@@ -185,7 +186,7 @@ export function plannedCommands(options) {
   const commands = [["typecheck", "npm run typecheck"]];
   if (!options.skipStatus) commands.push(...status);
   if (!options.skipMigrations) commands.push(["d1-migrate", "wrangler d1 migrations apply pidp --remote"]);
-  commands.push(["deploy", options.dryRun ? "wrangler deploy --dry-run" : "wrangler deploy"]);
+  commands.push(["deploy", `wrangler deploy${options.dryRun ? " --dry-run" : ""}${options.keepVars ? " --keep-vars" : ""}`]);
   return commands;
 }
 

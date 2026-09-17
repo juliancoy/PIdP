@@ -6,7 +6,10 @@ import os
 import re
 import secrets
 import hashlib
-from datetime import datetime
+import hmac
+import smtplib
+from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -29,7 +32,12 @@ from urllib.parse import quote, urlencode, urlparse
 from config import settings
 from db import SessionLocal, engine, get_session
 from encrypted_json import validate_pii_encryption_config
-from models import Base, User, UserAPIToken, Website, WebsiteUser
+from models import Base, SystemSetting, User, UserAPIToken, Website, WebsiteUser
+from mcp_authorization import (
+    OAuthError as McpOAuthError,
+    configuration as mcp_oauth_configuration,
+    router as mcp_oauth_router,
+)
 from oauth import fetch_social_profile, oauth
 from schemas import (
     APITokenCreate,
@@ -67,6 +75,8 @@ optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error
 LOG = logging.getLogger(__name__)
 MAX_WEBSITES_PER_OWNER = 5
 DEFAULT_MAX_USERS_PER_WEBSITE = 10
+EMAIL_SETTING_KEY = "email_delivery"
+EMAIL_DELIVERY_MODES = {"log", "google_workspace", "smtp"}
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 FRONTEND_ASSETS_DIR = FRONTEND_DIR / "assets"
 FRONTEND_TEMPLATES_DIR = FRONTEND_DIR / "templates"
@@ -111,6 +121,7 @@ SYSTEM_SCHEMA_FIELDS = {
 
 
 app = FastAPI(title=settings.app_name)
+app.include_router(mcp_oauth_router)
 app.mount("/assets", StaticFiles(directory=str(FRONTEND_ASSETS_DIR)), name="pidp-assets")
 templates = Jinja2Templates(directory=str(FRONTEND_TEMPLATES_DIR))
 
@@ -196,12 +207,23 @@ def _required_request_token(request: Request, token: str | None = None) -> str:
     return resolved
 
 
+def _request_ui_base(request: Request) -> str:
+    forwarded_prefix = "/" + (request.headers.get("x-forwarded-prefix") or "").strip().strip("/")
+    return "" if forwarded_prefix == "/" else forwarded_prefix
+
+
+def _profile_redirect_url(request: Request, **params: str) -> str:
+    query = urlencode({key: value for key, value in params.items() if value})
+    return f"/profile?{query}" if query else "/profile"
+
+
 def _render_template(
     request: Request,
     template_name: str,
     context: dict,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
+    ui_base = _request_ui_base(request)
     return templates.TemplateResponse(
         request=request,
         name=template_name,
@@ -212,8 +234,8 @@ def _render_template(
             "viewer": None,
             "flash_error": request.query_params.get("error"),
             "flash_message": request.query_params.get("message"),
-            "ui_base": "",
-            "asset_base": "/assets",
+            "ui_base": ui_base,
+            "asset_base": f"{ui_base}/assets" if ui_base else "/assets",
             **context,
         },
         status_code=status_code,
@@ -915,9 +937,244 @@ async def _get_service_owner(request: Request, session: AsyncSession) -> User:
 def _request_base_url(request: Request) -> str:
     direct_host = (request.headers.get("host") or "").split(",", 1)[0].strip()
     forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
-    host = direct_host or forwarded_host or request.url.netloc
+    host = forwarded_host or direct_host or request.url.netloc
     scheme = "https" if _is_request_secure(request) else request.url.scheme
-    return f"{scheme}://{host}/"
+    forwarded_prefix = "/" + (request.headers.get("x-forwarded-prefix") or "").strip().strip("/")
+    prefix = "" if forwarded_prefix == "/" else forwarded_prefix
+    return f"{scheme}://{host}{prefix}/"
+
+
+def _verification_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _verification_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _verified_identity(identity_data: dict | None) -> dict:
+    identity = dict(identity_data or {})
+    identity["email_verified"] = True
+    identity["email_verified_at"] = datetime.utcnow().isoformat()
+    identity.pop("email_verification", None)
+    return identity
+
+
+def _oauth_email_verified(user: User | WebsiteUser) -> bool:
+    return bool(getattr(user, "provider", None) and getattr(user, "provider_account_id", None))
+
+
+def _is_email_verified(user: User | WebsiteUser) -> bool:
+    if not settings.email_verification_required:
+        return True
+    if _oauth_email_verified(user):
+        return True
+    identity = dict(getattr(user, "identity_data", None) or {})
+    return bool(identity.get("email_verified") or identity.get("email_verified_at"))
+
+
+def _prepare_email_verification(user: User | WebsiteUser, request: Request, app_slug: str | None = None) -> str:
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(minutes=settings.email_verification_token_minutes)
+    identity = dict(getattr(user, "identity_data", None) or {})
+    identity["email_verified"] = False
+    identity["email_verification"] = {
+        "token_hash": _verification_token_hash(token),
+        "sent_at": datetime.utcnow().isoformat(),
+        "expires_at": expires_at.isoformat(),
+    }
+    user.identity_data = identity
+    params = {"email": user.email, "token": token}
+    if app_slug:
+        params["app"] = app_slug
+    return f"{_request_base_url(request).rstrip('/')}/auth/verify-email?{urlencode(params)}"
+
+
+def _csv_values(value: str | None) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _configured_email_senders() -> list[str]:
+    seen: set[str] = set()
+    senders: list[str] = []
+    for candidate in [
+        settings.email_from,
+        settings.google_workspace_email_from,
+        settings.google_workspace_smtp_username,
+        settings.smtp_username,
+        *_csv_values(settings.google_workspace_allowed_senders),
+    ]:
+        sender = str(candidate or "").strip()
+        key = sender.lower()
+        if sender and key not in seen:
+            seen.add(key)
+            senders.append(sender)
+    return senders
+
+
+def _default_email_sender() -> str:
+    senders = _configured_email_senders()
+    return senders[0] if senders else ""
+
+
+def _normalize_email_delivery_settings(raw: dict | None) -> dict[str, str]:
+    payload = dict(raw or {})
+    delivery = str(payload.get("delivery") or settings.email_verification_delivery or "log").strip().lower()
+    if delivery not in EMAIL_DELIVERY_MODES:
+        delivery = "log"
+    configured_senders = _configured_email_senders()
+    sender = str(payload.get("sender") or "").strip()
+    if sender and sender.lower() not in {item.lower() for item in configured_senders}:
+        sender = ""
+    if not sender:
+        sender = _default_email_sender()
+    return {"delivery": delivery, "sender": sender}
+
+
+def _email_secret_present(delivery: str) -> bool:
+    if delivery == "google_workspace":
+        username = settings.smtp_username or settings.google_workspace_smtp_username
+        password = settings.smtp_password or settings.google_workspace_smtp_password
+        return bool(username and password)
+    if delivery == "smtp":
+        return bool(settings.smtp_host and settings.email_from)
+    return True
+
+
+async def _stored_email_delivery_settings(session: AsyncSession) -> dict[str, str]:
+    result = await session.execute(select(SystemSetting).where(SystemSetting.key == EMAIL_SETTING_KEY))
+    record = result.scalar_one_or_none()
+    return _normalize_email_delivery_settings(record.value if record else {})
+
+
+async def _save_email_delivery_settings(session: AsyncSession, payload: dict[str, str]) -> dict[str, str]:
+    normalized = _normalize_email_delivery_settings(payload)
+    result = await session.execute(select(SystemSetting).where(SystemSetting.key == EMAIL_SETTING_KEY))
+    record = result.scalar_one_or_none()
+    if not record:
+        record = SystemSetting(key=EMAIL_SETTING_KEY, value=normalized)
+        session.add(record)
+    else:
+        record.value = normalized
+        record.updated_at = datetime.utcnow()
+    await session.commit()
+    return normalized
+
+
+def _email_delivery_admin_state(raw: dict[str, str] | None = None) -> dict:
+    effective = _normalize_email_delivery_settings(raw)
+    delivery = effective["delivery"]
+    return {
+        **effective,
+        "modes": [
+            {"value": "log", "label": "Local log"},
+            {"value": "google_workspace", "label": "Google Workspace"},
+            {"value": "smtp", "label": "Custom SMTP"},
+        ],
+        "senders": _configured_email_senders(),
+        "secret_present": _email_secret_present(delivery),
+        "google_workspace_username": settings.google_workspace_smtp_username or settings.smtp_username or "",
+        "google_workspace_host": settings.smtp_host or "smtp.gmail.com",
+        "google_workspace_port": settings.smtp_port or 587,
+        "required_secret_name": (
+            "PIDP_GOOGLE_WORKSPACE_SMTP_PASSWORD"
+            if delivery == "google_workspace"
+            else "PIDP_SMTP_PASSWORD"
+            if delivery == "smtp"
+            else ""
+        ),
+    }
+
+
+def _email_delivery_config(overrides: dict[str, str] | None = None) -> dict[str, str | int | bool | None]:
+    effective = _normalize_email_delivery_settings(overrides)
+    delivery = effective["delivery"]
+    selected_sender = effective["sender"]
+    if delivery == "google_workspace":
+        username = settings.smtp_username or settings.google_workspace_smtp_username
+        password = settings.smtp_password or settings.google_workspace_smtp_password
+        from_email = selected_sender or settings.email_from or settings.google_workspace_email_from or username
+        return {
+            "delivery": delivery,
+            "host": settings.smtp_host or "smtp.gmail.com",
+            "port": settings.smtp_port if settings.smtp_host else 587,
+            "username": username,
+            "password": password,
+            "from_email": from_email,
+            "starttls": True,
+        }
+    return {
+        "delivery": delivery,
+        "host": settings.smtp_host,
+        "port": settings.smtp_port,
+        "username": settings.smtp_username,
+        "password": settings.smtp_password,
+        "from_email": selected_sender or settings.email_from,
+        "starttls": settings.smtp_starttls,
+    }
+
+
+def _send_email_message_sync(
+    to_email: str,
+    subject: str,
+    body: str,
+    delivery_overrides: dict[str, str] | None = None,
+) -> None:
+    delivery_config = _email_delivery_config(delivery_overrides)
+    delivery = str(delivery_config["delivery"] or "log")
+    if delivery not in {"smtp", "google_workspace"}:
+        LOG.warning("Email verification link for %s: %s", to_email, body)
+        return
+    host = str(delivery_config["host"] or "")
+    port = int(delivery_config["port"] or 587)
+    from_email = str(delivery_config["from_email"] or "")
+    username = str(delivery_config["username"] or "")
+    password = str(delivery_config["password"] or "")
+    if not host or not from_email:
+        raise RuntimeError("Email verification SMTP delivery requires SMTP host and sender address.")
+    if delivery == "google_workspace" and (not username or not password):
+        raise RuntimeError("Google Workspace email delivery requires SMTP username and password.")
+
+    message = EmailMessage()
+    message["From"] = from_email
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(body)
+    with smtplib.SMTP(host, port, timeout=10) as smtp:
+        if delivery_config["starttls"]:
+            smtp.starttls()
+        if username and password:
+            smtp.login(username, password)
+        smtp.send_message(message)
+
+
+async def _send_verification_email(
+    user: User | WebsiteUser,
+    verification_url: str,
+    delivery_overrides: dict[str, str] | None = None,
+) -> None:
+    body = (
+        "Verify your email address to finish setting up your account.\n\n"
+        f"{verification_url}\n\n"
+        f"This link expires in {settings.email_verification_token_minutes} minutes."
+    )
+    await run_in_threadpool(
+        _send_email_message_sync,
+        user.email,
+        "Verify your email address",
+        body,
+        delivery_overrides,
+    )
+
+
+def _require_verified_email(user: User | WebsiteUser) -> None:
+    if not _is_email_verified(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email verification required")
 
 
 def _request_host(request: Request) -> str | None:
@@ -1072,6 +1329,15 @@ async def _ensure_runtime_schema() -> None:
                 text(
                     "ALTER TABLE websites "
                     "ADD COLUMN IF NOT EXISTS branding JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS system_settings ("
+                    "key VARCHAR(120) PRIMARY KEY, "
+                    "value JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+                    ")"
                 )
             )
     except Exception as exc:
@@ -1308,6 +1574,16 @@ async def frontend_login(
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
+    if not _is_email_verified(user):
+        LOG.info("Login blocked for unverified email=%s app=%s", email, app_slug or requested_app or "none")
+        return RedirectResponse(
+            url=_frontend_login_path(
+                app_slug=app_slug or requested_app or None,
+                next_url=next_url or None,
+                error="Verify your email before signing in.",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
     token = _create_owner_access_token(user)
     LOG.info("Login succeeded for user=%s app=%s", user.email, app_slug or "none")
@@ -1369,21 +1645,21 @@ async def frontend_register(
         hashed_password=hash_password(password),
     )
     session.add(user)
+    await session.flush()
+    verification_url = _prepare_email_verification(user, request, app_slug or requested_app or None)
+    await _send_verification_email(user, verification_url, await _stored_email_delivery_settings(session))
     await session.commit()
     await session.refresh(user)
-    LOG.info("Completed frontend registration email=%s", user.email)
+    LOG.info("Completed frontend registration email=%s verification_required=%s", user.email, settings.email_verification_required)
 
-    token = _create_owner_access_token(user)
-    LOG.info("Registration succeeded for email=%s app=%s", user.email, app_slug or "none")
-    if redirect_target:
-        request.session["frontend_redirect_url"] = redirect_target
-    redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
-    if redirect_target and not redirect_target.startswith("/"):
-        params = urlencode({"token": token, "token_type": "bearer"})
-        return RedirectResponse(f"{redirect_target}#{params}")
-    response = RedirectResponse(url=redirect_target or "/?message=Account+created", status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
-    return response
+    return RedirectResponse(
+        url=_frontend_login_path(
+            app_slug=app_slug or requested_app or None,
+            next_url=next_url or None,
+            message="Check your email to verify your account before signing in.",
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/session/logout", include_in_schema=False)
@@ -1416,6 +1692,7 @@ async def frontend_profile(request: Request, session: AsyncSession = Depends(get
     api_tokens = list(token_result.scalars().all())
     issued_service_token = request.session.pop("issued_service_token", None)
     token_scopes = [scope for scope in ("service", "org_portal", "org_mcp", "org_admin") if scope in ALLOWED_API_TOKEN_SCOPES]
+    email_delivery_settings = await _stored_email_delivery_settings(session)
     return _render_template(
         request,
         "profile.html",
@@ -1429,6 +1706,8 @@ async def frontend_profile(request: Request, session: AsyncSession = Depends(get
             "issued_service_token": issued_service_token,
             "token_scopes": token_scopes,
             "token_scope_grants": {scope: _scope_grants(scope) for scope in token_scopes},
+            "is_sysadmin": _is_pidp_sysadmin(owner),
+            "email_delivery": _email_delivery_admin_state(email_delivery_settings),
         },
     )
 
@@ -1472,6 +1751,107 @@ async def frontend_profile_update(
     await session.commit()
     return RedirectResponse(
         url="/profile?message=Profile+saved",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/email-settings", include_in_schema=False)
+async def frontend_admin_email_settings_update(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    _require_trusted_browser_origin(request)
+    owner = await _get_request_owner(request, session)
+    if not owner:
+        return RedirectResponse(url="/?error=Sign+in+required", status_code=status.HTTP_303_SEE_OTHER)
+    if not _is_pidp_sysadmin(owner):
+        return RedirectResponse(
+            url=_profile_redirect_url(request, error="Admin access required"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    form = await request.form()
+    delivery = str(form.get("delivery") or "").strip().lower()
+    sender = str(form.get("sender") or "").strip()
+    if delivery not in EMAIL_DELIVERY_MODES:
+        return RedirectResponse(
+            url=_profile_redirect_url(request, error="Unsupported email delivery mode"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    if delivery != "log" and not _configured_email_senders():
+        return RedirectResponse(
+            url=_profile_redirect_url(request, error="Configure an allowed sender in environment first"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    if sender and sender.lower() not in {item.lower() for item in _configured_email_senders()}:
+        return RedirectResponse(
+            url=_profile_redirect_url(request, error="Sender is not in the allowed outbound sender list"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    await _save_email_delivery_settings(session, {"delivery": delivery, "sender": sender})
+    return RedirectResponse(
+        url=_profile_redirect_url(request, message="Email delivery settings saved"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/email-settings/test", include_in_schema=False)
+async def frontend_admin_email_settings_test(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    _require_trusted_browser_origin(request)
+    owner = await _get_request_owner(request, session)
+    if not owner:
+        return RedirectResponse(url="/?error=Sign+in+required", status_code=status.HTTP_303_SEE_OTHER)
+    if not _is_pidp_sysadmin(owner):
+        return RedirectResponse(
+            url=_profile_redirect_url(request, error="Admin access required"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    form = await request.form()
+    recipient = str(form.get("recipient") or owner.email or "").strip()
+    if not recipient or "@" not in recipient:
+        return RedirectResponse(
+            url=_profile_redirect_url(request, error="Test recipient is required"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    delivery_settings = await _stored_email_delivery_settings(session)
+    if not _email_secret_present(delivery_settings["delivery"]):
+        return RedirectResponse(
+            url=_profile_redirect_url(
+                request,
+                error="Email secret is not configured for the selected delivery mode",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    try:
+        await run_in_threadpool(
+            _send_email_message_sync,
+            recipient,
+            "PIdP email delivery test",
+            (
+                "This is a test email from PIdP.\n\n"
+                f"Delivery mode: {delivery_settings['delivery']}\n"
+                f"Sender: {delivery_settings['sender'] or 'default'}\n"
+            ),
+            delivery_settings,
+        )
+    except Exception as exc:
+        LOG.warning("Email delivery test failed recipient=%s error=%s", recipient, exc)
+        return RedirectResponse(
+            url=_profile_redirect_url(
+                request,
+                error="Email delivery test failed. Check SMTP credentials and sender permissions.",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url=_profile_redirect_url(request, message="Test email sent"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1767,7 +2147,13 @@ async def health() -> dict:
 
 @app.get("/.well-known/jwks.json")
 async def jwks() -> dict:
-    return get_jwks()
+    keys = get_jwks()['keys']
+    if settings.mcp_oauth_issuer:
+        try:
+            keys += mcp_oauth_configuration()['keys']
+        except McpOAuthError:
+            raise HTTPException(status_code=503, detail='MCP OAuth is not configured')
+    return {'keys': keys}
 
 
 @app.get("/configuration")
@@ -1786,8 +2172,62 @@ async def configuration(request: Request) -> dict:
     }
 
 
+@app.get("/auth/verify-email", include_in_schema=False)
+async def verify_email(
+    request: Request,
+    email: str,
+    token: str,
+    app: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    user = None
+    if app:
+        website_result = await session.execute(select(Website).where(Website.slug == _normalize_slug(app)))
+        website = website_result.scalar_one_or_none()
+        if website:
+            website_user_result = await session.execute(
+                select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == email))
+            )
+            user = website_user_result.scalar_one_or_none()
+    if not user:
+        result = await session.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
+    if not user:
+        return RedirectResponse(
+            url=_frontend_login_path(app_slug=app, error="Verification link is invalid."),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    verification = dict((user.identity_data or {}).get("email_verification") or {})
+    expected_hash = str(verification.get("token_hash") or "")
+    expires_at = _verification_timestamp(verification.get("expires_at"))
+    if (
+        not expected_hash
+        or not hmac.compare_digest(expected_hash, _verification_token_hash(token))
+        or not expires_at
+        or expires_at < datetime.utcnow()
+    ):
+        return RedirectResponse(
+            url=_frontend_login_path(app_slug=app, error="Verification link is invalid or expired."),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    user.identity_data = _verified_identity(user.identity_data)
+    await session.commit()
+    LOG.info("Verified email for %s", user.email)
+    return RedirectResponse(
+        url=_frontend_login_path(app_slug=app, message="Email verified. You can sign in now."),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.post("/auth/register", response_model=UserPublic)
-async def register_user(payload: UserCreate, session: AsyncSession = Depends(get_session)) -> UserPublic:
+async def register_user(
+    payload: UserCreate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> UserPublic:
     result = await session.execute(select(User).where(User.email == payload.email))
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -1801,6 +2241,9 @@ async def register_user(payload: UserCreate, session: AsyncSession = Depends(get
         hashed_password=hash_password(payload.password),
     )
     session.add(user)
+    await session.flush()
+    verification_url = _prepare_email_verification(user, request)
+    await _send_verification_email(user, verification_url, await _stored_email_delivery_settings(session))
     await session.commit()
     await session.refresh(user)
     return _to_user_public(user)
@@ -1814,6 +2257,7 @@ async def login_for_access_token(
     user = await authenticate_user(session, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    _require_verified_email(user)
 
     token = _create_owner_access_token(user)
     return Token(access_token=token)
@@ -1829,6 +2273,7 @@ async def login_for_session_cookie(
     user = await authenticate_user(session, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    _require_verified_email(user)
 
     token = _create_owner_access_token(user)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -2389,6 +2834,7 @@ async def create_website_user(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Website user already exists")
 
     identity_data = _validate_identity_data(payload.identity_data, website.user_schema or SYSTEM_SCHEMA_FIELDS)
+    identity_data = _verified_identity(identity_data)
     website_user = WebsiteUser(
         website_id=website.id,
         email=payload.email,
@@ -2436,6 +2882,7 @@ async def update_website_user(
 async def register_website_user(
     website_slug: str,
     payload: WebsiteUserCreate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> WebsiteUserPublic:
     result = await session.execute(select(Website).where(Website.slug == _normalize_slug(website_slug)))
@@ -2464,6 +2911,9 @@ async def register_website_user(
         identity_data=_validate_identity_data(payload.identity_data, website.user_schema or SYSTEM_SCHEMA_FIELDS),
     )
     session.add(website_user)
+    await session.flush()
+    verification_url = _prepare_email_verification(website_user, request, website.slug)
+    await _send_verification_email(website_user, verification_url, await _stored_email_delivery_settings(session))
     await session.commit()
     await session.refresh(website_user)
     return website_user
@@ -2491,6 +2941,7 @@ async def login_website_user(
 
     if not verify_password(payload.password, website_user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    _require_verified_email(website_user)
 
     token = create_access_token(
         subject=str(website_user.id),
@@ -2670,7 +3121,7 @@ async def social_callback(
             website_user = result.scalar_one_or_none()
 
         schema_fields = dict(login_website.user_schema or SYSTEM_SCHEMA_FIELDS)
-        identity_data = _social_website_identity_payload(profile, schema_fields)
+        identity_data = _verified_identity(_social_website_identity_payload(profile, schema_fields))
         if not website_user:
             website_user = WebsiteUser(
                 website_id=login_website.id,
@@ -2754,6 +3205,7 @@ async def social_callback(
         stored = await _store_social_avatar(str(user.id), provider, profile["avatar_url"])
         if stored:
             identity.update(stored)
+    identity = _verified_identity(identity)
     user.identity_data = identity
 
     await session.commit()

@@ -12,6 +12,7 @@ async function fixture() {
   sql.exec(`CREATE TABLE users(id TEXT PRIMARY KEY, is_active INTEGER); INSERT INTO users VALUES ('alice',1),('bob',1);
     CREATE TABLE website_users(id TEXT, website_id TEXT, is_active INTEGER);`);
   sql.exec(readFileSync(new URL('../migrations/0006_mcp_authorization.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../migrations/0007_mcp_client_registration.sql', import.meta.url), 'utf8'));
   const db = { prepare(query) { const stmt = sql.prepare(query); return { bind(...params) { return {
     async first() { return stmt.get(...params) ?? null; }, async all() { return { results: stmt.all(...params) }; },
     async run() { return { meta: stmt.run(...params) }; },
@@ -125,4 +126,106 @@ test('user revocation is session scoped and forged requests cannot revoke connec
     assert.equal((await f.post('/oauth/mcp/connections', { grant, csrf }, { cookie: f.cookie, origin: f.issuer })).status, 303);
     assert.equal((await (await f.introspect(tokens.access_token)).json()).active, false);
   } finally { f.sql.close(); }
+});
+
+test('native public client uses browser consent and PKCE without a distributed secret', async () => {
+  const f = await fixture(); try {
+    const clients = JSON.parse(f.env.MCP_OAUTH_CLIENTS_JSON);
+    clients.chatgpt.tokenEndpointAuthMethod = 'none';
+    delete clients.chatgpt.secretHash;
+    clients.chatgpt.redirectUris = ['http://127.0.0.1/callback'];
+    f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify(clients);
+    f.params.redirect_uri = 'http://127.0.0.1:49152/callback';
+    const cases = JSON.parse(readFileSync(new URL('../../tests/oauth_redirect_cases.json', import.meta.url), 'utf8'));
+    for (const { uri, allowed } of cases) {
+      const response = await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, redirect_uri: uri }), { headers: { cookie: f.cookie } });
+      assert.equal(response.status, allowed ? 200 : 400, uri);
+    }
+    const code = await f.code();
+    const exchange = changes => f.post('/oauth/mcp/token', { grant_type: 'authorization_code', client_id: 'chatgpt', code,
+      resource: f.resource, redirect_uri: f.params.redirect_uri, code_verifier: 'v'.repeat(43), ...changes });
+    assert.equal((await exchange({ client_secret: '' })).status, 401);
+    assert.equal((await exchange({ redirect_uri: 'http://127.0.0.1:54321/callback' })).status, 400);
+    assert.equal((await exchange({ code_verifier: 'x'.repeat(43) })).status, 400);
+    const response = await exchange({}); assert.equal(response.status, 200);
+    const tokens = await response.json();
+    const refresh = await f.post('/oauth/mcp/token', { grant_type: 'refresh_token', client_id: 'chatgpt', refresh_token: tokens.refresh_token });
+    assert.equal(refresh.status, 200);
+    const renewed = await refresh.json();
+    await f.post('/oauth/mcp/revoke', { client_id: 'chatgpt', token: renewed.refresh_token });
+    assert.equal((await (await f.introspect(renewed.access_token)).json()).active, false);
+  } finally { f.sql.close(); }
+});
+
+test('dynamic clients require user consent, PKCE and exact callbacks; registration is not account access', async () => {
+  const f = await fixture(); try {
+    const register = () => f.request('/oauth/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: '<ChatGPT>', token_endpoint_auth_method: 'none', redirect_uris: ['http://127.0.0.1/callback'] }) });
+    assert.equal((await register()).status, 403);
+    f.env.MCP_OAUTH_DYNAMIC_REGISTRATION = 'true';
+    assert.equal((await (await f.request('/.well-known/oauth-authorization-server')).json()).registration_endpoint, f.issuer + '/oauth/mcp/register');
+    const response = await register(); assert.equal(response.status, 201);
+    const client = await response.json(); assert.equal(client.client_secret, undefined);
+    f.params.client_id = client.client_id; f.params.redirect_uri = 'http://127.0.0.1:54321/callback';
+    delete f.params.resource;
+    const login = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params));
+    assert.equal(login.status, 303); assert.ok(login.headers.get('location').includes('/app/login'));
+    const consent = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } });
+    assert.match(await consent.text(), /self-reported/);
+    const code = await f.code();
+    const exchange = changes => f.post('/oauth/mcp/token', { grant_type: 'authorization_code', client_id: client.client_id, code,
+      redirect_uri: f.params.redirect_uri, code_verifier: 'v'.repeat(43), ...changes });
+    assert.equal((await exchange({ redirect_uri: 'http://127.0.0.1:54321/wrong' })).status, 400);
+    assert.equal((await exchange({ code_verifier: 'x'.repeat(43) })).status, 400);
+    const issued = await exchange({}); assert.equal(issued.status, 200);
+    const tokens = await issued.json();
+    assert.equal((await (await f.introspect(tokens.access_token)).json()).active, true);
+    const stored = JSON.parse(f.sql.prepare('SELECT client_json FROM mcp_oauth_clients WHERE id = ?').get(client.client_id).client_json);
+    const secondResource = 'https://other.example/mcp';
+    f.env.MCP_OAUTH_RESOURCES_JSON = JSON.stringify({ ...JSON.parse(f.env.MCP_OAUTH_RESOURCES_JSON), [secondResource]: { secretHash: 'a'.repeat(64) } });
+    stored.resources.push(secondResource);
+    f.sql.prepare('UPDATE mcp_oauth_clients SET client_json = ? WHERE id = ?').run(JSON.stringify(stored), client.client_id);
+    assert.equal((await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } })).status, 400);
+    f.sql.prepare('UPDATE mcp_oauth_clients SET revoked = 1 WHERE id = ?').run(client.client_id);
+    assert.equal((await (await f.introspect(tokens.access_token)).json()).active, false);
+    assert.equal((await f.post('/oauth/mcp/token', { client_id: client.client_id, grant_type: 'refresh_token', refresh_token: tokens.refresh_token })).status, 401);
+  } finally { f.sql.close(); }
+});
+
+test('dynamic registration shares callback policy, bounds request size and rate limits anonymous creation', async () => {
+  const f = await fixture(); try {
+    f.env.MCP_OAUTH_DYNAMIC_REGISTRATION = 'true';
+    const cases = JSON.parse(readFileSync(new URL('../../tests/oauth_registration_cases.json', import.meta.url), 'utf8'));
+    let i = 0;
+    for (const { metadata, status } of cases) {
+      const response = await f.request('/oauth/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': `test-${i++}` }, body: JSON.stringify(metadata) });
+      assert.equal(response.status, status, JSON.stringify(metadata));
+      if (status === 201) {
+        const data = await response.json();
+        if (data.client_secret) assert.ok(!f.sql.prepare('SELECT client_json FROM mcp_oauth_clients WHERE id = ?').get(data.client_id).client_json.includes(data.client_secret));
+      }
+    }
+    for (let j = 0; j < 11; j++) {
+      const response = await f.request('/oauth/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': 'rate-test' }, body: '{}' });
+      assert.equal(response.status, j === 10 ? 429 : 400);
+    }
+    assert.equal((await f.request('/oauth/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ' '.repeat(17000) })).status, 400);
+  } finally { f.sql.close(); }
+});
+
+test('dynamically registered confidential clients authenticate using their registered method', async () => {
+  for (const method of ['client_secret_basic', 'client_secret_post']) {
+    const f = await fixture(); try {
+      f.env.MCP_OAUTH_DYNAMIC_REGISTRATION = 'true';
+      const r = await f.request('/oauth/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        client_name: '<ChatGPT>', token_endpoint_auth_method: method, redirect_uris: [f.params.redirect_uri] }) });
+      const client = await r.json(); f.params.client_id = client.client_id;
+      const code = await f.code();
+      const data = { grant_type: 'authorization_code', client_id: client.client_id, code, redirect_uri: f.params.redirect_uri, resource: f.resource, code_verifier: 'v'.repeat(43) };
+      assert.equal((await f.post('/oauth/mcp/token', data)).status, 401);
+      const headers = method === 'client_secret_basic' ? { authorization: 'Basic ' + Buffer.from(`${client.client_id}:${client.client_secret}`).toString('base64') } : {};
+      if (method === 'client_secret_post') data.client_secret = client.client_secret;
+      assert.equal((await f.post('/oauth/mcp/token', data, headers)).status, 200);
+    } finally { f.sql.close(); }
+  }
 });

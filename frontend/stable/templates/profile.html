@@ -97,6 +97,56 @@
     </article>
 </section>
 
+{% if is_sysadmin %}
+<section class="panel">
+    <div class="stack">
+        <div class="section-header">
+            <h2>Email delivery</h2>
+        </div>
+        <div class="data-grid">
+            <div class="data-item"><span class="label">Mode</span>{{ email_delivery.delivery }}</div>
+            <div class="data-item"><span class="label">Outbound sender</span>{{ email_delivery.sender or "Not configured" }}</div>
+            <div class="data-item"><span class="label">Secret</span>{% if email_delivery.secret_present %}Configured{% else %}Missing {{ email_delivery.required_secret_name }}{% endif %}</div>
+            <div class="data-item"><span class="label">Google SMTP</span>{{ email_delivery.google_workspace_host }}:{{ email_delivery.google_workspace_port }}</div>
+        </div>
+        <form method="post" action="{{ ui_base }}/admin/email-settings" class="field-grid">
+            <div class="field">
+                <label for="email-delivery-mode">Delivery Mode</label>
+                <select id="email-delivery-mode" name="delivery" required>
+                    {% for mode in email_delivery.modes %}
+                        <option value="{{ mode.value }}" {% if mode.value == email_delivery.delivery %}selected{% endif %}>{{ mode.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="field">
+                <label for="email-delivery-sender">Outbound Sender</label>
+                <select id="email-delivery-sender" name="sender">
+                    {% if email_delivery.senders %}
+                        {% for sender in email_delivery.senders %}
+                            <option value="{{ sender }}" {% if sender == email_delivery.sender %}selected{% endif %}>{{ sender }}</option>
+                        {% endfor %}
+                    {% else %}
+                        <option value="">No configured sender</option>
+                    {% endif %}
+                </select>
+            </div>
+            <div class="button-row">
+                <button class="primary-button" type="submit">Save Email Settings</button>
+            </div>
+        </form>
+        <form method="post" action="{{ ui_base }}/admin/email-settings/test" class="field-grid">
+            <div class="field token-field-wide">
+                <label for="email-test-recipient">Test Recipient</label>
+                <input id="email-test-recipient" name="recipient" type="email" value="{{ viewer.email }}" required>
+            </div>
+            <div class="button-row">
+                <button class="secondary-button" type="submit">Send Test Email</button>
+            </div>
+        </form>
+    </div>
+</section>
+{% endif %}
+
 <section class="panel">
     {% set scope_grants = token_scope_grants or {} %}
     {% set default_scope = (token_scopes[0] if token_scopes else "service") %}

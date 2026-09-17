@@ -6,7 +6,7 @@ import type { Env } from './types';
 
 const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'];
 const now = () => Math.floor(Date.now() / 1000);
-type Client = { name: string; redirectUris: string[]; resources: string[]; scopes: string[]; secretHash: string };
+type Client = { name: string; redirectUris: string[]; resources: string[]; scopes: string[]; secretHash?: string; tokenEndpointAuthMethod?: 'none' | 'client_secret_basic' | 'client_secret_post'; dynamic?: boolean };
 type Config = { issuer: string; key: JWK; keys: JWK[]; clients: Record<string, Client>; resources: Record<string, { secretHash: string }> };
 type Grant = { id: string; subject: string; client_id: string; resource: string; scope: string; expires_at: number; revoked: number };
 type Pending = { id: string; session_hash: string; subject: string; client_id: string; redirect_uri: string; resource: string; scope: string; challenge: string; state: string; expires_at: number };
@@ -17,6 +17,22 @@ function https(value: string) {
   const u = new URL(value);
   if (u.protocol !== 'https:' || u.username || u.password || u.hash) throw new Error();
   return value;
+}
+function loopback(value: string) {
+  const u = new URL(value);
+  return u.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(u.hostname)
+    && !u.username && !u.password && !u.hash && !u.search;
+}
+function redirectAllowed(client: Client, value: string) {
+  try {
+    const actual = new URL(value);
+    return client.redirectUris.some(registered => {
+      if (registered === value) return true;
+      if (client.tokenEndpointAuthMethod !== 'none' || !loopback(registered) || !loopback(value)) return false;
+      const expected = new URL(registered);
+      return actual.hostname === expected.hostname && actual.pathname === expected.pathname;
+    });
+  } catch { return false; }
 }
 export function authorizationConfig(env: Env): Config {
   try {
@@ -34,8 +50,13 @@ export function authorizationConfig(env: Env): Config {
       https(url); if (!/^[a-f0-9]{64}$/.test(resource.secretHash)) throw new Error();
     }
     for (const client of Object.values(clients) as Client[]) {
-      if (!client.name || !/^[a-f0-9]{64}$/.test(client.secretHash) || !client.redirectUris?.length || !client.resources?.length || !client.scopes?.length) throw new Error();
-      client.redirectUris.forEach(https);
+      if (!client.name || !client.redirectUris?.length || !client.resources?.length || !client.scopes?.length) throw new Error();
+      if (client.tokenEndpointAuthMethod === 'none') {
+        if (client.secretHash !== undefined || !client.redirectUris.every(loopback)) throw new Error();
+      } else {
+        if (client.tokenEndpointAuthMethod !== undefined || !/^[a-f0-9]{64}$/.test(client.secretHash || '')) throw new Error();
+        client.redirectUris.forEach(https);
+      }
       if (client.resources.some(r => !Object.hasOwn(resources, r)) || client.scopes.some(s => !scopes.includes(s))) throw new Error();
     }
     return { issuer, key, keys: [publicKey, ...old.filter((k: JWK) => k.kid !== key.kid).map((k: JWK) =>
@@ -45,14 +66,37 @@ export function authorizationConfig(env: Env): Config {
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 async function form(c: Context<{ Bindings: Env }>) {
   if (!c.req.header('content-type')?.startsWith('application/x-www-form-urlencoded')) throw new OAuthError('invalid_request');
+  const params = new URLSearchParams(await boundedBody(c.req.raw));
+  for (const k of params.keys()) if (params.getAll(k).length > 1) throw new OAuthError('invalid_request');
+  return params;
+}
+async function boundedBody(request: Request) {
   // Read incrementally rather than trusting Content-Length.
-  const reader = c.req.raw.body?.getReader(); let size = 0; const chunks: Uint8Array[] = [];
+  const reader = request.body?.getReader(); let size = 0; const chunks: Uint8Array[] = [];
   if (reader) while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length;
     if (size > 16384) { await reader.cancel(); throw new OAuthError('invalid_request'); } chunks.push(value); }
   const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-  const params = new URLSearchParams(new TextDecoder().decode(bytes));
-  for (const k of params.keys()) if (params.getAll(k).length > 1) throw new OAuthError('invalid_request');
-  return params;
+  return new TextDecoder().decode(bytes);
+}
+async function getClient(env: Env, cfg: Config, id: string): Promise<Client | undefined> {
+  if (Object.hasOwn(cfg.clients, id)) return cfg.clients[id];
+  if (env.MCP_OAUTH_DYNAMIC_REGISTRATION !== 'true' || !/^mcp_dynamic_[A-Za-z0-9_-]{20,100}$/.test(id)) return undefined;
+  const row = await env.DB.prepare('SELECT client_json FROM mcp_oauth_clients WHERE id = ? AND revoked = 0').bind(id).first<{ client_json: string }>();
+  if (!row) return undefined;
+  const client: Client = JSON.parse(row.client_json);
+  return { ...client, dynamic: true, resources: client.resources.filter(r => Object.hasOwn(cfg.resources, r)) };
+}
+async function registrationLimit(env: Env, ip: string) {
+  const window = Math.floor(now() / 3600);
+  await env.DB.prepare('DELETE FROM mcp_oauth_registration_limits WHERE window_start < ?').bind(window - 1).run();
+  for (const [id, limit] of [[await sha256Hex(ip), 10], ['global', 100]] as const) {
+    const row = await env.DB.prepare(`INSERT INTO mcp_oauth_registration_limits (id, window_start, requests)
+      VALUES (?, ?, 1) ON CONFLICT(id) DO UPDATE SET window_start = excluded.window_start,
+      requests = CASE WHEN mcp_oauth_registration_limits.window_start = excluded.window_start THEN mcp_oauth_registration_limits.requests + 1 ELSE 1 END
+      WHERE mcp_oauth_registration_limits.window_start != excluded.window_start OR mcp_oauth_registration_limits.requests < ? RETURNING id`)
+      .bind(id, window, limit).first();
+    if (!row) throw new OAuthError('too_many_requests', 429);
+  }
 }
 async function activeSubject(env: Env, subject: string) {
   const [actor, site, id] = subject.split(':');
@@ -81,12 +125,17 @@ async function authenticateClient(c: Context<{ Bindings: Env }>, p: URLSearchPar
       id = basicId; secret = decodeURIComponent(value.slice(split + 1));
     } catch { throw new OAuthError('invalid_client', 401); }
   }
-  const client = Object.hasOwn(config.clients, id) && config.clients[id];
-  if (!client || secret.length < 32 || await sha256Hex(secret) !== client.secretHash) throw new OAuthError('invalid_client', 401);
+  const client = await getClient(c.env, config, id);
+  if (!client) throw new OAuthError('invalid_client', 401);
+  if (client.tokenEndpointAuthMethod === 'none') {
+    if (auth || p.has('client_secret')) throw new OAuthError('invalid_client', 401);
+  } else if ((client.tokenEndpointAuthMethod === 'client_secret_basic' && !auth)
+      || (client.tokenEndpointAuthMethod === 'client_secret_post' && auth)
+      || secret.length < 32 || await sha256Hex(secret) !== client.secretHash) throw new OAuthError('invalid_client', 401);
   return { id, client };
 }
-function validateGrant(config: Config, grant: Grant) {
-  const client = Object.hasOwn(config.clients, grant.client_id) && config.clients[grant.client_id];
+async function validateGrant(env: Env, config: Config, grant: Grant) {
+  const client = await getClient(env, config, grant.client_id);
   return !grant.revoked && grant.expires_at > now() && client && client.resources.includes(grant.resource)
     && grant.scope.split(' ').every(s => client.scopes.includes(s));
 }
@@ -113,20 +162,59 @@ mcpAuthorization.onError((err, c) => c.json({ error: err instanceof OAuthError ?
 mcpAuthorization.get('/.well-known/oauth-authorization-server', c => {
   const cfg = authorizationConfig(c.env); const base = `${cfg.issuer}/oauth/mcp`;
   return c.json({ issuer: cfg.issuer, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
+    ...(c.env.MCP_OAUTH_DYNAMIC_REGISTRATION === 'true' ? { registration_endpoint: `${base}/register` } : {}),
     revocation_endpoint: `${base}/revoke`, introspection_endpoint: `${base}/introspect`, jwks_uri: `${cfg.issuer}/.well-known/jwks.json`,
     response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'], scopes_supported: scopes,
     authorization_response_iss_parameter_supported: true,
-    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'] });
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'] });
+});
+mcpAuthorization.post('/oauth/mcp/register', async c => {
+  const cfg = authorizationConfig(c.env);
+  if (c.env.MCP_OAUTH_DYNAMIC_REGISTRATION !== 'true') throw new OAuthError('registration_not_supported', 403);
+  await registrationLimit(c.env, c.req.header('cf-connecting-ip') || 'unknown');
+  if (!c.req.header('content-type')?.startsWith('application/json')) throw new OAuthError('invalid_client_metadata');
+  let p: Record<string, unknown>;
+  try { p = JSON.parse(await boundedBody(c.req.raw)); }
+  catch { throw new OAuthError('invalid_client_metadata'); }
+  if (!p || typeof p !== 'object' || Array.isArray(p)) throw new OAuthError('invalid_client_metadata');
+  const method = p.token_endpoint_auth_method ?? 'client_secret_basic';
+  if (typeof method !== 'string' || !['none', 'client_secret_basic', 'client_secret_post'].includes(method)) throw new OAuthError('invalid_client_metadata');
+  const redirects = p.redirect_uris;
+  if (!Array.isArray(redirects) || !redirects.length || redirects.length > 5 || redirects.some(uri => {
+    if (typeof uri !== 'string' || uri.length > 2000 || uri.includes('*')) return true;
+    try { if (method === 'none' && loopback(uri)) return false; https(uri); return false; } catch { return true; }
+  })) throw new OAuthError('invalid_redirect_uri');
+  for (const [field, allowed] of [['grant_types', ['authorization_code', 'refresh_token']], ['response_types', ['code']]] as const) {
+    const value = p[field];
+    if (value !== undefined && (!Array.isArray(value) || !value.length || value.some(v => !(allowed as readonly unknown[]).includes(v)))) throw new OAuthError('invalid_client_metadata');
+  }
+  if (Array.isArray(p.grant_types) && !p.grant_types.includes('authorization_code')) throw new OAuthError('invalid_client_metadata');
+  const name = p.client_name ?? 'MCP client';
+  if (typeof name !== 'string' || !name.trim() || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) throw new OAuthError('invalid_client_metadata');
+  if (p.scope !== undefined && (typeof p.scope !== 'string' || p.scope.length > 1000)) throw new OAuthError('invalid_client_metadata');
+  const requested = p.scope === undefined ? scopes : [...new Set((p.scope as string).split(' ').filter(Boolean))];
+  if (!requested.includes(scopes[0]) || requested.some(s => !scopes.includes(s))) throw new OAuthError('invalid_client_metadata');
+  const id = randomToken('mcp_dynamic_');
+  const secret = method === 'none' ? undefined : randomToken('mcp_client_');
+  const client: Client = { name: name.trim(), redirectUris: [...new Set(redirects)], resources: Object.keys(cfg.resources), scopes: requested,
+    tokenEndpointAuthMethod: method as Client['tokenEndpointAuthMethod'], ...(secret ? { secretHash: await sha256Hex(secret) } : {}), dynamic: true };
+  const inserted = await c.env.DB.prepare(`INSERT INTO mcp_oauth_clients (id, client_json, created_at)
+    SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM mcp_oauth_clients) < 10000 RETURNING id`).bind(id, JSON.stringify(client), now()).first();
+  if (!inserted) throw new OAuthError('too_many_requests', 429);
+  return c.json({ client_id: id, client_id_issued_at: now(), client_name: client.name, redirect_uris: client.redirectUris,
+    token_endpoint_auth_method: method, grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: requested.join(' '),
+    ...(secret ? { client_secret: secret, client_secret_expires_at: 0 } : {}) }, 201);
 });
 mcpAuthorization.get('/.well-known/jwks.json', c => c.json({ keys: authorizationConfig(c.env).keys }));
 mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env); const u = new URL(c.req.url); const p = u.searchParams;
   if (u.origin !== cfg.issuer || u.search.length > 8192) throw new OAuthError('invalid_request');
   for (const k of p.keys()) if (p.getAll(k).length > 1) throw new OAuthError('invalid_request');
-  const id = p.get('client_id') || ''; const client = Object.hasOwn(cfg.clients, id) && cfg.clients[id];
-  const redirect = p.get('redirect_uri') || ''; const resource = p.get('resource') || '';
-  if (!client || !client.redirectUris.includes(redirect) || !client.resources.includes(resource)) throw new OAuthError('invalid_request');
+  const id = p.get('client_id') || ''; const client = await getClient(c.env, cfg, id);
+  const redirect = p.get('redirect_uri') || '';
+  const resource = p.get('resource') ?? (client?.resources.length === 1 ? client.resources[0] : '');
+  if (!client || !redirectAllowed(client, redirect) || !client.resources.includes(resource)) throw new OAuthError('invalid_request');
   const requested = [...new Set((p.get('scope') || '').split(' ').filter(Boolean))];
   if (!requested.includes(scopes[0]) || requested.some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_scope');
   const challenge = p.get('code_challenge') || '';
@@ -142,11 +230,11 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
     .bind(await sha256Hex(nonce), actor.hash, actor.subject, id, redirect, resource, requested.join(' '), challenge, p.get('state') || '', now() + 600).run();
   const permissionItems = [
     requested.includes('org:events.read') ? '<li>Read events in organizations you manage.</li>' : '',
-    requested.includes('org:events.write') ? '<li>Change events and invite collaborators in organizations you manage.</li>' : '',
+    requested.includes('org:events.write') ? '<li>Change events, upload event photos, and invite collaborators in organizations you manage.</li>' : '',
     requested.includes('org:portal.read') ? '<li>Read portal setup and homepage settings for organizations you manage.</li>' : '',
     requested.includes('org:portal.write') ? '<li>Change portal setup, homepage settings, and custom-domain requests for organizations you manage.</li>' : '',
   ].join('');
-  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize OrgPortal access · PIdP</title><main><h1>Allow ${escape(client.name)} to access OrgPortal?</h1><p>Account: ${escape(actor.display)}</p><p>Service: ${escape(resource)}</p><ul>${permissionItems}</ul><p>Your organization permissions still apply. You can revoke this connection in PIdP.</p><form method="post" action="/oauth/mcp/authorize"><input type="hidden" name="request" value="${nonce}"><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny">Deny</button></form></main></html>`);
+  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize OrgPortal access · PIdP</title><main><h1>Allow ${escape(client.name)} to access OrgPortal?</h1>${client.dynamic ? `<p>This client name is self-reported, not verified by PIdP.</p><p>Callback: ${escape(redirect)}</p>` : ''}<p>Account: ${escape(actor.display)}</p><p>Service: ${escape(resource)}</p><ul>${permissionItems}</ul><p>Your organization permissions still apply. You can revoke this connection in PIdP.</p><form method="post" action="/oauth/mcp/authorize"><input type="hidden" name="request" value="${nonce}"><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny">Deny</button></form></main></html>`);
 });
 mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env);
@@ -156,8 +244,8 @@ mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE id = ? AND session_hash = ? AND subject = ? AND expires_at >= ? RETURNING *')
     .bind(await sha256Hex(p.get('request') || ''), actor.hash, actor.subject, now()).first<Pending>();
   if (!row) throw new OAuthError('invalid_request');
-  const client = Object.hasOwn(cfg.clients, row.client_id) && cfg.clients[row.client_id];
-  if (!client || !client.redirectUris.includes(row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_request');
+  const client = await getClient(c.env, cfg, row.client_id);
+  if (!client || !redirectAllowed(client, row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_request');
   const redirect = new URL(row.redirect_uri); redirect.searchParams.set('state', row.state);
   if (p.get('decision') === 'deny') redirect.searchParams.set('error', 'access_denied');
   redirect.searchParams.set('iss', cfg.issuer);
@@ -177,7 +265,7 @@ mcpAuthorization.post('/oauth/mcp/token', async c => {
     const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
     const challenge = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
     const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_codes WHERE hash = ? AND client_id = ? AND redirect_uri = ? AND resource = ? AND challenge = ? AND expires_at >= ? RETURNING *')
-      .bind(await sha256Hex(p.get('code') || ''), id, p.get('redirect_uri') || '', p.get('resource') || '', challenge, now()).first<Pending>();
+      .bind(await sha256Hex(p.get('code') || ''), id, p.get('redirect_uri') || '', p.get('resource') ?? (client.resources.length === 1 ? client.resources[0] : ''), challenge, now()).first<Pending>();
     if (!row || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s)) || !await activeSubject(c.env, row.subject)) throw new OAuthError('invalid_grant');
     const grant: Grant = { id: crypto.randomUUID(), subject: row.subject, client_id: id, resource: row.resource, scope: row.scope, expires_at: now() + 2592000, revoked: 0 };
     await c.env.DB.prepare('INSERT INTO mcp_oauth_grants VALUES (?, ?, ?, ?, ?, ?, 0)').bind(grant.id, grant.subject, id, grant.resource, grant.scope, grant.expires_at).run();
@@ -186,7 +274,7 @@ mcpAuthorization.post('/oauth/mcp/token', async c => {
   if (p.get('grant_type') !== 'refresh_token') throw new OAuthError('unsupported_grant_type');
   const hash = await sha256Hex(p.get('refresh_token') || '');
   const grant = await c.env.DB.prepare('SELECT g.*, r.used FROM mcp_oauth_refresh r JOIN mcp_oauth_grants g ON g.id = r.grant_id WHERE r.hash = ? AND g.client_id = ?').bind(hash, id).first<Grant & { used: number }>();
-  if (!grant || !validateGrant(cfg, grant) || !await activeSubject(c.env, grant.subject)) throw new OAuthError('invalid_grant');
+  if (!grant || !await validateGrant(c.env, cfg, grant) || !await activeSubject(c.env, grant.subject)) throw new OAuthError('invalid_grant');
   if ((p.has('resource') && p.get('resource') !== grant.resource) || (p.has('scope') && p.get('scope') !== grant.scope)) throw new OAuthError('invalid_scope');
   const claimed = await c.env.DB.prepare('UPDATE mcp_oauth_refresh SET used = 1 WHERE hash = ? AND used = 0 RETURNING hash').bind(hash).first();
   if (!claimed) { await c.env.DB.prepare('UPDATE mcp_oauth_grants SET revoked = 1 WHERE id = ?').bind(grant.id).run(); throw new OAuthError('invalid_grant'); }
@@ -203,7 +291,7 @@ mcpAuthorization.post('/oauth/mcp/introspect', async c => {
   }, { issuer: cfg.issuer, audience: resource, algorithms: ['ES256'], typ: 'at+jwt', requiredClaims: ['sub', 'exp', 'iat', 'jti'] }); payload = verified.payload;
   } catch { return c.json({ active: false }); }
   const grant = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE id = ?').bind(payload.grant_id).first<Grant>();
-  if (!grant || !validateGrant(cfg, grant) || grant.resource !== resource || grant.subject !== payload.sub || grant.scope !== payload.scope || !await activeSubject(c.env, grant.subject)) return c.json({ active: false });
+  if (!grant || !await validateGrant(c.env, cfg, grant) || grant.resource !== resource || grant.subject !== payload.sub || grant.scope !== payload.scope || !await activeSubject(c.env, grant.subject)) return c.json({ active: false });
   return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp });
 });
 mcpAuthorization.post('/oauth/mcp/revoke', async c => {

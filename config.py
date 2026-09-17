@@ -15,11 +15,30 @@ class Settings(BaseSettings):
     jwt_audience: str | None = None
     database_url: str
     auto_create_tables: bool = False
+    mcp_oauth_issuer: str | None = None
+    mcp_oauth_private_jwk: str | None = None
+    mcp_oauth_public_jwks: str = '{"keys":[]}'
+    mcp_oauth_clients_json: str | None = None
+    mcp_oauth_dynamic_registration: bool = False
+    mcp_oauth_resources_json: str | None = None
     pii_encryption_keys: str = ""
     require_pii_encryption: bool = False
     allowed_origins: str = ""
     admin_emails: str = ""
     admin_user_ids: str = ""
+    email_verification_required: bool = True
+    email_verification_token_minutes: int = 1440
+    email_verification_delivery: str = "log"
+    email_from: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_starttls: bool = True
+    google_workspace_smtp_username: str | None = None
+    google_workspace_smtp_password: str | None = None
+    google_workspace_email_from: str | None = None
+    google_workspace_allowed_senders: str = ""
 
     google_client_id: str | None = None
     google_client_secret: str | None = None

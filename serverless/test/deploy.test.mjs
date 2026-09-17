@@ -21,7 +21,13 @@ test("parseArgs recognizes status and dry-run flags", () => {
     skipMigrations: false,
     skipStatus: true,
     dryRun: true,
+    keepVars: false,
   });
+});
+
+test("code-only releases preserve live Worker variables", () => {
+  const options = parseArgs(["--keep-vars", "--skip-migrations", "--skip-status"]);
+  assert.equal(plannedCommands(options).at(-1)[1], "wrangler deploy --keep-vars");
 });
 
 test("check-only plan only runs status commands", () => {

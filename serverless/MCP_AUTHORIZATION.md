@@ -19,12 +19,22 @@ there is no ID token or `openid` scope.
 | `/oauth/mcp/revoke` | Authenticated client revokes its refresh token's entire grant |
 | `/oauth/mcp/connections` | Signed-in user lists/revokes their own connections |
 
-Only pre-registered confidential clients are supported. Configure the client ID
-and secret manually in the ChatGPT connection. There is no public dynamic client
-registration or client-metadata URL fetching. Copy the exact callback URL from the
+Pre-registered confidential and native public clients are supported. Optional
+Dynamic Client Registration is described in [account authorization](../docs/account-oauth.md#automatic-mcp-client-registration).
+For manually registered confidential clients, configure the client ID
+and secret manually in the ChatGPT connection. Client-metadata URL fetching is
+not supported. Copy the exact callback URL from the
 connection setup; never use wildcard redirects. Authorization requires PKCE S256,
-the explicit `resource` parameter, read scope, and a normal PIdP browser session.
+resource binding, read scope, and a normal PIdP browser session. Clients with
+exactly one permitted resource may omit `resource` at authorization and code
+exchange; both runtimes infer that sole resource. Multiple-resource clients must
+specify it explicitly, and explicit mismatches are always rejected.
 Neither PATs nor a client secret can substitute for the user's consent.
+
+Native public clients use `tokenEndpointAuthMethod: "none"`, no client secret,
+and a literal loopback callback with PKCE S256. See
+[account authorization and backend parity](../docs/account-oauth.md) for the
+registration, Python-server implementation, and shared redirect tests.
 
 Consent is escaped HTML with no third-party scripts, frame embedding, or referrer
 leakage. Pending requests last ten minutes, bind to the exact login session and

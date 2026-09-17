@@ -1,0 +1,12 @@
+[
+  {"uri":"http://127.0.0.1:49152/callback","allowed":true},
+  {"uri":"http://127.0.0.1:54321/callback","allowed":true},
+  {"uri":"http://localhost:49152/callback","allowed":false},
+  {"uri":"http://127.0.0.1.evil.example:49152/callback","allowed":false},
+  {"uri":"http://127.0.0.1:49152/other","allowed":false},
+  {"uri":"http://127.0.0.1:49152/callback?next=evil","allowed":false},
+  {"uri":"http://127.0.0.1:49152/callback#fragment","allowed":false},
+  {"uri":"http://user@127.0.0.1:49152/callback","allowed":false},
+  {"uri":"https://evil.example/callback","allowed":false},
+  {"uri":"http://0.0.0.0:49152/callback","allowed":false}
+]
