@@ -18,7 +18,7 @@
     "ENV": "dev",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "525600",
     "ALLOWED_ORIGINS": "",
-    "PORTAL_AUTH_ORIGINS": "https://medtech.social",
+    "PORTAL_AUTH_ORIGINS": "https://medtech.social,https://lifetech.fyi",
     "ADMIN_EMAILS": "",
     "ADMIN_USER_IDS": "",
     "PUBLIC_R2_BASE_URL": "",
