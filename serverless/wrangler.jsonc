@@ -18,7 +18,7 @@
     "ENV": "dev",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "525600",
     "ALLOWED_ORIGINS": "",
-    "PORTAL_AUTH_ORIGINS": "https://medtech.social,https://lifetech.fyi,https://codecollective.us,https://www.codecollective.us",
+    "PORTAL_AUTH_ORIGINS": "https://medtech.social,https://lifetech.fyi,https://codecollective.us,https://www.codecollective.us,https://timebank.codecollective.us,https://bmoretimebank.codecollective.us",
     "PORTAL_SSO_APP_SLUG": "code-collective",
     "ADMIN_EMAILS": "",
     "ADMIN_USER_IDS": "",
