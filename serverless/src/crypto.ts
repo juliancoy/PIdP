@@ -1,3 +1,5 @@
+import { pbkdf2 } from "@noble/hashes/pbkdf2.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { Env, JwtPayload } from "./types";
 import { fail } from "./http";
 
@@ -65,12 +67,8 @@ export async function verifyJwt(env: Env, token: string): Promise<JwtPayload> {
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
-  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt, iterations: 210_000 },
-    key,
-    256,
-  );
+  // Workers Web Crypto rejects PBKDF2 above 100,000 iterations.
+  const bits = pbkdf2(sha256, enc.encode(password), salt, { c: 210_000, dkLen: 32 });
   return `pbkdf2_sha256$210000$${base64Url(salt)}$${base64Url(bits)}`;
 }
 
@@ -80,12 +78,7 @@ export async function verifyPassword(password: string, stored: string | null): P
   if (scheme !== "pbkdf2_sha256") return false;
   const iterations = Number(iterationsRaw);
   if (!Number.isFinite(iterations) || iterations < 100_000) return false;
-  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: fromBase64Url(saltRaw), iterations },
-    key,
-    256,
-  );
+  const bits = pbkdf2(sha256, enc.encode(password), new Uint8Array(fromBase64Url(saltRaw)), { c: iterations, dkLen: 32 });
   return base64Url(bits) === hashRaw;
 }
 

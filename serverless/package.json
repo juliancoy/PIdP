@@ -19,6 +19,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply pidp --remote"
   },
   "dependencies": {
+    "@noble/hashes": "^2.4.0",
     "hono": "^4.13.7",
     "jose": "^6.2.12",
     "qrcode": "^1.5.4"
