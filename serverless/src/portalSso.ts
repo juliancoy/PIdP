@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import { websiteBySlug, userById, websiteUserById } from './db';
@@ -8,13 +8,13 @@ const browserCookie = '__Host-pidp_sso_browser';
 type Ticket = { id: string; browser_hash: string; origin: string; next: string; website_id: string; app: string; subject: string | null; code_hash: string | null; expires_at: number };
 const now = () => Math.floor(Date.now()/1000);
 function origins(env: Env) { return (env.PORTAL_AUTH_ORIGINS || '').split(',').map(s=>s.trim()).filter(Boolean); }
-function origin(c: any) {
+function origin(c: Context<{ Bindings: Env }>) {
  const host = c.req.header('x-forwarded-host');
  return host && c.req.header('x-forwarded-proto') === 'https' ? `https://${host}` : new URL(c.req.url).origin;
 }
 export function portalSso(issue: (env: Env, subject: string) => Promise<string>) {
  const app = new Hono<{Bindings:Env}>();
- app.use('*', async (c,next) => { c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');await next(); });
+ app.use('/auth/sso/*', async (c,next) => { c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');await next(); });
  app.get('/auth/sso/start', async c => {
   const destination=origin(c);
   if(!origins(c.env).includes(destination))return c.json({error:'invalid_portal'},400);
