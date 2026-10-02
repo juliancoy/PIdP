@@ -3,16 +3,17 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { portalSso } from '../src/portalSso.ts';
-import { signJwt } from '../src/crypto.ts';
-function fixture() {
+import { signJwt, verifyJwt } from '../src/crypto.ts';
+import fullApp from '../src/index.ts';
+function fixture(real = false) {
  const sql=new DatabaseSync(':memory:');
  sql.exec(readFileSync(new URL('../migrations/0009_portal_sso.sql',import.meta.url),'utf8'));
  sql.exec(`CREATE TABLE websites(id TEXT,slug TEXT);INSERT INTO websites VALUES('site','members');
- CREATE TABLE users(id TEXT,is_active INTEGER);INSERT INTO users VALUES('owner',1);
+ CREATE TABLE users(id TEXT,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
  CREATE TABLE website_users(id TEXT,website_id TEXT,is_active INTEGER);INSERT INTO website_users VALUES('member','site',1);`);
  const DB={prepare(query){const statement=sql.prepare(query);return{bind(...args){return{async run(){return statement.run(...args)},async first(){return statement.get(...args) || null}}}}}};
  const env={DB,SECRET_KEY:'test-key',PUBLIC_BASE_URL:'https://id.example',PORTAL_AUTH_ORIGINS:'https://one.example,https://two.example',PORTAL_SSO_APP_SLUG:'members'};
- const app=portalSso(async (_env,subject)=>'session-for-'+subject);
+ const app=real ? fullApp : portalSso(async (_env,subject)=>'session-for-'+subject);
  const request=(host,path,headers={})=>app.request('https://'+host+path,{headers},env);
  return {env,sql,request};
 }
@@ -54,5 +55,27 @@ test('owner-context applications retain owner identity and disabled accounts can
  const token=await signJwt(f.env,{sub:'owner'});f.sql.exec('UPDATE users SET is_active=0');assert.match((await f.request('id.example',path,{cookie:'pidp_session='+token})).headers.get('location'),/\/app\/login/);
  f.sql.exec('UPDATE users SET is_active=1');assert.equal((await f.request('id.example',path,{cookie:'pidp_session='+token})).status,303);
  assert.equal(f.sql.prepare('SELECT subject FROM portal_sso_requests').get().subject,'owner:owner');
+ }finally{f.sql.close()}
+});
+
+test('full worker issues distinct authenticated session tokens for the same identity on each service', async () => {
+ const f=fixture(true);try {
+ f.env.PORTAL_SSO_APP_SLUG='owner-app';
+ const issuerSession=await signJwt(f.env,{sub:'owner',email:'owner@example.test'});
+ const ids=[];
+ for(const host of ['one.example','two.example']) {
+  const s=await start(f,host);const u=new URL(s.authorize);
+  const authorized=await f.request('id.example',u.pathname+u.search,{cookie:'pidp_session='+issuerSession});
+  assert.equal(authorized.status,303);
+  const complete=new URL(authorized.headers.get('location'));
+  const finished=await f.request(host,complete.pathname.replace('/pidp','')+complete.search,{cookie:s.browser});
+  assert.equal(finished.status,303);
+  const cookie=finished.headers.getSetCookie().find(c=>c.startsWith('pidp_session='));
+  const token=decodeURIComponent(cookie.split(';')[0].slice('pidp_session='.length));
+  const claims=await verifyJwt(f.env,token);
+  assert.equal(claims.sub,'owner');assert.notEqual(token,issuerSession);assert.equal(claims.is_sysadmin,false);
+  ids.push(claims.jti);
+ }
+ assert.ok(ids[0]);assert.notEqual(ids[0],ids[1]);
  }finally{f.sql.close()}
 });
