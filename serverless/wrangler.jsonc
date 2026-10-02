@@ -2,8 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "pidp-serverless",
   "main": "src/index.ts",
-  "build": { "command": "npm run build:metadata" },
-  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "build": {
+    "command": "npm run build:metadata"
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
   "compatibility_date": "2026-06-03",
   "workers_dev": true,
   "observability": {
@@ -39,5 +43,8 @@
       "binding": "AVATARS",
       "bucket_name": "pidp-avatars"
     }
-  ]
+  ],
+  "limits": {
+    "cpu_ms": 1000
+  }
 }
