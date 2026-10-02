@@ -1,0 +1,58 @@
+import os
+os.environ.setdefault('SECRET_KEY','sso-test-secret')
+os.environ.setdefault('DATABASE_URL','postgresql+asyncpg://test:test@localhost/test')
+import unittest
+import uuid
+from unittest.mock import patch
+from urllib.parse import urlsplit
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.pool import StaticPool
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+import portal_sso as sso
+from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit
+@compiles(JSONB,'sqlite')
+def sqlite_json(type_,compiler,**kw): return 'JSON'
+class AsyncAdapter:
+    def __init__(self,session):self.session=session
+    async def execute(self,statement):return self.session.execute(statement)
+    async def commit(self):self.session.commit()
+    def add(self,row):self.session.add(row)
+class SsoTests(unittest.TestCase):
+    def setUp(self):
+        self.engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
+        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalSsoLimit]:model.__table__.create(self.engine)
+        self.user_id=uuid.uuid4()
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO users(id,email,is_active,created_at,identity_data) VALUES (?,?,1,CURRENT_TIMESTAMP,'null')",(self.user_id.hex,'member@example.test'))
+        self.db=Session(self.engine,expire_on_commit=False)
+        async def dependency():yield AsyncAdapter(self.db)
+        app=FastAPI();app.include_router(sso.router);app.dependency_overrides[sso.get_session]=dependency
+        self.client=TestClient(app,base_url='https://one.example',follow_redirects=False)
+        self.settings=patch.multiple(sso.settings,public_base_url='https://id.example',portal_auth_origins='https://one.example,https://two.example',portal_sso_app_slug='members');self.settings.start()
+        self.decode=patch.object(sso,'safe_decode_token',return_value={'sub':str(self.user_id)});self.decode_mock=self.decode.start()
+        self.issue=patch.object(sso,'create_access_token',return_value='local-session');self.issue.start()
+    def tearDown(self):
+        self.issue.stop();self.decode.stop();self.settings.stop();self.client.close();self.db.close();self.engine.dispose()
+    def test_owner_handoff_is_bound_to_browser_origin_and_one_use(self):
+        for host in ['one.example','two.example']:
+            r=self.client.get(f'https://{host}/auth/sso/start',params={'app':'members','next':f'https://{host}/auth/callback?next=%2Fpeople'})
+            self.assertEqual(r.status_code,303)
+            a=self.client.get(r.headers['location']);self.assertEqual(a.status_code,303)
+            complete=a.headers['location'].replace('/pidp/auth','/auth')
+            self.assertNotIn('token=',complete)
+            wrong=complete.replace(host,'wrong.example');self.assertEqual(self.client.get(wrong).status_code,400)
+            result=self.client.get(complete);self.assertEqual(result.status_code,303)
+            self.assertEqual(result.headers['location'],f'https://{host}/auth/callback?next=%2Fpeople')
+            self.assertIn('HttpOnly',result.headers['set-cookie']);self.assertNotIn('Domain=',result.headers['set-cookie'])
+            self.assertEqual(self.client.get(complete).status_code,400)
+    def test_external_returns_unknown_apps_and_wrong_namespace_are_rejected(self):
+        for params in [{'app':'other'},{'app':'members','next':'https://evil.example/auth/callback'}]:
+            self.assertEqual(self.client.get('/auth/sso/start',params=params).status_code,400)
+        started=self.client.get('/auth/sso/start',params={'app':'members','next':'https://one.example/auth/callback'})
+        self.decode_mock.return_value={'sub':str(self.user_id),'actor_type':'website_user','website_id':'other'}
+        result=self.client.get(started.headers['location']);self.assertIn('/app/login',result.headers['location'])
+if __name__=='__main__':unittest.main()

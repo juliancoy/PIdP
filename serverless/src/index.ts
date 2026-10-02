@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { portalSso } from "./portalSso";
 import { mcpAuthorization } from "./mcpAuthorization";
 import { cors } from "hono/cors";
 import type { Env, UserApiTokenRow, UserRow, WebsiteRow, WebsiteSchemaField, WebsiteUserRow } from "./types";
@@ -36,6 +37,18 @@ import {
 
 const app = new Hono<{ Bindings: Env }>();
 app.route('/', mcpAuthorization);
+app.route('/', portalSso(async (env, subject) => {
+ const [actor, websiteId, id] = subject.split(':');
+ if (actor === 'owner' && websiteId && !id) {
+  const owner = await userById(env.DB, websiteId);
+  if (!owner?.is_active) fail(401, 'Inactive account');
+  return createOwnerToken(env, owner);
+ }
+ if (actor !== 'website' || !websiteId || !id) fail(401, 'Invalid account namespace');
+ const user = await websiteUserById(env.DB, websiteId, id);
+ if (!user?.is_active) fail(401, 'Inactive account');
+ return createWebsiteUserToken(env, user);
+}));
 
 const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
   service: ["service:*"],

@@ -92,3 +92,23 @@ class SystemSetting(Base):
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
     value: Mapped[dict] = mapped_column(JSONB, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PortalSsoRequest(Base):
+    __tablename__ = "portal_sso_requests"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    browser_hash: Mapped[str] = mapped_column(String(64))
+    origin: Mapped[str] = mapped_column(Text)
+    next: Mapped[str] = mapped_column(Text)
+    website_id: Mapped[str] = mapped_column(String(100))
+    app: Mapped[str] = mapped_column(String(120))
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[int] = mapped_column(Integer, index=True)
+
+
+class PortalSsoLimit(Base):
+    __tablename__ = 'portal_sso_limits'
+    ip_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start: Mapped[int] = mapped_column(Integer)
+    requests: Mapped[int] = mapped_column(Integer)

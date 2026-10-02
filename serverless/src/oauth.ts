@@ -185,6 +185,7 @@ function resolveRedirectTarget(env: Env, rawTarget: string | undefined, website:
   const targetOrigin = originOf(target);
   if (!targetOrigin) return env.FRONTEND_REDIRECT_URL || "/";
   if (portalAuthOrigins(env).includes(targetOrigin)) return target;
+  if (targetOrigin === originOf(env.PUBLIC_BASE_URL) && new URL(target).pathname === "/auth/sso/authorize") return target;
   const frontendOrigin = originOf(env.FRONTEND_REDIRECT_URL);
   if (frontendOrigin && targetOrigin === frontendOrigin) return target;
   if (website) {

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from uuid import uuid4
 
 from datetime import datetime, timedelta
 
@@ -62,7 +63,7 @@ def hash_password(password: str) -> str:
 
 def create_access_token(subject: str, email: str | None = None, extra_claims: dict | None = None) -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
-    payload = {"sub": subject, "exp": expire}
+    payload = {"sub": subject, "exp": expire, "jti": str(uuid4())}
     if email:
         payload["email"] = email
     if extra_claims:

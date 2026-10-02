@@ -18,6 +18,7 @@ export interface Env {
   ACCESS_TOKEN_EXPIRE_MINUTES?: string;
   SESSION_COOKIE_DOMAIN?: string;
   PORTAL_AUTH_ORIGINS?: string;
+  PORTAL_SSO_APP_SLUG?: string;
   ALLOWED_ORIGINS?: string;
   ADMIN_EMAILS?: string;
   ADMIN_USER_IDS?: string;
@@ -90,6 +91,7 @@ export interface UserApiTokenRow {
 }
 
 export interface JwtPayload {
+  jti?: string;
   sub: string;
   email?: string;
   exp: number;

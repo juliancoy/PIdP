@@ -122,6 +122,8 @@ SYSTEM_SCHEMA_FIELDS = {
 
 app = FastAPI(title=settings.app_name)
 app.include_router(mcp_oauth_router)
+from portal_sso import router as portal_sso_router
+app.include_router(portal_sso_router)
 app.mount("/assets", StaticFiles(directory=str(FRONTEND_ASSETS_DIR)), name="pidp-assets")
 templates = Jinja2Templates(directory=str(FRONTEND_TEMPLATES_DIR))
 

@@ -232,3 +232,29 @@ to an isolated loopback database named `oauth_test` and run that test explicitly
 it creates and removes its own schema. It skips when the variable is absent.
 Production acceptance must still exercise real account login on the Python
 deployment and the Worker deployment.
+
+## Cross-domain browser single sign-on
+
+Portal sign-in starts at the same-origin `/pidp/auth/sso/start` proxy. PIdP sets a
+ten-minute host-only HttpOnly browser cookie, records its hash and the validated
+application/return origin, and redirects to the canonical issuer. The issuer
+reuses its active session only when its account namespace matches the requesting
+application. Otherwise it uses existing PIdP email or social sign-in.
+
+PIdP returns a random, two-minute one-use code to `/pidp/auth/sso/complete`. Redemption
+requires the initiating browser cookie and exact destination origin, then
+atomically consumes the request and creates a separate host-only portal session.
+Bearer tokens never appear in browser URLs. Existing organization permissions
+and MCP resource-bound OAuth scopes are unchanged. Local logout removes the
+local session; the central PIdP session continues until signed out at PIdP.
+
+Configure `PUBLIC_BASE_URL`, `PORTAL_SSO_APP_SLUG` and the explicit
+`PORTAL_AUTH_ORIGINS` allowlist; include each service's origin. A known website
+application requires website-user accounts in that website namespace. The
+configured application retains the existing owner namespace if no website is
+registered for it. No accounts or memberships are copied or inferred from email.
+
+Apply Worker migration `0009_portal_sso.sql`. For Python/PostgreSQL run
+`python scripts/migrate_portal_sso.py` before starting the updated application.
+Sessions remain local to each runtime deployment; SSO requires all participating
+services to use the same live PIdP instance.
