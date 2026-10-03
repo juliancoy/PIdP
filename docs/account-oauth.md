@@ -258,3 +258,12 @@ Apply Worker migration `0009_portal_sso.sql`. For Python/PostgreSQL run
 `python scripts/migrate_portal_sso.py` before starting the updated application.
 Sessions remain local to each runtime deployment; SSO requires all participating
 services to use the same live PIdP instance.
+
+Portal SSO requires the configured `PORTAL_SSO_APP_SLUG` to name an existing
+PIdP website application. A missing application returns
+`application_not_registered` (503), before creating a login handoff. Register
+that application through PIdP's authenticated owner API (`POST /websites`) and
+configure its login hosts and return origins. Portal sign-in uses that
+application's member namespace throughout; unregistered applications never
+substitute an owner account. Existing identities and organization membership
+must be linked explicitly, with no privilege mapping inferred from email.

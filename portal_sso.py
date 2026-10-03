@@ -43,6 +43,8 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
     if not settings.portal_sso_app_slug or app_slug != settings.portal_sso_app_slug:
         raise HTTPException(400, 'unknown_application')
     website = (await session.execute(select(Website).where(Website.slug == app_slug))).scalar_one_or_none()
+    if website is None:
+        raise HTTPException(503, 'application_not_registered')
     target = request.query_params.get('next', destination + '/auth/callback')
     parsed = urlparse(target)
     if f'{parsed.scheme}://{parsed.netloc}' != destination or parsed.path not in ('/auth/callback','/p/auth/callback') or parsed.username or parsed.password:
@@ -61,7 +63,7 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
         raise HTTPException(429, 'too_many_requests')
     browser = secrets.token_urlsafe(40)
     row = PortalSsoRequest(id=secrets.token_urlsafe(40), browser_hash=digest(browser), origin=destination,
-        next=target, website_id=str(website.id) if website else "", app=app_slug, expires_at=int(time.time())+600)
+        next=target, website_id=str(website.id), app=app_slug, expires_at=int(time.time())+600)
     await session.execute(delete(PortalSsoRequest).where(PortalSsoRequest.expires_at < int(time.time())))
     session.add(row)
     await session.commit()
@@ -80,13 +82,13 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         PortalSsoRequest.expires_at >= int(time.time()), PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
     if not row or row.origin not in origins():
         raise HTTPException(400, 'expired_request')
+    if not row.website_id:
+        raise HTTPException(503, 'application_not_registered')
     payload = safe_decode_token(request.cookies.get('pidp_token','')) or {}
     user = None
     if payload.get('actor_type') == 'website_user' and str(payload.get('website_id')) == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(payload['sub'])),
             WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
-    elif not row.website_id and payload.get('sub') and payload.get('actor_type') != 'website_user':
-        user = (await session.execute(select(User).where(User.id == UUID(str(payload['sub'])), User.is_active.is_(True)))).scalar_one_or_none()
     if not user:
         provider = request.query_params.get('provider')
         if provider and provider not in ('google','github'):
@@ -94,15 +96,12 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         resume = issuer(request)+'/auth/sso/authorize?'+urlencode({'request':row.id})
         path = f'/auth/{provider}/login' if provider else '/app/login'
         params = {'next':resume}
-        if row.website_id:
-            params['app'] = row.app
-        else:
-            params['owner'] = '1'
+        params['app'] = row.app
         return redirect(issuer(request)+path+'?'+urlencode(params))
     code = secrets.token_urlsafe(40)
     claimed = (await session.execute(update(PortalSsoRequest).where(PortalSsoRequest.id == row.id,
         PortalSsoRequest.code_hash.is_(None), PortalSsoRequest.expires_at >= int(time.time()))
-        .values(subject=f'website:{row.website_id}:{user.id}' if row.website_id else f'owner:{user.id}',code_hash=digest(code),expires_at=int(time.time())+120).returning(PortalSsoRequest.id))).scalar_one_or_none()
+        .values(subject=f'website:{row.website_id}:{user.id}',code_hash=digest(code),expires_at=int(time.time())+120).returning(PortalSsoRequest.id))).scalar_one_or_none()
     await session.commit()
     if not claimed:
         raise HTTPException(400, 'expired_request')
@@ -120,10 +119,7 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
     if not row or not row.subject or row.app != settings.portal_sso_app_slug or row.origin not in origins():
         raise HTTPException(400, 'invalid_handoff')
     parts = row.subject.split(':')
-    if len(parts) == 2 and parts[0] == 'owner' and not row.website_id:
-        user = (await session.execute(select(User).where(User.id == UUID(parts[1]),User.is_active.is_(True)))).scalar_one_or_none()
-        claims = {}
-    elif len(parts) == 3 and parts[0] == 'website' and parts[1] == row.website_id:
+    if len(parts) == 3 and parts[0] == 'website' and parts[1] == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(parts[2]),
             WebsiteUser.website_id == UUID(parts[1]),WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
         claims = {'actor_type':'website_user','website_id':parts[1]}

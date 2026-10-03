@@ -10,7 +10,7 @@ function fixture(real = false) {
  sql.exec(readFileSync(new URL('../migrations/0009_portal_sso.sql',import.meta.url),'utf8'));
  sql.exec(`CREATE TABLE websites(id TEXT,slug TEXT);INSERT INTO websites VALUES('site','members');
  CREATE TABLE users(id TEXT,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
- CREATE TABLE website_users(id TEXT,website_id TEXT,is_active INTEGER);INSERT INTO website_users VALUES('member','site',1);`);
+ CREATE TABLE website_users(id TEXT,website_id TEXT,is_active INTEGER,email TEXT,identity_data TEXT,profile_data TEXT);INSERT INTO website_users VALUES('member','site',1,'member@example.test','{}','{}');`);
  const DB={prepare(query){const statement=sql.prepare(query);return{bind(...args){return{async run(){return statement.run(...args)},async first(){return statement.get(...args) || null}}}}}};
  const env={DB,SECRET_KEY:'test-key',PUBLIC_BASE_URL:'https://id.example',PORTAL_AUTH_ORIGINS:'https://one.example,https://two.example',PORTAL_SSO_APP_SLUG:'members'};
  const app=real ? fullApp : portalSso(async (_env,subject)=>'session-for-'+subject);
@@ -49,19 +49,18 @@ test('untrusted origins, external returns, wrong apps, expired requests and name
  f.sql.exec('UPDATE portal_sso_requests SET expires_at=0');assert.equal((await f.request('id.example',path)).status,400);
  }finally{f.sql.close()}
 });
-test('owner-context applications retain owner identity and disabled accounts cannot authorize',async()=>{
+test('missing portal applications never fall back to an owner account',async()=>{
  const f=fixture();try{
- f.env.PORTAL_SSO_APP_SLUG='owner-app';const s=await start(f);const url=new URL(s.authorize);const path=url.pathname+url.search;
- const token=await signJwt(f.env,{sub:'owner'});f.sql.exec('UPDATE users SET is_active=0');assert.match((await f.request('id.example',path,{cookie:'pidp_session='+token})).headers.get('location'),/\/app\/login/);
- f.sql.exec('UPDATE users SET is_active=1');assert.equal((await f.request('id.example',path,{cookie:'pidp_session='+token})).status,303);
- assert.equal(f.sql.prepare('SELECT subject FROM portal_sso_requests').get().subject,'owner:owner');
+ f.env.PORTAL_SSO_APP_SLUG='unregistered';
+ const response=await f.request('one.example','/auth/sso/start?app=unregistered');
+ assert.equal(response.status,503);assert.deepEqual(await response.json(),{error:'application_not_registered'});
+ assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_sso_requests').get().n,0);
  }finally{f.sql.close()}
 });
 
 test('full worker issues distinct authenticated session tokens for the same identity on each service', async () => {
  const f=fixture(true);try {
- f.env.PORTAL_SSO_APP_SLUG='owner-app';
- const issuerSession=await signJwt(f.env,{sub:'owner',email:'owner@example.test'});
+ const issuerSession=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site',email:'member@example.test'});
  const ids=[];
  for(const host of ['one.example','two.example']) {
   const s=await start(f,host);const u=new URL(s.authorize);
@@ -73,7 +72,7 @@ test('full worker issues distinct authenticated session tokens for the same iden
   const cookie=finished.headers.getSetCookie().find(c=>c.startsWith('pidp_session='));
   const token=decodeURIComponent(cookie.split(';')[0].slice('pidp_session='.length));
   const claims=await verifyJwt(f.env,token);
-  assert.equal(claims.sub,'owner');assert.notEqual(token,issuerSession);assert.equal(claims.is_sysadmin,false);
+  assert.equal(claims.sub,'member');assert.equal(claims.actor_type,'website_user');assert.equal(claims.website_id,'site');assert.notEqual(token,issuerSession);assert.notEqual(claims.is_sysadmin,true);
   ids.push(claims.jti);
  }
  assert.ok(ids[0]);assert.notEqual(ids[0],ids[1]);
