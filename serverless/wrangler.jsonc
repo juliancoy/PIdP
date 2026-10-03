@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "pidp-serverless",
+  "name": "pidp-codecollective",
   "main": "src/index.ts",
   "build": {
     "command": "npm run build:metadata"
