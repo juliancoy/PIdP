@@ -2607,7 +2607,11 @@ async def update_me(
 ) -> UserPublic:
     profile = payload.model_dump(exclude_unset=True)
     full_name = profile.pop("full_name", None)
-    user = await _get_current_owner(token, session)
+    claims = safe_decode_token(token)
+    if not claims:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    is_website_user = claims.get("actor_type") == "website_user"
+    user = await _get_current_website_user(token, session) if is_website_user else await _get_current_owner(token, session)
 
     if full_name is not None:
         user.full_name = full_name
@@ -2618,7 +2622,7 @@ async def update_me(
 
     await session.commit()
     await session.refresh(user)
-    return _to_user_public(user)
+    return _to_user_public_from_website_user(user) if is_website_user else _to_user_public(user)
 
 
 @app.post("/auth/avatar/upload-url")

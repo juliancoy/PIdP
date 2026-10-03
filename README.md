@@ -242,6 +242,7 @@ Social sign-in (set both client id/secret to enable):
 - `POST /auth/register` Register a local user.
 - `POST /auth/token` OAuth2 password flow, returns JWT access token.
 - `GET /auth/me` Returns the current user.
+- `PUT /auth/me` Updates the authenticated owner or website member’s own profile. Website-member sessions retain their signed website namespace and cannot update account security fields or manage websites.
 - `POST /auth/tokens` Create a user-scoped API token for service access.
   - Supported token scopes: `service`, `org_portal`, `org_mcp`, `org_admin`
 - `GET /auth/tokens` List API tokens for the current user.
