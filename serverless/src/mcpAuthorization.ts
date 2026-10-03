@@ -51,6 +51,12 @@ export function authorizationConfig(env: Env): Config {
     const clients = JSON.parse(env.MCP_OAUTH_CLIENTS_JSON!);
     const resources = JSON.parse(env.MCP_OAUTH_RESOURCES_JSON!);
     const portals = JSON.parse(env.MCP_OAUTH_PORTALS_JSON || '{}');
+    const additions = JSON.parse(env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON || '{}');
+    for (const [resource, addition] of Object.entries(additions) as [string, { secretHash: string; portal: Portal }][]) {
+      if (Object.hasOwn(resources, resource) || Object.hasOwn(portals, resource)) throw new Error();
+      resources[resource] = { secretHash: addition.secretHash };
+      portals[resource] = addition.portal;
+    }
     for (const [resource, portal] of Object.entries(portals) as [string, Portal][]) {
       if (!Object.hasOwn(resources, resource) || typeof portal.name !== 'string' || !portal.name.trim() || portal.name.length > 120) throw new Error();
       const url = new URL(https(portal.loginUrl));

@@ -122,6 +122,12 @@ def configuration():
         clients = json.loads(settings.mcp_oauth_clients_json)
         resources = json.loads(settings.mcp_oauth_resources_json)
         portals = json.loads(settings.mcp_oauth_portals_json)
+        additions = json.loads(settings.mcp_oauth_resource_additions_json)
+        for resource, addition in additions.items():
+            if resource in resources or resource in portals:
+                raise ValueError()
+            resources[resource] = dict(secretHash=addition['secretHash'])
+            portals[resource] = addition['portal']
         for resource, portal in portals.items():
             if resource not in resources or not isinstance(portal['name'], str) or not portal['name'].strip() or len(portal['name']) > 120:
                 raise ValueError()

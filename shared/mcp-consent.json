@@ -5,6 +5,12 @@
       "shortName": "MedTech",
       "tagline": "HEALTH × MEDICINE × BIOTECH",
       "logo": "https://medtech.social/images/baltimore-medtech-logo-square.jpg"
+    },
+    "lifetech.fyi": {
+      "name": "LifeTech",
+      "shortName": "LifeTech",
+      "tagline": "HEALTH × MEDICINE × BIOTECH",
+      "logo": "https://lifetech.fyi/assets/images/lifetech-logo.png"
     }
   },
   "permissions": {

@@ -87,3 +87,22 @@ test('real browser consent and revocation keep same-origin CSRF protection and o
     assert.equal(sql.prepare('SELECT revoked FROM mcp_oauth_grants').get().revoked, 1);
   } finally { await browser.close(); callbackServer.closeAllConnections(); await new Promise(resolve => callbackServer.close(resolve)); sql.close(); }
 });
+
+
+test('LifeTech consent renders its own brand and resource in the browser', async () => {
+  const { renderConsentPage } = await import('../src/consentPage.ts');
+  const { html } = await renderConsentPage({ client: 'Codex', account: 'member@example.test', resource: 'https://lifetech.fyi/api/org/mcp',
+    callback: 'http://127.0.0.1/callback', request: 'test-request', changeAccount: 'https://id.example/change',
+    requested: ['org:portal.read', 'org:portal.write'], dynamic: true, portal: { name: 'LifeTech', loginUrl: 'https://lifetech.fyi/users/mcp-connect' } });
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route('https://lifetech.fyi/**', route => route.fulfill({ status: 200, body: '' }));
+    await page.setContent(html);
+    await page.getByRole('heading', { name: 'Connect Codex to LifeTech', exact: true }).waitFor();
+    assert.equal(await page.getByRole('img', { name: 'LifeTech logo' }).getAttribute('src'), 'https://lifetech.fyi/assets/images/lifetech-logo.png');
+    assert.ok(!(await page.textContent('body')).includes('MedTech'));
+    await page.getByText('Connection details', { exact: true }).click();
+    assert.ok((await page.textContent('body')).includes('https://lifetech.fyi/api/org/mcp'));
+  } finally { await browser.close(); }
+});

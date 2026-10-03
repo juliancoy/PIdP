@@ -71,6 +71,19 @@ class OAuthTests(unittest.TestCase):
             scope='org:events.read org:events.write', code_challenge_method='S256', state='state',
             code_challenge=base64.urlsafe_b64encode(hashlib.sha256(b'v' * 43).digest()).decode().rstrip('='))
 
+    def test_separate_resource_configuration_and_branding(self):
+        resource = 'https://lifetech.fyi/api/org/mcp'
+        addition = {resource: dict(secretHash=oauth.digest('lifetech-resource-secret-at-least-32-chars'),
+                                  portal=dict(name='LifeTech', loginUrl='https://lifetech.fyi/users/mcp-connect'))}
+        with patch.object(oauth.settings, 'mcp_oauth_resource_additions_json', json.dumps(addition)):
+            cfg = oauth.configuration()
+            self.assertIn(self.resource, cfg['resources'])
+            self.assertNotEqual(cfg['resources'][self.resource]['secretHash'], cfg['resources'][resource]['secretHash'])
+            self.assertEqual(cfg['portals'][resource]['loginUrl'], 'https://lifetech.fyi/users/mcp-connect')
+        with patch.object(oauth.settings, 'mcp_oauth_resource_additions_json', json.dumps({self.resource: addition[resource]})):
+            with self.assertRaises(oauth.OAuthError):
+                oauth.configuration()
+
     def tearDown(self):
         self.client.close(); self.actor.stop(); self.active.stop(); self.setting_patch.stop(); self.db.db.close()
 

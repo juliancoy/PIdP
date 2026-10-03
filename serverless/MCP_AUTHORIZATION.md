@@ -146,3 +146,18 @@ Live acceptance still requires OAuth linking in ChatGPT, read-only access, denie
 write attempts without write scope, one approved test-calendar write, user revocation
 followed by a rejected MCP call, and verification that existing portal login works.
 This implementation has not performed deployment, live linking or event mutation.
+
+### Adding a separate portal resource
+
+`MCP_OAUTH_RESOURCE_ADDITIONS_JSON` adds resource credentials and their browser
+login handoffs without replacing the existing resource or portal maps. Each
+entry is keyed by an exact HTTPS resource URL and contains `secretHash` (the
+SHA-256 hash of that resource's introspection credential) and
+`portal: {name, loginUrl}`. Duplicate existing resource URLs are rejected.
+Python uses the equivalent `mcp_oauth_resource_additions_json` setting.
+
+LifeTech uses `https://lifetech.fyi/api/org/mcp` and
+`https://lifetech.fyi/users/mcp-connect`; MedTech remains
+`https://medtech.social/api/org/mcp`. Grants, codes, refresh tokens, bridge
+sessions and introspection remain bound to the exact resource. Register a new
+client connection when adding a resource to an existing dynamic-client setup.

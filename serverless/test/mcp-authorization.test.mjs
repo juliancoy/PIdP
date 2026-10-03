@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { generateKeyPair, exportJWK, jwtVerify, importJWK } from 'jose';
-import { mcpAuthorization as app } from '../src/mcpAuthorization.ts';
+import { authorizationConfig, mcpAuthorization as app } from '../src/mcpAuthorization.ts';
 import { signJwt, sha256Hex } from '../src/crypto.ts';
 import fullApp from '../src/index.ts';
 
@@ -309,4 +309,35 @@ test('dynamically registered confidential clients authenticate using their regis
       assert.equal((await f.post('/oauth/mcp/token', data, headers)).status, 200);
     } finally { f.sql.close(); }
   }
+});
+
+
+test('separate resources retain distinct credentials, login origins and token audiences', async () => {
+  const f = await fixture();
+  try {
+    const lifetech = 'https://lifetech.fyi/api/org/mcp';
+    const code = await f.code();
+    f.env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON = JSON.stringify({ [lifetech]: {
+      secretHash: await sha256Hex('lifetech-resource-secret-at-least-32-chars'),
+      portal: { name: 'LifeTech', loginUrl: 'https://lifetech.fyi/users/mcp-connect' },
+    } });
+    const clients = JSON.parse(f.env.MCP_OAUTH_CLIENTS_JSON);
+    clients.chatgpt.resources.push(lifetech);
+    f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify(clients);
+    const config = authorizationConfig(f.env);
+    assert.ok(config.resources[f.resource]);
+    assert.notEqual(config.resources[f.resource].secretHash, config.resources[lifetech].secretHash);
+    const start = await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, resource: lifetech }), { headers: { cookie: f.cookie } });
+    assert.equal(start.status, 303);
+    const login = new URL(start.headers.get('location'));
+    assert.equal(login.origin, 'https://lifetech.fyi');
+    assert.equal(login.pathname, '/users/mcp-connect');
+    assert.equal((await f.exchange(code, { resource: lifetech })).status, 400);
+    const tokens = await (await f.exchange(code)).json();
+    const cross = await f.post('/oauth/mcp/introspect', { token: tokens.access_token, resource: lifetech }, { authorization: 'Bearer lifetech-resource-secret-at-least-32-chars' });
+    assert.equal((await cross.json()).active, false);
+    assert.equal((await f.post('/oauth/mcp/introspect', { token: tokens.access_token, resource: lifetech }, { authorization: 'Bearer resource-secret-for-tests-at-least-32-chars' })).status, 401);
+    f.env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON = JSON.stringify({ [f.resource]: { secretHash: 'a'.repeat(64), portal: { name: 'Other', loginUrl: 'https://other.example/users/mcp-connect' } } });
+    assert.throws(() => authorizationConfig(f.env), /not_configured/);
+  } finally { f.sql.close(); }
 });
