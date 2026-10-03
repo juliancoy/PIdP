@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { portalSso } from "./portalSso";
 import { mcpAuthorization } from "./mcpAuthorization";
 import { cors } from "hono/cors";
@@ -256,7 +256,21 @@ function redirectWithSession(env: Env, next: string, token: string, headers = ne
   return new Response(null, { status: 303, headers });
 }
 
-function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean }) {
+function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: string, ownerMode: boolean) {
+  const portalOrigin = portalRequestOrigin(c);
+  return ([
+    ["google", "Google", c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET],
+    ["github", "GitHub", c.env.GITHUB_CLIENT_ID && c.env.GITHUB_CLIENT_SECRET],
+  ] as const).filter(([, , enabled]) => enabled).map(([provider, label]) => {
+    const url = new URL(portalOrigin ? `/pidp/auth/${provider}/login` : `/auth/${provider}/login`, portalOrigin || canonicalBase(c));
+    url.searchParams.set("next", next);
+    if (ownerMode) url.searchParams.set("owner", "1");
+    else if (appSlug) url.searchParams.set("app", appSlug);
+    return { label, href: url.toString() };
+  });
+}
+
+function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[] }) {
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
@@ -274,6 +288,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
     label { display: grid; gap: 6px; font-size: 0.92rem; margin: 12px 0; }
     input { font: inherit; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; }
     button { width: 100%; margin-top: 12px; padding: 10px 12px; border: 0; border-radius: 6px; background: #111827; color: #fff; font: inherit; cursor: pointer; }
+    .social-login { display: block; margin: 12px 0; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; text-align: center; text-decoration: none; color: #111827; }
     .error { color: #b42318; background: #fff1f0; border: 1px solid #ffccc7; padding: 10px 12px; border-radius: 6px; }
   </style>
 </head>
@@ -281,6 +296,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
   <main>
     <h1>${escapeHtml(title)}</h1>
     ${error}
+    ${params.socialLinks.map(link => `<a class="social-login" href="${escapeHtml(link.href)}">Continue with ${escapeHtml(link.label)}</a>`).join("\n")}
     <form method="post" action="/app/login">
       ${appField}
       ${ownerField}
@@ -563,7 +579,7 @@ app.get("/app/login", async (c) => {
     else if (appSlug) redirect.searchParams.set("app", appSlug);
     return c.redirect(redirect.toString(), 303);
   }
-  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode }));
+  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
 });
 
 app.get("/app/login/", (c) => {
@@ -582,7 +598,7 @@ app.post("/app/login", async (c) => {
   const ownerMode = Boolean(form.owner);
   const next = String(form.next || c.env.FRONTEND_REDIRECT_URL || "/");
   if (!email || !password) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "Email and password are required." }), 422);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
   }
 
   if (!ownerMode && appSlug) {
@@ -590,10 +606,10 @@ app.post("/app/login", async (c) => {
     if (website) {
       const websiteUser = await websiteUserByEmail(c.env.DB, website.id, email);
       if (!websiteUser || !(await verifyPassword(password, websiteUser.hashed_password))) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "Invalid credentials." }), 401);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
       }
       if (!websiteUser.is_active) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "This account is inactive." }), 403);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
@@ -604,7 +620,7 @@ app.post("/app/login", async (c) => {
 
   const user = await userByEmail(c.env.DB, email);
   if (!user || !(await verifyPassword(password, user.hashed_password))) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, error: "Invalid credentials." }), 401);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
