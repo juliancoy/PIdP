@@ -650,7 +650,28 @@ app.get("/auth/me", async (c) => {
 });
 
 app.put("/auth/me", async (c) => {
-  const owner = await currentOwner(c.env, bearerToken(c));
+  const token = bearerToken(c);
+  // Profile self-service must retain the namespace carried by the signed token.
+  if (!token.startsWith("pidp_pat_")) {
+    const claims = await verifyJwt(c.env, token);
+    if (claims.actor_type === "website_user") {
+      const user = await currentWebsiteUser(c.env, token);
+      const payload = await readJson<Record<string, unknown>>(c);
+      const identity = parseJson<Record<string, unknown>>(user.identity_data, {});
+      // Match Python's UserProfileUpdate. Never accept account/security fields.
+      const profileFields = ["display_name", "bio", "avatar_url", "first_name", "last_name",
+        "address_line1", "address_line2", "city", "state", "zip", "organizations", "maslow_now", "maslow_future"];
+      for (const field of profileFields) {
+        if (Object.prototype.hasOwnProperty.call(payload, field)) identity[field] = payload[field];
+      }
+      const fullName = payload.full_name != null ? String(payload.full_name) : user.full_name;
+      await c.env.DB.prepare("UPDATE website_users SET full_name = ?, identity_data = ? WHERE website_id = ? AND id = ?")
+        .bind(fullName, json(identity), user.website_id, user.id).run();
+      const updated = (await websiteUserById(c.env.DB, user.website_id, user.id))!;
+      return c.json({ ...userPublic(c.env, updated), is_sysadmin: false });
+    }
+  }
+  const owner = await currentOwner(c.env, token);
   const payload = await readJson<Record<string, unknown>>(c);
   const identity = parseJson<Record<string, unknown>>(owner.identity_data, {});
   const fullName = "full_name" in payload ? String(payload.full_name || "") : owner.full_name;
