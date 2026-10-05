@@ -48,6 +48,14 @@ function fixture() {
   return { request, start };
 }
 
+test('only numeric Google account hints reach the provider authorization URL', async () => {
+  const { request } = fixture();
+  for (const [provider, hint, expected] of [['google', '123456789', '123456789'], ['google', 'invalid@example.test', null], ['google', '123456789\n', null], ['github', '123456789', null]]) {
+    const response = await request(`https://pidp.example/auth/${provider}/login?app=members&login_hint=${encodeURIComponent(hint)}`);
+    assert.equal(new URL(response.headers.get('location')).searchParams.get('login_hint'), expected);
+  }
+});
+
 for (const provider of ['google', 'github']) test(`${provider} returns to the initiating portal before issuing a session`, async t => {
   const { request, start } = fixture();
   const { state, cookie, authorize } = await start(provider);

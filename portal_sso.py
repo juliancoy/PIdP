@@ -12,6 +12,7 @@ from config import settings
 from db import get_session
 from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit
 from security import safe_decode_token, create_access_token
+from login_hints import google_login_hint
 
 router = APIRouter()
 BROWSER = '__Host-pidp_sso_browser'
@@ -70,6 +71,9 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
     params = {'request':row.id}
     if provider:
         params['provider'] = provider
+    hint = google_login_hint(provider, request.query_params.get('login_hint'))
+    if hint:
+        params['login_hint'] = hint
     response = redirect(issuer(request)+'/auth/sso/authorize?'+urlencode(params))
     response.set_cookie(BROWSER,browser,max_age=600,secure=True,httponly=True,samesite='lax',path='/')
     return response
@@ -89,7 +93,8 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
     if payload.get('actor_type') == 'website_user' and str(payload.get('website_id')) == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(payload['sub'])),
             WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
-    if not user:
+    hint = google_login_hint(request.query_params.get('provider'), request.query_params.get('login_hint'))
+    if not user or hint:
         provider = request.query_params.get('provider')
         if provider and provider not in ('google','github'):
             raise HTTPException(400, 'invalid_provider')
@@ -97,6 +102,8 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         path = f'/auth/{provider}/login' if provider else '/app/login'
         params = {'next':resume}
         params['app'] = row.app
+        if hint:
+            params['login_hint'] = hint
         return redirect(issuer(request)+path+'?'+urlencode(params))
     code = secrets.token_urlsafe(40)
     claimed = (await session.execute(update(PortalSsoRequest).where(PortalSsoRequest.id == row.id,
