@@ -3,6 +3,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import { websiteBySlug, websiteUserById } from './db';
 import type { Env } from './types';
+import { googleLoginHint } from './loginHints';
 
 const browserCookie = '__Host-pidp_sso_browser';
 type Ticket = { id: string; browser_hash: string; origin: string; next: string; website_id: string; app: string; subject: string | null; code_hash: string | null; expires_at: number };
@@ -41,6 +42,8 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   authorize.searchParams.set('request',id);
   const provider=c.req.query('provider');if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
   if(provider)authorize.searchParams.set('provider',provider);
+  const hint=googleLoginHint(provider,c.req.query('login_hint'));
+  if(hint)authorize.searchParams.set('login_hint',hint);
   return c.redirect(authorize.toString(),303);
  });
  app.get('/auth/sso/authorize', async c => {
@@ -55,13 +58,15 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
     if(user?.is_active)account=`website:${row.website_id}:${user.id}`;
    }
   } catch { /* Sign in in the requesting application namespace. */ }
-  if(!account){
+  const hint=googleLoginHint(c.req.query('provider'),c.req.query('login_hint'));
+  if(!account || hint){
    const provider=c.req.query('provider');
    if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
    const login=new URL(provider?`/auth/${provider}/login`:'/app/login',c.env.PUBLIC_BASE_URL);
    const resume=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);resume.searchParams.set('request',row.id);
    login.searchParams.set('app',row.app);
    login.searchParams.set('next',resume.toString());
+   if(hint)login.searchParams.set('login_hint',hint);
    return c.redirect(login.toString(),303);
   }
   const code=randomToken('');

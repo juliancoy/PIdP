@@ -21,6 +21,26 @@ async function start(f,host='one.example'){
  const r=await f.request(host,'/auth/sso/start?app='+f.env.PORTAL_SSO_APP_SLUG+'&next='+encodeURIComponent('https://'+host+'/auth/callback?next=%2Fpeople'));
  assert.equal(r.status,303);return{browser:r.headers.getSetCookie()[0].split(';')[0],authorize:r.headers.get('location')};
 }
+test('selected Google account goes through OAuth even with an existing application session', async () => {
+ const f=fixture();
+ try {
+  const selected=await f.request('one.example','/auth/sso/start?app=members&provider=google&login_hint=123456789');
+  const authorize=new URL(selected.headers.get('location'));
+  assert.equal(authorize.searchParams.get('login_hint'),'123456789');
+  const session=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const result=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+session});
+  const login=new URL(result.headers.get('location'));
+  assert.equal(login.pathname,'/auth/google/login');
+  assert.equal(login.searchParams.get('app'),'members');
+  assert.equal(login.searchParams.get('login_hint'),'123456789');
+  assert.equal(login.searchParams.has('owner'),false);
+  assert.equal(new URL(login.searchParams.get('next')).searchParams.has('login_hint'),false);
+  for (const [provider,hint] of [['github','123456789'],['google','invalid@example.test']]) {
+   const result=await f.request('one.example',`/auth/sso/start?app=members&provider=${provider}&login_hint=${hint}`);
+   assert.equal(new URL(result.headers.get('location')).searchParams.has('login_hint'),false);
+  }
+ } finally { f.sql.close() }
+});
 test('central sign-in makes browser-bound sessions on two domains without exposing bearer tokens',async()=>{
  const f=fixture();try{
  const session=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});

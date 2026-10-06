@@ -3105,7 +3105,9 @@ async def social_login(
     if resolved_next:
         request.session["frontend_redirect_url"] = resolved_next
     LOG.info("Starting social login provider=%s app=%s", provider, app_slug or "none")
-    return await client.authorize_redirect(request, redirect_uri)
+    from login_hints import google_login_hint
+    hint = google_login_hint(provider, request.query_params.get('login_hint'))
+    return await client.authorize_redirect(request, redirect_uri, **({'login_hint': hint} if hint else {}))
 
 
 @app.get("/auth/{provider}/callback")

@@ -85,11 +85,12 @@ class PidpSmokeTests(unittest.TestCase):
 
     def test_social_login_preserves_next_as_frontend_redirect_url(self):
         class _FakeOAuthClient:
-            async def authorize_redirect(self, request, redirect_uri):
+            async def authorize_redirect(self, request, redirect_uri, **kwargs):
                 return JSONResponse(
                     {
                         "saved_next": request.session.get("frontend_redirect_url"),
                         "redirect_uri": redirect_uri,
+                        "login_hint": kwargs.get('login_hint'),
                     }
                 )
 
@@ -102,10 +103,17 @@ class PidpSmokeTests(unittest.TestCase):
         try:
             with TestClient(self.main.app) as client:
                 response = client.get("/auth/google/login?next=/sites")
+                selected = client.get('/auth/google/login?next=/sites&login_hint=123456789')
+                invalid = client.get('/auth/google/login?next=/sites&login_hint=invalid@example.test')
+                trailing_newline = client.get('/auth/google/login', params={'next': '/sites', 'login_hint': '123456789\n'})
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(payload["saved_next"], "/sites")
             self.assertEqual(payload["redirect_uri"], os.environ["GOOGLE_REDIRECT_URI"])
+            self.assertIsNone(payload['login_hint'])
+            self.assertEqual(selected.json()['login_hint'], '123456789')
+            self.assertIsNone(invalid.json()['login_hint'])
+            self.assertIsNone(trailing_newline.json()['login_hint'])
         finally:
             self.main.oauth.create_client = original_create_client
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host

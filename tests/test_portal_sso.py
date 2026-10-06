@@ -4,7 +4,7 @@ os.environ.setdefault('DATABASE_URL','postgresql+asyncpg://test:test@localhost/t
 import unittest
 import uuid
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.compiler import compiles
@@ -69,4 +69,20 @@ class SsoTests(unittest.TestCase):
         self.assertEqual(result.status_code,503)
         self.assertEqual(result.json()['detail'],'application_not_registered')
         self.assertEqual(self.db.query(PortalSsoRequest).count(),0)
+    def test_google_selection_reauthenticates_in_the_application_namespace(self):
+        started = self.client.get('/auth/sso/start', params={'app':'members', 'provider':'google', 'login_hint':'123456789'})
+        self.assertEqual(parse_qs(urlsplit(started.headers['location']).query)['login_hint'], ['123456789'])
+        # Even an existing valid session must authenticate the selected account.
+        authorized = self.client.get(started.headers['location'])
+        target = urlsplit(authorized.headers['location'])
+        self.assertEqual(target.path, '/auth/google/login')
+        params = parse_qs(target.query)
+        self.assertEqual(params['app'], ['members'])
+        self.assertEqual(params['login_hint'], ['123456789'])
+        self.assertNotIn('owner', params)
+        self.assertNotIn('login_hint', parse_qs(urlsplit(params['next'][0]).query))
+    def test_hints_do_not_select_identities_for_other_providers(self):
+        for provider, hint in [('github', '123456789'), ('google', 'invalid@example.test')]:
+            started = self.client.get('/auth/sso/start', params={'app':'members', 'provider':provider, 'login_hint':hint})
+            self.assertNotIn('login_hint', parse_qs(urlsplit(started.headers['location']).query))
 if __name__=='__main__':unittest.main()
