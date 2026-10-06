@@ -596,6 +596,21 @@ app.post("/auth/token", async (c) => {
   return c.json({ access_token: await createOwnerToken(c.env, user), token_type: "bearer" });
 });
 
+// The issuer home is an owner entry point, matching the Python console.
+app.get("/", (c) => {
+  const next = new URL(c.req.url).searchParams.get("next") || "/profile";
+  const query = new URLSearchParams({ owner: "1", next });
+  return c.redirect(`/app/login?${query}`, 303);
+});
+
+app.get("/profile", async (c) => {
+  if (!cookieValue(c, SESSION_COOKIE) && !c.req.header("authorization")) {
+    return c.redirect("/app/login?owner=1&next=%2Fprofile", 303);
+  }
+  const user = await currentOwner(c.env, sessionOrBearerToken(c));
+  return c.redirect(`/u/${encodeURIComponent(user.id)}`, 303);
+});
+
 app.get("/app/login", async (c) => {
   const url = new URL(c.req.url);
   const appParam = url.searchParams.get("app") || "";

@@ -31,6 +31,18 @@ function fixture() {
   return { sql, request, env };
 }
 
+test('browser profile accepts the owner session and rejects website credentials', async () => {
+  const f = fixture();
+  try {
+    for (const claims of [{ sub: 'member' }, { sub: 'member', actor_type: 'website_user', website_id: 'site' }]) {
+      const token = await signJwt(f.env, claims);
+      const response = await app.request('https://id.example/profile', { headers: { cookie: `pidp_session=${token}` } }, f.env);
+      assert.equal(response.status, claims.actor_type ? 403 : 303);
+      if (!claims.actor_type) assert.equal(response.headers.get('location'), '/u/member');
+    }
+  } finally { f.sql.close(); }
+});
+
 test('website members save only their own profile and retain the account namespace', async () => {
   const f = fixture();
   try {

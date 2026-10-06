@@ -8,6 +8,27 @@ function googleLink(html) {
   return new URL(href);
 }
 
+test('issuer home opens owner login with a working default return route', async () => {
+  for (const next of ['/profile', '/u/example']) {
+    const path = next === '/profile' ? '/' : `/?next=${encodeURIComponent(next)}`;
+    const response = await app.request(`https://id.codecollective.us${path}`, {}, env);
+    assert.equal(response.status, 303);
+    const target = new URL(response.headers.get('location'), env.PUBLIC_BASE_URL);
+    assert.equal(target.pathname, '/app/login');
+    assert.equal(target.searchParams.get('owner'), '1');
+    assert.equal(target.searchParams.get('next'), next);
+    const login = await app.request(target.href, {}, env);
+    assert.equal(login.status, 200);
+    assert.equal(googleLink(await login.text()).searchParams.get('owner'), '1');
+  }
+});
+
+test('browser profile prompts unauthenticated visitors to sign in', async () => {
+  const response = await app.request('https://id.codecollective.us/profile', {}, env);
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get('location'), '/app/login?owner=1&next=%2Fprofile');
+});
+
 test('social login preserves member app and return context', async () => {
   const response = await app.request('https://id.codecollective.us/app/login?app=medtech&next=%2Fcommunity', {}, env);
   assert.equal(response.status, 200);
