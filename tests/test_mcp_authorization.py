@@ -61,6 +61,9 @@ class OAuthTests(unittest.TestCase):
             mcp_oauth_resources_json=json.dumps({self.resource: {'secretHash': oauth.digest('resource-secret-at-least-32-characters')}}))
         self.setting_patch.start()
         self.active = patch.object(oauth, 'active_subject', AsyncMock(return_value=True)); self.active.start()
+        async def identity(_db, subject):
+            return dict(canonical_user_id=subject.split(':')[-1],account_id=subject.split(':')[-1],account_subject=subject)
+        self.identity = patch.object(oauth,'resolve_account_identity',side_effect=identity);self.identity.start()
         self.actor = patch.object(oauth, 'session', AsyncMock(return_value=dict(subject='owner:alice', display='alice', hash='session-hash'))); self.actor.start()
         app = FastAPI(); app.include_router(oauth.router)
         async def get_db():
@@ -85,7 +88,7 @@ class OAuthTests(unittest.TestCase):
                 oauth.configuration()
 
     def tearDown(self):
-        self.client.close(); self.actor.stop(); self.active.stop(); self.setting_patch.stop(); self.db.db.close()
+        self.client.close(); self.actor.stop(); self.active.stop(); self.identity.stop(); self.setting_patch.stop(); self.db.db.close()
 
     def post(self, path, data, **kwargs):
         return self.client.post('/oauth/mcp/' + path, data=data, follow_redirects=False, **kwargs)
@@ -186,6 +189,29 @@ class OAuthTests(unittest.TestCase):
         tokens = self.exchange(self.code()).json()
         self.assertEqual(self.post('revoke', dict(client_id='native', token=tokens['refresh_token'])).status_code, 200)
         self.assertFalse(self.introspect(tokens['access_token'])['active'])
+
+    def test_native_connections_persist_and_legacy_active_grants_upgrade(self):
+        tokens = self.exchange(self.code()).json()
+        self.assertEqual(self.db.db.execute('SELECT expires_at FROM mcp_oauth_grants').fetchone()[0], 0)
+        page = self.client.get('/oauth/mcp/connections')
+        self.assertIn('name="grant"', page.text)
+        with patch.object(oauth.time, 'time', return_value=oauth.time.time() + 40 * 86400):
+            renewed = self.post('token', dict(grant_type='refresh_token', client_id='native', refresh_token=tokens['refresh_token']))
+            self.assertEqual(renewed.status_code, 200, renewed.text)
+        tokens = self.exchange(self.code()).json()
+        self.db.db.execute('UPDATE mcp_oauth_grants SET expires_at = ? WHERE revoked = 0', (int(oauth.time.time()) + 1000,))
+        self.db.db.commit()
+        renewed = self.post('token', dict(grant_type='refresh_token', client_id='native', refresh_token=tokens['refresh_token']))
+        self.assertEqual(renewed.status_code, 200)
+        self.assertEqual(self.db.db.execute('SELECT COUNT(*) FROM mcp_oauth_grants WHERE expires_at != 0').fetchone()[0], 1)
+        self.post('revoke', dict(client_id='native', token=renewed.json()['refresh_token']))
+        self.assertFalse(self.introspect(renewed.json()['access_token'])['active'])
+
+    def test_expired_native_grants_are_not_revived(self):
+        tokens = self.exchange(self.code()).json()
+        self.db.db.execute('UPDATE mcp_oauth_grants SET expires_at = 1')
+        self.db.db.commit()
+        self.assertEqual(self.post('token', dict(grant_type='refresh_token', client_id='native', refresh_token=tokens['refresh_token'])).status_code, 400)
 
     def test_shared_redirect_contract_and_csrf(self):
         cases = json.loads((Path(__file__).parent / 'oauth_redirect_cases.json').read_text())

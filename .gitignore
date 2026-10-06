@@ -20,3 +20,4 @@ playwright-report/
 test-results/
 serverless/src/generated/
 .env
+.env.pidp

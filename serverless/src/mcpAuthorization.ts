@@ -1,3 +1,4 @@
+import { resolveAccountIdentity } from './accountIdentity';
 import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { importJWK, SignJWT, jwtVerify, type JWK } from 'jose';
@@ -185,7 +186,9 @@ async function authenticateClient(c: Context<{ Bindings: Env }>, p: URLSearchPar
 }
 async function validateGrant(env: Env, config: Config, grant: Grant) {
   const client = await getClient(env, config, grant.client_id);
-  return !grant.revoked && grant.expires_at > now() && client && client.resources.includes(grant.resource)
+  return !grant.revoked && client
+    && (grant.expires_at > now() || (grant.expires_at === 0 && client.tokenEndpointAuthMethod === 'none'))
+    && client.resources.includes(grant.resource)
     && grant.scope.split(' ').every(s => client.scopes.includes(s));
 }
 async function tokens(env: Env, config: Config, grant: Grant) {
@@ -356,7 +359,7 @@ mcpAuthorization.post('/oauth/mcp/token', async c => {
     const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_codes WHERE hash = ? AND client_id = ? AND redirect_uri = ? AND resource = ? AND challenge = ? AND expires_at >= ? RETURNING *')
       .bind(await sha256Hex(p.get('code') || ''), id, p.get('redirect_uri') || '', p.get('resource') ?? (client.resources.length === 1 ? client.resources[0] : ''), challenge, now()).first<Pending>();
     if (!row || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s)) || !await activeSubject(c.env, row.subject)) throw new OAuthError('invalid_grant');
-    const grant: Grant = { id: crypto.randomUUID(), subject: row.subject, client_id: id, resource: row.resource, scope: row.scope, expires_at: now() + 2592000, revoked: 0 };
+    const grant: Grant = { id: crypto.randomUUID(), subject: row.subject, client_id: id, resource: row.resource, scope: row.scope, expires_at: client.tokenEndpointAuthMethod === 'none' ? 0 : now() + 2592000, revoked: 0 };
     await c.env.DB.prepare('INSERT INTO mcp_oauth_grants VALUES (?, ?, ?, ?, ?, ?, 0)').bind(grant.id, grant.subject, id, grant.resource, grant.scope, grant.expires_at).run();
     return c.json(await tokens(c.env, cfg, grant));
   }
@@ -367,6 +370,10 @@ mcpAuthorization.post('/oauth/mcp/token', async c => {
   if ((p.has('resource') && p.get('resource') !== grant.resource) || (p.has('scope') && p.get('scope') !== grant.scope)) throw new OAuthError('invalid_scope');
   const claimed = await c.env.DB.prepare('UPDATE mcp_oauth_refresh SET used = 1 WHERE hash = ? AND used = 0 RETURNING hash').bind(hash).first();
   if (!claimed) { await c.env.DB.prepare('UPDATE mcp_oauth_grants SET revoked = 1 WHERE id = ?').bind(grant.id).run(); throw new OAuthError('invalid_grant'); }
+  if (client.tokenEndpointAuthMethod === 'none' && grant.expires_at !== 0) {
+    await c.env.DB.prepare('UPDATE mcp_oauth_grants SET expires_at = 0 WHERE id = ?').bind(grant.id).run();
+    grant.expires_at = 0;
+  }
   return c.json(await tokens(c.env, cfg, grant));
 });
 mcpAuthorization.post('/oauth/mcp/introspect', async c => {
@@ -381,7 +388,9 @@ mcpAuthorization.post('/oauth/mcp/introspect', async c => {
   } catch { return c.json({ active: false }); }
   const grant = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE id = ?').bind(payload.grant_id).first<Grant>();
   if (!grant || !await validateGrant(c.env, cfg, grant) || grant.resource !== resource || grant.subject !== payload.sub || grant.scope !== payload.scope || !await activeSubject(c.env, grant.subject)) return c.json({ active: false });
-  return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp });
+  let identity;
+  try {identity=await resolveAccountIdentity(c.env,grant.subject);} catch{return c.json({active:false});}
+  return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp, ...identity });
 });
 mcpAuthorization.post('/oauth/mcp/revoke', async c => {
   const cfg = authorizationConfig(c.env); const p = await form(c); const { id } = await authenticateClient(c, p, cfg);
@@ -396,7 +405,7 @@ mcpAuthorization.get('/oauth/mcp/connections', async c => {
     if (resources.length) return startLogin(c, cfg, c.req.query('resource') || (resources.length === 1 ? resources[0] : ''), '/oauth/mcp/connections');
     return c.redirect(`${cfg.issuer}/app/login?next=/oauth/mcp/connections`, 303);
   }
-  const rows = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE subject = ? AND revoked = 0 AND expires_at > ? ORDER BY expires_at DESC LIMIT 100').bind(actor.subject, now()).all<Grant>();
+  const rows = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE subject = ? AND revoked = 0 AND (expires_at = 0 OR expires_at > ?) ORDER BY expires_at DESC LIMIT 100').bind(actor.subject, now()).all<Grant>();
   const csrf = await sha256Hex(`${actor.hash}:mcp-revoke`);
   return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Connected apps · PIdP</title><main><h1>Connected event apps</h1>${rows.results.map(g => `<form method="post"><p>${escape(g.client_id)} — ${escape(g.resource)} (${escape(g.scope)})</p><input type="hidden" name="grant" value="${escape(g.id)}"><input type="hidden" name="csrf" value="${csrf}"><button>Revoke access</button></form>`).join('') || '<p>No active connections.</p>'}</main></html>`);
 });

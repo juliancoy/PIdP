@@ -193,9 +193,13 @@ Core settings:
 - `TOKEN_ALGORITHM` (optional, default `HS256`)
 - `AUTO_CREATE_TABLES` (optional, default `false`)
 - `ALLOWED_ORIGINS` (optional, comma-separated)
-- `ADMIN_EMAILS` (optional, comma-separated admin emails used to assert `is_sysadmin`)
-- `ADMIN_USER_IDS` (optional, comma-separated PIdP user IDs used to assert `is_sysadmin`)
-- `PIDP_ADMIN_EMAILS` / `PIDP_ADMIN_USER_IDS` (launcher-level aliases consumed by `PIdP/run.py`)
+- `ADMIN_USER_IDS` (optional, comma-separated PIdP owner account IDs used to assert `is_sysadmin`; website accounts never inherit this authority)
+- `PIDP_ADMIN_USER_IDS` (launcher-level alias consumed by `PIdP/run.py`)
+
+Email addresses and editable profile roles are not authorization identifiers.
+Owner and website-member subjects remain separate even when email or UUID
+values match. OrgPortal grants organization roles to an explicitly selected
+account ID through its own permission checks and audited membership workflow.
 - `PIDP_PROD_IMAGE` (optional prod release image override; default `ghcr.io/juliancoy/pidp:latest`)
 - `PIDP_DEV_IMAGE` (optional local dev image tag used for the watcher container; default `pidp-dev`)
 - `PIDP_PROD_PUBLIC_BASE_URL` (optional explicit prod callback base, e.g. `https://pidp.example.com/`)
@@ -245,6 +249,7 @@ Social sign-in (set both client id/secret to enable):
 - `PUT /auth/me` Updates the authenticated owner or website member’s own profile. Website-member sessions retain their signed website namespace and cannot update account security fields or manage websites.
 - `POST /auth/tokens` Create a user-scoped API token for service access.
   - Supported token scopes: `service`, `org_portal`, `org_mcp`, `org_admin`
+- `POST /auth/tokens/download` Generate four new scoped PATs and download `.env.pidp` (`PIDP_PAT`, `PIDP_ORG_PORTAL_TOKEN`, `PIDP_ORG_MCP_TOKEN`, `PIDP_ORG_ADMIN_TOKEN`). Existing tokens remain active. Owner authentication and token-administration authorization are required; the response is not cached and only hashes are stored. The Python profile page provides **Generate & download .env.pidp** and **Roll** controls.
 - `GET /auth/tokens` List API tokens for the current user.
 - `DELETE /auth/tokens/{token_id}` Revoke one of the current user's API tokens.
 - `POST /auth/tokens/{token_id}/cycle` Rotate a token secret (same token id/name, new bearer value; re-activates if revoked).

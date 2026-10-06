@@ -16,6 +16,12 @@ class ConsentPageTests(unittest.TestCase):
         self.assertIn('&lt;Codex&gt;{{css}}', markup)
         self.assertNotIn('<Codex>', markup)
         self.assertNotIn('<script', markup)
+        self.assertEqual(markup.count('<form '), 1)
+        self.assertIn('Confirm your account and review the requested permissions', markup)
+        self.assertIn('Permissions requested by', markup)
+        self.assertIn('Signed in as', markup)
+        self.assertIn('Allow access', markup)
+        self.assertIn('>Deny<', markup)
         self.assertIn('not verified by PIdP', markup)
         css = re.search(r'<style>(.*?)</style>', markup, re.S)[1]
         digest = base64.b64encode(hashlib.sha256(css.encode()).digest()).decode()

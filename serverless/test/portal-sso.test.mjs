@@ -7,6 +7,7 @@ import { signJwt, verifyJwt } from '../src/crypto.ts';
 import fullApp from '../src/index.ts';
 function fixture(real = false) {
  const sql=new DatabaseSync(':memory:');
+ sql.exec('CREATE TABLE account_identity_links(subject TEXT,canonical_user_id TEXT,website_id TEXT,website_user_id TEXT,linked_at TEXT)');
  sql.exec(readFileSync(new URL('../migrations/0009_portal_sso.sql',import.meta.url),'utf8'));
  sql.exec(`CREATE TABLE websites(id TEXT,slug TEXT);INSERT INTO websites VALUES('site','members');
  CREATE TABLE users(id TEXT,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
@@ -64,7 +65,7 @@ test('untrusted origins, external returns, wrong apps, expired requests and name
  assert.equal((await f.request('one.example','/auth/sso/start?app=members&next=https://evil.example/auth/callback')).status,400);
  const s=await start(f);const url=new URL(s.authorize);const path=url.pathname+url.search;
  for(const payload of [{sub:'owner'},{sub:'member',actor_type:'website_user',website_id:'other'}]){
- const token=await signJwt(f.env,payload);const r=await f.request('id.example',path,{cookie:'pidp_session='+token});assert.match(r.headers.get('location'),/\/app\/login/);
+ const token=await signJwt(f.env,payload);const r=await f.request('id.example',path,{cookie:'pidp_session='+token});if(payload.sub==='owner'){assert.equal(r.status,403);assert.equal((await r.json()).error,'account_link_required')}else assert.match(r.headers.get('location'),/\/app\/login/);
  }
  f.sql.exec('UPDATE portal_sso_requests SET expires_at=0');assert.equal((await f.request('id.example',path)).status,400);
  }finally{f.sql.close()}
@@ -96,5 +97,15 @@ test('full worker issues distinct authenticated session tokens for the same iden
   ids.push(claims.jti);
  }
  assert.ok(ids[0]);assert.notEqual(ids[0],ids[1]);
+ }finally{f.sql.close()}
+});
+
+test('owner session authorizes only through an explicit website member link',async()=>{
+ const f=fixture();try{
+ const started=await start(f);const url=new URL(started.authorize);
+ f.sql.exec("INSERT INTO account_identity_links VALUES('website:site:member','owner','site','member','2026-10-06')");
+ const token=await signJwt(f.env,{sub:'owner',actor_type:'owner'});
+ const result=await f.request('id.example',url.pathname+url.search,{cookie:'pidp_session='+token});
+ assert.equal(result.status,303);assert.match(result.headers.get('location'),/sso\/complete/);
  }finally{f.sql.close()}
 });

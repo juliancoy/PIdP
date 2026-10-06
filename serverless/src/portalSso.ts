@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
-import { websiteBySlug, websiteUserById } from './db';
+import { websiteBySlug, websiteUserById, userById } from './db';
 import type { Env } from './types';
 import { googleLoginHint } from './loginHints';
 
@@ -56,6 +56,16 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
    if(payload.actor_type==='website_user' && payload.website_id===row.website_id){
     const user=await websiteUserById(c.env.DB,row.website_id,payload.sub);
     if(user?.is_active)account=`website:${row.website_id}:${user.id}`;
+   } else if((payload.actor_type || 'owner')==='owner'){
+    const owner=await userById(c.env.DB,payload.sub);
+    if(owner?.is_active){
+     const linked=await c.env.DB.prepare(`SELECT member.id FROM website_users member
+      JOIN account_identity_links link ON link.website_user_id=member.id
+      WHERE link.canonical_user_id=? AND link.website_id=? AND member.website_id=? AND member.is_active=1`)
+      .bind(owner.id,row.website_id,row.website_id).first<{id:string}>();
+     if(!linked)return c.json({error:'account_link_required'},403);
+     account=`website:${row.website_id}:${linked.id}`;
+    }
    }
   } catch { /* Sign in in the requesting application namespace. */ }
   const hint=googleLoginHint(c.req.query('provider'),c.req.query('login_hint'));

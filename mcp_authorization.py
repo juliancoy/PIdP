@@ -20,6 +20,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from config import settings
 from db import get_session
 from models import Base, User, WebsiteUser
+from account_identity import resolve_account_identity
 from security import safe_decode_token
 from consent_page import render_consent_page
 
@@ -419,7 +420,9 @@ async def authenticate_client(request, p, cfg, db):
 
 async def valid_grant(cfg, grant, db):
     client = await get_client(db, cfg, grant['client_id'])
-    return (not grant['revoked'] and grant['expires_at'] > int(time.time()) and client
+    return (not grant['revoked'] and client
+            and (grant['expires_at'] > int(time.time())
+                 or (grant['expires_at'] == 0 and client.get('tokenEndpointAuthMethod') == 'none'))
             and grant['resource'] in client['resources'] and all(s in client['scopes'] for s in grant['scope'].split()))
 
 
@@ -521,7 +524,7 @@ async def handle(request, endpoint, db):
                 await query(db, 'UPDATE mcp_oauth_grants SET revoked = 1 WHERE id = :id AND subject = :subject',
                             id=p.get('grant', ''), subject=actor['subject'])
                 return RedirectResponse('/oauth/mcp/connections', status_code=303, headers=HEADERS)
-            rows = await query(db, 'SELECT * FROM mcp_oauth_grants WHERE subject = :subject AND revoked = 0 AND expires_at > :now ORDER BY expires_at DESC LIMIT 100', subject=actor['subject'], now=now)
+            rows = await query(db, 'SELECT * FROM mcp_oauth_grants WHERE subject = :subject AND revoked = 0 AND (expires_at = 0 OR expires_at > :now) ORDER BY expires_at DESC LIMIT 100', subject=actor['subject'], now=now)
             items = ''.join(f'<form method="post"><p>{html.escape(g["client_id"])} - {html.escape(g["resource"])} ({html.escape(g["scope"])})</p><input type="hidden" name="grant" value="{html.escape(g["id"])}"><input type="hidden" name="csrf" value="{csrf}"><button>Revoke access</button></form>' for g in rows)
             return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><title>Connected apps</title><main><h1>Connected event apps</h1>' + (items or '<p>No active connections.</p>') + '</main></html>', headers=HEADERS)
         if request.method == 'GET':
@@ -585,7 +588,11 @@ async def handle(request, endpoint, db):
         grant = rows[0] if rows else None
         if not grant or not await valid_grant(cfg, grant, db) or grant['resource'] != resource or grant['subject'] != payload['sub'] or grant['scope'] != payload.get('scope') or not await active_subject(db, grant['subject']):
             return response({'active': False})
-        return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}))
+        try:
+            identity = await resolve_account_identity(db, grant['subject'])
+        except Exception:
+            return response({'active': False})
+        return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}, **identity))
     client_id, client = await authenticate_client(request, p, cfg, db)
     if endpoint == 'revoke':
         await query(db, 'UPDATE mcp_oauth_grants SET revoked = 1 WHERE client_id = :client AND id IN (SELECT grant_id FROM mcp_oauth_refresh WHERE hash = :hash)', client=client_id, hash=digest(p.get('token', '')))
@@ -605,7 +612,7 @@ async def handle(request, endpoint, db):
         row = rows[0]
         if row['resource'] not in client['resources'] or any(s not in client['scopes'] for s in row['scope'].split()) or not await active_subject(db, row['subject']):
             raise OAuthError('invalid_grant')
-        grant = dict(id=str(uuid4()), subject=row['subject'], client_id=client_id, resource=row['resource'], scope=row['scope'], expires_at=now + 2592000, revoked=0)
+        grant = dict(id=str(uuid4()), subject=row['subject'], client_id=client_id, resource=row['resource'], scope=row['scope'], expires_at=0 if client.get('tokenEndpointAuthMethod') == 'none' else now + 2592000, revoked=0)
         await query(db, 'INSERT INTO mcp_oauth_grants VALUES (:id, :subject, :client_id, :resource, :scope, :expires_at, :revoked)', **grant)
         return response(await tokens(db, cfg, grant))
     if p.get('grant_type') != 'refresh_token':
@@ -621,4 +628,7 @@ async def handle(request, endpoint, db):
     if not claimed:
         await query(db, 'UPDATE mcp_oauth_grants SET revoked = 1 WHERE id = :id', id=grant['id'])
         raise OAuthError('invalid_grant')
+    if client.get('tokenEndpointAuthMethod') == 'none' and grant['expires_at'] != 0:
+        await query(db, 'UPDATE mcp_oauth_grants SET expires_at = 0 WHERE id = :id', id=grant['id'])
+        grant = {**grant, 'expires_at': 0}
     return response(await tokens(db, cfg, grant))

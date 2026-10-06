@@ -1,4 +1,6 @@
 import { Hono, type Context } from "hono";
+import { accountLinkBrowserRoutes } from "./accountLinkBrowser";
+import { accountIdentityRoutes, resolveAccountIdentity } from "./accountIdentity";
 import { portalSso } from "./portalSso";
 import { mcpAuthorization } from "./mcpAuthorization";
 import { cors } from "hono/cors";
@@ -37,6 +39,8 @@ import {
 
 const app = new Hono<{ Bindings: Env }>();
 app.route('/', mcpAuthorization);
+app.route('/auth/account-links',accountLinkBrowserRoutes(currentOwner,currentWebsiteUser));
+app.route('/auth/account-links',accountIdentityRoutes(currentOwner,currentWebsiteUser));
 app.route('/', portalSso(async (env, subject) => {
  const [actor, websiteId, id] = subject.split(':');
  if (actor === 'owner' && websiteId && !id) {
@@ -312,10 +316,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
 
 function isSysadmin(env: Env, user: UserRow): boolean {
   const adminIds = (env.ADMIN_USER_IDS || "").split(",").map((item) => item.trim()).filter(Boolean);
-  const adminEmails = (env.ADMIN_EMAILS || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
-  const identity = parseJson<Record<string, unknown>>(user.identity_data, {});
-  const roles = Array.isArray(identity.roles) ? identity.roles.map((item) => String(item).trim().toLowerCase()) : [];
-  return adminIds.includes(user.id) || adminEmails.includes(user.email.toLowerCase()) || identity.is_sysadmin === true || roles.includes("sysadmin") || roles.includes("admin");
+  return adminIds.includes(user.id);
 }
 
 function userPublic(env: Env, user: UserRow) {
@@ -360,6 +361,31 @@ function websiteUserPublic(row: WebsiteUserRow) {
   };
 }
 
+const PERSONAL_PROFILE_FIELDS = ["display_name", "bio", "avatar_url", "avatar_object_key", "avatar_source",
+  "first_name", "last_name", "address_line1", "address_line2", "city", "state", "zip",
+  "organizations", "maslow_now", "maslow_future", "theme_mode"] as const;
+
+// Email and editable identity_data cannot establish an account relationship.
+async function linkedPersonalOwner(env: Env, member: WebsiteUserRow): Promise<UserRow | null> {
+  const identity=await resolveAccountIdentity(env,`website:${member.website_id}:${member.id}`);
+  return identity.canonical_user_id===member.id ? null : userById(env.DB,identity.canonical_user_id);
+}
+
+function personalProfile(identity: Record<string, unknown>) {
+  return Object.fromEntries(PERSONAL_PROFILE_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(identity, field))
+    .map(field => [field, identity[field]]));
+}
+
+async function memberProfilePublic(env: Env, member: WebsiteUserRow) {
+  const owner = await linkedPersonalOwner(env, member);
+  const identity = parseJson<Record<string, unknown>>(member.identity_data, {});
+  if (owner) Object.assign(identity, personalProfile(parseJson(owner.identity_data, {})));
+  return { ...userPublic(env, member), id: owner?.id || member.id, account_id:member.id,
+    account_subject:`website:${member.website_id}:${member.id}`, canonical_user_id:owner?.id || member.id,
+
+    full_name: owner?.full_name ?? member.full_name, identity_data: identity, is_sysadmin: false };
+}
+
 function apiTokenPublic(row: UserApiTokenRow) {
   return {
     id: row.id,
@@ -389,7 +415,7 @@ async function currentOwner(env: Env, token: string): Promise<UserRow> {
   const payload = await verifyJwt(env, token);
   if (payload.actor_type === "website_user") fail(403, "Website user tokens cannot manage websites");
   const user = await userById(env.DB, payload.sub);
-  if (!user) fail(404, "User not found");
+  if (!user?.is_active) fail(401, "Inactive account");
   return user;
 }
 
@@ -404,7 +430,7 @@ async function currentWebsiteUser(env: Env, token: string): Promise<WebsiteUserR
   const payload = await verifyJwt(env, token);
   if (payload.actor_type !== "website_user" || !payload.website_id) fail(403, "Token is not a website user token");
   const user = await websiteUserById(env.DB, payload.website_id, payload.sub);
-  if (!user) fail(404, "Website user not found");
+  if (!user?.is_active) fail(401, "Inactive account");
   return user;
 }
 
@@ -526,16 +552,25 @@ app.get("/configuration", (c) => {
   });
 });
 
-app.get("/avatars/*", async (c) => {
+app.on(["GET", "HEAD"], "/avatars/*", async (c) => {
   if (!c.env.AVATARS) fail(404, "Avatar storage is not configured");
   const objectKey = c.req.path.replace(/^\/+/, "");
   if (!objectKey.startsWith("avatars/")) fail(404, "Avatar not found");
-  const object = await c.env.AVATARS.get(objectKey);
+  const object = c.req.method === "HEAD"
+    ? await c.env.AVATARS.head(objectKey)
+    : await c.env.AVATARS.get(objectKey);
   if (!object) fail(404, "Avatar not found");
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set("cache-control", "public, max-age=31536000, immutable");
-  return new Response(object.body, { headers });
+  headers.set("etag", object.httpEtag);
+  headers.set("last-modified", object.uploaded.toUTCString());
+  headers.set("x-content-type-options", "nosniff");
+  const validators = (c.req.header("if-none-match") || "").split(",").map(value => value.trim().replace(/^W\//, ""));
+  if (validators.includes("*") || validators.includes(object.httpEtag)) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(c.req.method === "HEAD" ? null : (object as R2ObjectBody).body, { headers });
 });
 
 app.post("/auth/register", async (c) => {
@@ -633,20 +668,10 @@ app.get("/auth/me", async (c) => {
   const payload = await verifyJwt(c.env, token);
   if (payload.actor_type === "website_user") {
     const websiteUser = await currentWebsiteUser(c.env, token);
-    return c.json(userPublic(c.env, {
-      id: websiteUser.id,
-      email: websiteUser.email,
-      hashed_password: websiteUser.hashed_password,
-      full_name: websiteUser.full_name,
-      provider: websiteUser.provider,
-      provider_account_id: websiteUser.provider_account_id,
-      identity_data: websiteUser.identity_data,
-      is_active: websiteUser.is_active,
-      created_at: websiteUser.created_at,
-    }));
+    return c.json(await memberProfilePublic(c.env, websiteUser));
   }
   const user = await currentOwner(c.env, token);
-  return c.json(userPublic(c.env, user));
+  return c.json({ ...userPublic(c.env, user), canonical_user_id:user.id, account_id:user.id, account_subject:`owner:${user.id}` });
 });
 
 app.put("/auth/me", async (c) => {
@@ -657,23 +682,29 @@ app.put("/auth/me", async (c) => {
     if (claims.actor_type === "website_user") {
       const user = await currentWebsiteUser(c.env, token);
       const payload = await readJson<Record<string, unknown>>(c);
-      const identity = parseJson<Record<string, unknown>>(user.identity_data, {});
-      // Match Python's UserProfileUpdate. Never accept account/security fields.
-      const profileFields = ["display_name", "bio", "avatar_url", "first_name", "last_name",
-        "address_line1", "address_line2", "city", "state", "zip", "organizations", "maslow_now", "maslow_future"];
-      for (const field of profileFields) {
+      const owner = await linkedPersonalOwner(c.env, user);
+      const target = owner || user;
+      const identity = { ...personalProfile(parseJson<Record<string, unknown>>(user.identity_data, {})),
+        ...parseJson<Record<string, unknown>>(target.identity_data, {}) };
+      for (const field of PERSONAL_PROFILE_FIELDS) {
         if (Object.prototype.hasOwnProperty.call(payload, field)) identity[field] = payload[field];
       }
-      const fullName = payload.full_name != null ? String(payload.full_name) : user.full_name;
-      await c.env.DB.prepare("UPDATE website_users SET full_name = ?, identity_data = ? WHERE website_id = ? AND id = ?")
-        .bind(fullName, json(identity), user.website_id, user.id).run();
-      const updated = (await websiteUserById(c.env.DB, user.website_id, user.id))!;
-      return c.json({ ...userPublic(c.env, updated), is_sysadmin: false });
+      if ('theme_mode' in payload && !['system', 'light', 'dark', null].includes(payload.theme_mode as string | null)) fail(422, 'Invalid theme mode');
+      const fullName = payload.full_name != null ? String(payload.full_name) : target.full_name;
+      if (owner) {
+        await c.env.DB.prepare("UPDATE users SET full_name = ?, identity_data = ? WHERE id = ?")
+          .bind(fullName, json(identity), owner.id).run();
+      } else {
+        await c.env.DB.prepare("UPDATE website_users SET full_name = ?, identity_data = ? WHERE website_id = ? AND id = ?")
+          .bind(fullName, json(identity), user.website_id, user.id).run();
+      }
+      return c.json(await memberProfilePublic(c.env, (await websiteUserById(c.env.DB, user.website_id, user.id))!));
     }
   }
   const owner = await currentOwner(c.env, token);
   const payload = await readJson<Record<string, unknown>>(c);
   const identity = parseJson<Record<string, unknown>>(owner.identity_data, {});
+  if ('theme_mode' in payload && !['system', 'light', 'dark', null].includes(payload.theme_mode as string | null)) fail(422, 'Invalid theme mode');
   const fullName = "full_name" in payload ? String(payload.full_name || "") : owner.full_name;
   delete payload.full_name;
   Object.assign(identity, payload);
@@ -898,6 +929,27 @@ app.post("/auth/smoke-token", async (c) => {
   return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 
+app.post("/auth/tokens/download", async (c) => {
+  const owner = await currentOwnerForTokenAdmin(c.env, bearerToken(c));
+  const bundleId = crypto.randomUUID();
+  const statements = [];
+  const lines = [];
+  for (const scope of ["service", "org_portal", "org_mcp", "org_admin"] as const) {
+    const raw = randomToken("pidp_pat_");
+    statements.push(c.env.DB.prepare(
+      "INSERT INTO user_api_tokens (id, owner_id, name, token_hash, scope, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+    ).bind(crypto.randomUUID(), owner.id, `env-${bundleId}-${scope}`, await sha256Hex(raw), scope, nowIso()));
+    const key = scope === "service" ? "PIDP_PAT" : `PIDP_${scope.toUpperCase()}_TOKEN`;
+    lines.push(`${key}=${raw}`);
+  }
+  await c.env.DB.batch(statements);
+  return new Response(lines.join("\n") + "\n", { headers: {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Disposition": 'attachment; filename=".env.pidp"',
+    "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+  } });
+});
+
 app.post("/auth/tokens", async (c) => {
   const owner = await currentOwnerForTokenAdmin(c.env, bearerToken(c));
   const payload = await readJson<Record<string, unknown>>(c);
@@ -1113,7 +1165,7 @@ app.put("/auth/avatar/upload/*", async (c) => {
   await verifyJwt(c.env, bearerToken(c));
   const objectKey = c.req.path.replace("/auth/avatar/upload/", "");
   if (!objectKey.startsWith("avatars/")) fail(422, "Invalid avatar object key");
-  await c.env.AVATARS.put(objectKey, c.req.raw.body, { httpMetadata: { contentType: c.req.header("content-type") || "image/png" } });
+  await c.env.AVATARS.put(objectKey, c.req.raw.body, { httpMetadata: { contentType: c.req.header("content-type") || "image/png", cacheControl: "public, max-age=31536000, immutable" } });
   return c.json({ object_key: objectKey });
 });
 

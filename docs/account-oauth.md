@@ -20,6 +20,35 @@ namespaces are `owner:<id>` and `website:<website-id>:<id>` in both implementati
 OrgPortal's explicit subject mapping must point to the same existing account; do
 not map by email or silently assign administrator privileges.
 
+## Central identity and personal data
+
+PIdP owns the persisted `account_identity_links` registry. Linking requires
+successful authentication to both the primary PIdP account and the website-member
+account. Email, provider metadata, and editable profile fields never auto-link
+accounts. Open `/auth/account-links/connect?app=code-collective` in the same browser
+to authenticate both accounts, review the identities, and confirm the link.
+The API equivalent is `/auth/account-links/preview` and `/apply` with both
+session proofs and a one-use, ten-minute receipt.
+
+`GET /auth/me` returns `id` and `canonical_user_id` for the person, plus
+`account_id` and `account_subject` for the credential's original namespace.
+Linked sign-ins share name, avatar, personal fields, and theme preferences.
+Website roles and custom data stay with the website account; a website credential
+cannot administer PIdP owner websites or acquire system-administrator privileges.
+OAuth `sub`, issuer, audience, scopes, and grants retain their original semantics.
+Introspection returns the verified canonical person separately from `sub`.
+Inactive source accounts and inactive canonical identities fail closed.
+
+OrgPortal uses the canonical person for live membership authorization, private
+tasks, onboarding, and availability. Existing duplicate memberships require
+`POST /api/identity-membership/:organizationId/preview`, followed by `/apply` with
+`sourceAccountId`, the unchanged receipt, and `confirm: true`. The portal verifies
+the link with PIdP and records the consolidation in its audit log.
+
+Apply Worker migration `0010_account_identity_links.sql` before deploying PIdP.
+Python deployments run `python scripts/migrate_account_identity.py`.
+Release PIdP before the shared OrgPortal Worker through CodeCollective.
+
 The portal handoff creates a separate `__Host-pidp_mcp_session` cookie on the
 issuer in both runtimes. It does not copy, replace, or broaden the portal session.
 
@@ -47,8 +76,8 @@ confirmation route through CodeCollective before enabling the PIdP mapping.
    login handoff, binding it to a random, host-only HttpOnly browser cookie.
 2. The browser visits the configured portal route. Its existing authenticated
    route guard uses the normal social/password login and preserves the return path.
-3. The portal displays the authenticated account and requires an explicit
-   continuation. Its same-origin `/pidp/oauth/mcp/handoff` POST uses the existing
+3. The portal automatically bridges the authenticated account to the single
+   PIdP account-and-permissions review. Its same-origin `/pidp/oauth/mcp/handoff` POST uses the existing
    HttpOnly portal session. PIdP checks the configured portal Origin and active
    account; neither bearer tokens nor a client-supplied identity are accepted.
 4. PIdP returns a one-use code, valid for at most two minutes. Only the original
@@ -56,8 +85,9 @@ confirmation route through CodeCollective before enabling the PIdP mapping.
    subject becomes a ten-minute, resource-bound MCP browser session, not a normal
    portal session or API access token. Owner and website-user subjects are retained
    exactly as authenticated by the portal; no email-based remapping takes place.
-5. PIdP resumes the original authorization request and requires separate consent
-   before issuing the client's PKCE-bound authorization code. Existing membership,
+5. PIdP resumes the original authorization request and shows the signed-in
+   account, requested permissions, account-switching link, and Allow/Deny actions
+   together. Explicit Allow access is still required before issuing the client's PKCE-bound authorization code. Existing membership,
    scope, introspection and preview/apply requirements remain unchanged.
 
 Login records and codes are hashed and atomically claimed. Login creation is
@@ -67,9 +97,8 @@ The Python service must receive a trusted ASGI peer address for its IP limit.
 The portal proxy must preserve the browser Origin and forward the portal cookie;
 do not replace either with a service credential or broadly enable credentialed CORS.
 
-`prompt=login` returns to the portal confirmation page even when an MCP browser
-session exists. The page offers account switching through the existing logout
-flow. Expired or consumed links require a fresh login from the MCP client.
+`prompt=login` returns through portal sign-in even when an MCP browser session
+exists. Account switching is offered on the combined PIdP permissions review. Expired or consumed links require a fresh login from the MCP client.
 `/oauth/mcp/connections` uses the same bridge when a session is absent; operators
 with multiple portal mappings must select a resource using its `resource` query.
 Resources without a mapping retain the existing PIdP login path for compatibility.
@@ -267,3 +296,12 @@ configure its login hosts and return origins. Portal sign-in uses that
 application's member namespace throughout; unregistered applications never
 substitute an owner account. Existing identities and organization membership
 must be linked explicitly, with no privilege mapping inferred from email.
+
+
+Native public OAuth connections (`tokenEndpointAuthMethod: none`) persist until
+explicit revocation or account/client/resource invalidation. Their grant uses
+`expires_at = 0`; access tokens still expire after five minutes and refresh tokens
+still rotate once. Existing active native grants become persistent on the next
+successful refresh. Expired and revoked grants are never revived. Confidential
+clients retain their existing 30-day grant expiry. Persistent grants remain visible
+in Connected apps and can be revoked individually.

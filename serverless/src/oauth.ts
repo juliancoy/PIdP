@@ -186,7 +186,7 @@ function resolveRedirectTarget(env: Env, rawTarget: string | undefined, website:
   const targetOrigin = originOf(target);
   if (!targetOrigin) return env.FRONTEND_REDIRECT_URL || "/";
   if (portalAuthOrigins(env).includes(targetOrigin)) return target;
-  if (targetOrigin === originOf(env.PUBLIC_BASE_URL) && new URL(target).pathname === "/auth/sso/authorize") return target;
+  if (targetOrigin === originOf(env.PUBLIC_BASE_URL) && ["/auth/sso/authorize", "/auth/account-links/connect", "/auth/account-links/finish"].includes(new URL(target).pathname)) return target;
   const frontendOrigin = originOf(env.FRONTEND_REDIRECT_URL);
   if (frontendOrigin && targetOrigin === frontendOrigin) return target;
   if (website) {
@@ -232,7 +232,7 @@ function imageExtension(contentType: string): string {
   return "png";
 }
 
-async function storeSocialAvatar(env: Env, userId: string, provider: Provider, avatarUrl: string | null, publicOrigin: string): Promise<Record<string, unknown>> {
+export async function storeSocialAvatar(env: Env, userId: string, provider: Provider, avatarUrl: string | null, publicOrigin: string): Promise<Record<string, unknown>> {
   if (!avatarUrl) return {};
   if (!env.AVATARS) {
     return {
@@ -247,7 +247,7 @@ async function storeSocialAvatar(env: Env, userId: string, provider: Provider, a
     const contentType = resp.headers.get("content-type") || "image/png";
     const objectKey = `avatars/${userId}/${crypto.randomUUID()}.${imageExtension(contentType)}`;
     await env.AVATARS.put(objectKey, resp.body, {
-      httpMetadata: { contentType },
+      httpMetadata: { contentType, cacheControl: "public, max-age=31536000, immutable" },
     });
     const publicBase = (env.PUBLIC_R2_BASE_URL || publicOrigin).replace(/\/+$/g, "");
     return {

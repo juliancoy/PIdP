@@ -10,7 +10,7 @@ from sqlalchemy import select, delete, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
-from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit
+from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
 from security import safe_decode_token, create_access_token
 from login_hints import google_login_hint
 
@@ -27,7 +27,7 @@ def origin(request):
     host = request.headers.get('x-forwarded-host')
     if host and request.headers.get('x-forwarded-proto') == 'https':
         return 'https://' + host
-    return str(request.base_url).rstrip('/')
+    return f'{request.url.scheme}://{request.url.netloc}'
 
 def issuer(request):
     return (settings.public_base_url or str(request.base_url)).rstrip('/')
@@ -80,7 +80,8 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
 
 @router.get('/auth/sso/authorize')
 async def authorize(request: Request, session: AsyncSession = Depends(get_session)):
-    if origin(request) != issuer(request) or request.headers.get('x-forwarded-host'):
+    parsed_issuer = urlparse(issuer(request))
+    if origin(request) != f'{parsed_issuer.scheme}://{parsed_issuer.netloc}' or request.headers.get('x-forwarded-host'):
         raise HTTPException(400, 'issuer_required')
     row = (await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == request.query_params.get('request'),
         PortalSsoRequest.expires_at >= int(time.time()), PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
@@ -93,6 +94,17 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
     if payload.get('actor_type') == 'website_user' and str(payload.get('website_id')) == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(payload['sub'])),
             WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
+    elif payload.get('sub') and payload.get('actor_type', 'owner') == 'owner':
+        owner = (await session.execute(select(User).where(User.id == UUID(str(payload['sub'])),
+            User.is_active.is_(True)))).scalar_one_or_none()
+        if owner:
+            user = (await session.execute(select(WebsiteUser).join(AccountIdentityLink,
+                AccountIdentityLink.website_user_id == WebsiteUser.id).where(
+                AccountIdentityLink.canonical_user_id == owner.id,
+                AccountIdentityLink.website_id == UUID(row.website_id),
+                WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
+            if not user:
+                raise HTTPException(403, 'account_link_required')
     hint = google_login_hint(request.query_params.get('provider'), request.query_params.get('login_hint'))
     if not user or hint:
         provider = request.query_params.get('provider')

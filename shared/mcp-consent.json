@@ -30,9 +30,9 @@
   "html": [
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Connect {{client}} to {{shortName}}</title><style>{{css}}</style></head><body>",
     "<header class=\"brandbar\"><a class=\"brand\" href=\"{{portalUrl}}\">{{logo}}<span><strong>{{brandName}}</strong><span class=\"tagline\">{{tagline}}</span></span></a></header>",
-    "<main><p class=\"eyebrow\">ACCOUNT CONNECTION</p><h1>Connect {{client}} to {{shortName}}</h1><p class=\"intro\">Review the access requested for your account.</p>",
+    "<main><p class=\"eyebrow\">ACCOUNT CONNECTION</p><h1>Connect {{client}} to {{shortName}}</h1><p class=\"intro\">Confirm your account and review the requested permissions below. Allow access to connect, or deny to cancel.</p>",
     "<div class=\"account\"><div><span class=\"account-label\">Signed in as</span><strong>{{account}}</strong></div><a href=\"{{changeAccount}}\">Use a different account</a></div>",
-    "<section aria-labelledby=\"permissions-title\"><h2 id=\"permissions-title\">{{client}} will be able to:</h2><ul class=\"permissions\">{{permissions}}</ul></section>",
+    "<section aria-labelledby=\"permissions-title\"><h2 id=\"permissions-title\">Permissions requested by {{client}}:</h2><ul class=\"permissions\">{{permissions}}</ul></section>",
     "<p class=\"assurance\">Your organization permissions still apply. You can revoke this connection at any time in PIdP.</p>{{notice}}",
     "<details><summary>Connection details</summary><dl><dt>Portal</dt><dd>{{portalHost}}</dd><dt>Service</dt><dd>{{resource}}</dd><dt>Callback</dt><dd>{{callback}}</dd></dl></details>",
     "<form method=\"post\" action=\"/oauth/mcp/authorize\"><input type=\"hidden\" name=\"request\" value=\"{{request}}\"><div class=\"actions\"><button class=\"deny\" name=\"decision\" value=\"deny\">Deny</button><button class=\"allow\" name=\"decision\" value=\"allow\">Allow access</button></div></form></main>",

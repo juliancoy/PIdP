@@ -14,6 +14,7 @@ async function fixture() {
   sql.exec(readFileSync(new URL('../migrations/0006_mcp_authorization.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0007_mcp_client_registration.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0008_mcp_login_handoff.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../migrations/0010_account_identity_links.sql',import.meta.url),'utf8'));
   const db = { prepare(query) { const stmt = sql.prepare(query); return { bind(...params) { return {
     async first() { return stmt.get(...params) ?? null; }, async all() { return { results: stmt.all(...params) }; },
     async run() { return { meta: stmt.run(...params) }; },
@@ -94,6 +95,10 @@ test('portal login preserves website identity, binds the browser, and completes 
     assert.equal(consent.status, 200);
     assert.equal(consent.headers.get('referrer-policy'), 'same-origin');
     const html = await consent.text(); assert.match(html, /member@example.test/);
+    assert.match(html, /Confirm your account and review the requested permissions/);
+    assert.match(html, /Permissions requested by/);
+    assert.match(html, /Allow access/);assert.match(html, />Deny</);
+    assert.equal((html.match(/<form /g)||[]).length,1);
     const nonce = html.match(/name="request" value="([^"]+)"/)[1];
     const allowed = await f.post('/oauth/mcp/authorize', { request: nonce, decision: 'allow' }, { cookie, origin: f.issuer });
     const code = new URL(allowed.headers.get('location')).searchParams.get('code');
@@ -340,4 +345,32 @@ test('separate resources retain distinct credentials, login origins and token au
     f.env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON = JSON.stringify({ [f.resource]: { secretHash: 'a'.repeat(64), portal: { name: 'Other', loginUrl: 'https://other.example/users/mcp-connect' } } });
     assert.throws(() => authorizationConfig(f.env), /not_configured/);
   } finally { f.sql.close(); }
+});
+
+
+test('native grants persist beyond 30 days, upgrade active legacy grants and remain revocable', async () => {
+  const f = await fixture();
+  const originalNow = Date.now;
+  try {
+    f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify({ chatgpt: { name: '<ChatGPT>', tokenEndpointAuthMethod: 'none',
+      redirectUris: ['http://127.0.0.1/callback'], resources: [f.resource], scopes: ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'] } });
+    f.params.redirect_uri = 'http://127.0.0.1:4545/callback';
+    const code = await f.code();
+    let tokens = await (await f.post('/oauth/mcp/token', { grant_type: 'authorization_code', client_id: 'chatgpt', code,
+      resource: f.resource, redirect_uri: f.params.redirect_uri, code_verifier: 'v'.repeat(43) })).json();
+    assert.equal(f.sql.prepare('SELECT expires_at FROM mcp_oauth_grants').get().expires_at, 0);
+    assert.match(await (await f.request('/oauth/mcp/connections', { headers: { cookie: f.cookie } })).text(), /name="grant"/);
+    Date.now = () => originalNow() + 40 * 86400 * 1000;
+    const refreshed = await f.post('/oauth/mcp/token', { grant_type: 'refresh_token', client_id: 'chatgpt', refresh_token: tokens.refresh_token });
+    assert.equal(refreshed.status, 200);
+    tokens = await refreshed.json();
+    Date.now = originalNow;
+    f.sql.prepare('UPDATE mcp_oauth_grants SET expires_at = ?').run(Math.floor(originalNow() / 1000) + 1000);
+    const upgraded = await f.post('/oauth/mcp/token', { grant_type: 'refresh_token', client_id: 'chatgpt', refresh_token: tokens.refresh_token });
+    assert.equal(upgraded.status, 200);
+    tokens = await upgraded.json();
+    assert.equal(f.sql.prepare('SELECT expires_at FROM mcp_oauth_grants').get().expires_at, 0);
+    await f.post('/oauth/mcp/revoke', { client_id: 'chatgpt', token: tokens.refresh_token });
+    assert.equal((await f.post('/oauth/mcp/token', { grant_type: 'refresh_token', client_id: 'chatgpt', refresh_token: tokens.refresh_token })).status, 400);
+  } finally { Date.now = originalNow; f.sql.close(); }
 });

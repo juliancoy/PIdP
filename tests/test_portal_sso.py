@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import portal_sso as sso
-from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit
+from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
 @compiles(JSONB,'sqlite')
 def sqlite_json(type_,compiler,**kw): return 'JSON'
 class AsyncAdapter:
@@ -24,7 +24,7 @@ class AsyncAdapter:
 class SsoTests(unittest.TestCase):
     def setUp(self):
         self.engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
-        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalSsoLimit]:model.__table__.create(self.engine)
+        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalSsoLimit,AccountIdentityLink]:model.__table__.create(self.engine)
         self.user_id=uuid.uuid4()
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO users(id,email,is_active,created_at,identity_data) VALUES (?,?,1,CURRENT_TIMESTAMP,'null')",(self.user_id.hex,'member@example.test'))
@@ -55,6 +55,20 @@ class SsoTests(unittest.TestCase):
             self.assertEqual(result.headers['location'],f'https://{host}/auth/callback?next=%2Fpeople')
             self.assertIn('HttpOnly',result.headers['set-cookie']);self.assertNotIn('Domain=',result.headers['set-cookie'])
             self.assertEqual(self.client.get(complete).status_code,400)
+    def test_owner_session_requires_explicit_member_link(self):
+        self.decode_mock.return_value = {'sub': str(self.user_id), 'actor_type': 'owner'}
+        started = self.client.get('/auth/sso/start', params={'app': 'members'})
+        denied = self.client.get(started.headers['location'])
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()['detail'], 'account_link_required')
+        self.db.add(AccountIdentityLink(subject=f'website:{self.website_id}:{self.member_id}',
+            canonical_user_id=self.user_id, website_id=self.website_id,
+            website_user_id=self.member_id, linked_at='2026-10-05T00:00:00Z'))
+        self.db.commit()
+        authorized = self.client.get(started.headers['location'])
+        self.assertEqual(authorized.status_code, 303)
+        self.assertIn('/auth/sso/complete?', authorized.headers['location'])
+
     def test_external_returns_unknown_apps_and_wrong_namespace_are_rejected(self):
         for params in [{'app':'other'},{'app':'members','next':'https://evil.example/auth/callback'}]:
             self.assertEqual(self.client.get('/auth/sso/start',params=params).status_code,400)
