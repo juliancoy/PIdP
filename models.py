@@ -112,3 +112,36 @@ class PortalSsoLimit(Base):
     ip_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     window_start: Mapped[int] = mapped_column(Integer)
     requests: Mapped[int] = mapped_column(Integer)
+
+
+class AccountIdentityLink(Base):
+    __tablename__ = 'account_identity_links'
+    subject: Mapped[str] = mapped_column(Text, primary_key=True)
+    canonical_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('users.id'), index=True)
+    website_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('websites.id'))
+    website_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('website_users.id'), unique=True)
+    linked_at: Mapped[str] = mapped_column(Text)
+
+
+class AccountIdentityLinkPreview(Base):
+    __tablename__ = 'account_identity_link_previews'
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    canonical_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('users.id'))
+    subject: Mapped[str] = mapped_column(Text)
+    website_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('websites.id'))
+    website_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('website_users.id'))
+    proof_hash: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[int] = mapped_column(Integer)
+    applied_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AccountIdentityLinkRequest(Base):
+    __tablename__ = 'account_identity_link_requests'
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    canonical_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('users.id'))
+    website_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('websites.id'))
+    browser_hash: Mapped[str] = mapped_column(Text, unique=True)
+    primary_proof_hash: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[int] = mapped_column(Integer)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    used_at: Mapped[str | None] = mapped_column(Text, nullable=True)

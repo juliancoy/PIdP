@@ -653,6 +653,7 @@ async def _store_social_avatar(
                 Key=object_key,
                 Body=resp.content,
                 ContentType=content_type,
+                CacheControl="public, max-age=31536000, immutable",
                 **_s3_encryption_args(),
             )
         public_endpoint = (settings.minio_public_base_url or "").rstrip("/")
@@ -686,8 +687,8 @@ async def _get_current_owner(token: str, session: AsyncSession) -> User:
 
     result = await session.execute(select(User).where(User.id == payload["sub"]))
     user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing user")
     return user
 
 
@@ -721,8 +722,8 @@ async def _get_current_website_user(token: str, session: AsyncSession) -> Websit
         )
     )
     website_user = result.scalar_one_or_none()
-    if not website_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Website user not found")
+    if not website_user or not website_user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing website user")
     return website_user
 
 
@@ -742,23 +743,7 @@ def _truthy(value: object) -> bool:
 
 def _is_pidp_sysadmin(user: User) -> bool:
     user_id = str(user.id or "").strip()
-    email = str(user.email or "").strip().lower()
-    if user_id and user_id in settings.admin_user_ids_list:
-        return True
-    if email and email in settings.admin_emails_list:
-        return True
-
-    identity = user.identity_data or {}
-    if not isinstance(identity, dict):
-        return False
-    if _truthy(identity.get("is_sysadmin")):
-        return True
-    roles = identity.get("roles")
-    if isinstance(roles, list):
-        normalized = {str(item).strip().lower() for item in roles if str(item).strip()}
-        if "sysadmin" in normalized or "admin" in normalized:
-            return True
-    return False
+    return bool(user_id and user_id in settings.admin_user_ids_list)
 
 
 def _to_user_public(user: User) -> UserPublic:
@@ -793,6 +778,37 @@ def _to_user_public_from_website_user(website_user: WebsiteUser) -> UserPublic:
         is_active=website_user.is_active,
         created_at=website_user.created_at,
     )
+
+
+from account_identity import resolve_account_identity, account_link_routes
+from account_link_browser import account_link_browser_routes
+
+PERSONAL_PROFILE_FIELDS = set(UserProfileUpdate.model_fields) - {"full_name"}
+PERSONAL_PROFILE_FIELDS.update({"avatar_object_key", "avatar_source"})
+
+
+async def _linked_personal_owner(member: WebsiteUser, session: AsyncSession) -> User | None:
+    identity = await resolve_account_identity(session, f'website:{member.website_id}:{member.id}')
+    if identity['canonical_user_id'] == str(member.id):
+        return None
+    result = await session.execute(select(User).where(User.id == UUID(identity['canonical_user_id'])))
+    return result.scalar_one_or_none()
+
+
+async def _member_profile_public(member: WebsiteUser, session: AsyncSession) -> UserPublic:
+    owner = await _linked_personal_owner(member, session)
+    public = _to_user_public_from_website_user(member)
+    public.account_id = member.id
+    public.account_subject = f"website:{member.website_id}:{member.id}"
+    public.id = owner.id if owner else member.id
+    public.canonical_user_id = public.id
+    if owner:
+        public.full_name = owner.full_name if owner.full_name is not None else member.full_name
+        identity = dict(member.identity_data or {})
+        identity.update({key: value for key, value in (owner.identity_data or {}).items()
+                         if key in PERSONAL_PROFILE_FIELDS})
+        public.identity_data = identity
+    return public
 
 
 def _create_website_user_access_token(website_user: WebsiteUser) -> str:
@@ -1858,6 +1874,36 @@ async def frontend_admin_email_settings_test(
     )
 
 
+async def _generate_token_set(session: AsyncSession, owner_id: UUID) -> Response:
+    bundle_id = uuid4().hex
+    lines = []
+    for scope in ("service", "org_portal", "org_mcp", "org_admin"):
+        raw = _generate_api_token()
+        session.add(UserAPIToken(owner_id=owner_id, name=f"env-{bundle_id}-{scope}",
+                                 scope=scope, token_hash=_hash_api_token(raw)))
+        key = "PIDP_PAT" if scope == "service" else f"PIDP_{scope.upper()}_TOKEN"
+        lines.append(f"{key}={raw}")
+    await session.commit()
+    return Response("\n".join(lines) + "\n", media_type="text/plain",
+                    headers={"Content-Disposition": 'attachment; filename=".env.pidp"',
+                             "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/profile/tokens/download", include_in_schema=False)
+async def frontend_download_token_set(request: Request, session: AsyncSession = Depends(get_session)) -> Response:
+    owner = await _get_request_owner(request, session)
+    if not owner:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return await _generate_token_set(session, owner.id)
+
+
+@app.post("/auth/tokens/download")
+async def download_token_set(token: str = Depends(oauth2_scheme),
+                             session: AsyncSession = Depends(get_session)) -> Response:
+    owner = await _get_current_owner_for_token_admin(token, session)
+    return await _generate_token_set(session, owner.id)
+
+
 @app.post("/profile/tokens", include_in_schema=False)
 async def frontend_create_profile_token(
     request: Request,
@@ -2330,6 +2376,10 @@ async def auth_session_token(
     return Token(access_token=token)
 
 
+app.include_router(account_link_browser_routes(_get_current_owner, _get_current_website_user, get_session))
+app.include_router(account_link_routes(_get_current_owner, _get_current_website_user, get_session))
+
+
 @app.get("/auth/me", response_model=UserPublic)
 async def get_me(
     token: str = Depends(oauth2_scheme),
@@ -2340,9 +2390,13 @@ async def get_me(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     if payload.get("actor_type") == "website_user":
         website_user = await _get_current_website_user(token, session)
-        return _to_user_public_from_website_user(website_user)
+        return await _member_profile_public(website_user, session)
     user = await _get_current_owner(token, session)
-    return _to_user_public(user)
+    public = _to_user_public(user)
+    public.canonical_user_id = user.id
+    public.account_id = user.id
+    public.account_subject = f"owner:{user.id}"
+    return public
 
 
 @app.post("/auth/tokens", response_model=APITokenIssued)
@@ -2613,16 +2667,22 @@ async def update_me(
     is_website_user = claims.get("actor_type") == "website_user"
     user = await _get_current_website_user(token, session) if is_website_user else await _get_current_owner(token, session)
 
+    target = (await _linked_personal_owner(user, session) or user) if is_website_user else user
     if full_name is not None:
-        user.full_name = full_name
+        target.full_name = full_name
 
-    identity = dict(user.identity_data or {})
+    identity = ({key: value for key, value in (user.identity_data or {}).items()
+                 if key in PERSONAL_PROFILE_FIELDS} if target is not user else {})
+    identity.update(target.identity_data or {})
     identity.update(profile)
-    user.identity_data = identity
+    target.identity_data = identity
 
     await session.commit()
-    await session.refresh(user)
-    return _to_user_public_from_website_user(user) if is_website_user else _to_user_public(user)
+    await session.refresh(target)
+    if is_website_user:
+        return await _member_profile_public(user, session)
+    public = _to_user_public(target)
+    return public
 
 
 @app.post("/auth/avatar/upload-url")
@@ -2978,8 +3038,8 @@ async def get_website_user_me(
         select(WebsiteUser).where((WebsiteUser.id == payload["sub"]) & (WebsiteUser.website_id == website.id))
     )
     website_user = result.scalar_one_or_none()
-    if not website_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Website user not found")
+    if not website_user or not website_user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing website user")
     return website_user
 
 

@@ -158,6 +158,10 @@
         <p class="muted">
             Create scoped bearer tokens for service-to-service automation. PAT values are shown once and never stored in plaintext.
         </p>
+        <form method="post" action="{{ ui_base }}/profile/tokens/download">
+            <p class="muted">Generate one token for each scope: service, org_portal, org_mcp, and org_admin. Keep the downloaded file private. Existing tokens stay active.</p>
+            <button class="secondary-button" type="submit">Generate &amp; download .env.pidp</button>
+        </form>
         {% if issued_service_token %}
             <div class="callout token-issued-callout">
                 <strong>New token (shown once):</strong>
@@ -223,7 +227,7 @@
                     </div>
                     <div class="button-row">
                         <form method="post" action="{{ ui_base }}/profile/tokens/{{ token.id }}/cycle">
-                            <button class="secondary-button" type="submit">Cycle Key</button>
+                            <button class="secondary-button" type="submit">Roll</button>
                         </form>
                         {% if token.is_active %}
                             <form method="post" action="{{ ui_base }}/profile/tokens/{{ token.id }}/revoke">

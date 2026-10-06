@@ -20,6 +20,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from config import settings
 from db import get_session
 from models import Base, User, WebsiteUser
+from account_identity import resolve_account_identity
 from security import safe_decode_token
 from consent_page import render_consent_page
 
@@ -585,7 +586,11 @@ async def handle(request, endpoint, db):
         grant = rows[0] if rows else None
         if not grant or not await valid_grant(cfg, grant, db) or grant['resource'] != resource or grant['subject'] != payload['sub'] or grant['scope'] != payload.get('scope') or not await active_subject(db, grant['subject']):
             return response({'active': False})
-        return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}))
+        try:
+            identity = await resolve_account_identity(db, grant['subject'])
+        except Exception:
+            return response({'active': False})
+        return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}, **identity))
     client_id, client = await authenticate_client(request, p, cfg, db)
     if endpoint == 'revoke':
         await query(db, 'UPDATE mcp_oauth_grants SET revoked = 1 WHERE client_id = :client AND id IN (SELECT grant_id FROM mcp_oauth_refresh WHERE hash = :hash)', client=client_id, hash=digest(p.get('token', '')))

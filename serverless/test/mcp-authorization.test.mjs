@@ -14,6 +14,7 @@ async function fixture() {
   sql.exec(readFileSync(new URL('../migrations/0006_mcp_authorization.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0007_mcp_client_registration.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0008_mcp_login_handoff.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../migrations/0010_account_identity_links.sql',import.meta.url),'utf8'));
   const db = { prepare(query) { const stmt = sql.prepare(query); return { bind(...params) { return {
     async first() { return stmt.get(...params) ?? null; }, async all() { return { results: stmt.all(...params) }; },
     async run() { return { meta: stmt.run(...params) }; },

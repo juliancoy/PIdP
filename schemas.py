@@ -16,6 +16,9 @@ class UserCreate(BaseModel):
 
 
 class UserPublic(BaseModel):
+    canonical_user_id: UUID | None = None
+    account_id: UUID | None = None
+    account_subject: str | None = None
     id: UUID
     email: EmailStr
     full_name: str | None = None
@@ -78,6 +81,7 @@ class TokenData(BaseModel):
 
 
 class UserProfileUpdate(BaseModel):
+    theme_mode: Literal["system", "light", "dark"] | None = None
     full_name: str | None = None
     display_name: str | None = None
     bio: str | None = None

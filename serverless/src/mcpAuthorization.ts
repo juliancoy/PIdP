@@ -1,3 +1,4 @@
+import { resolveAccountIdentity } from './accountIdentity';
 import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { importJWK, SignJWT, jwtVerify, type JWK } from 'jose';
@@ -381,7 +382,9 @@ mcpAuthorization.post('/oauth/mcp/introspect', async c => {
   } catch { return c.json({ active: false }); }
   const grant = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE id = ?').bind(payload.grant_id).first<Grant>();
   if (!grant || !await validateGrant(c.env, cfg, grant) || grant.resource !== resource || grant.subject !== payload.sub || grant.scope !== payload.scope || !await activeSubject(c.env, grant.subject)) return c.json({ active: false });
-  return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp });
+  let identity;
+  try {identity=await resolveAccountIdentity(c.env,grant.subject);} catch{return c.json({active:false});}
+  return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp, ...identity });
 });
 mcpAuthorization.post('/oauth/mcp/revoke', async c => {
   const cfg = authorizationConfig(c.env); const p = await form(c); const { id } = await authenticateClient(c, p, cfg);

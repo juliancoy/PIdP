@@ -61,6 +61,9 @@ class OAuthTests(unittest.TestCase):
             mcp_oauth_resources_json=json.dumps({self.resource: {'secretHash': oauth.digest('resource-secret-at-least-32-characters')}}))
         self.setting_patch.start()
         self.active = patch.object(oauth, 'active_subject', AsyncMock(return_value=True)); self.active.start()
+        async def identity(_db, subject):
+            return dict(canonical_user_id=subject.split(':')[-1],account_id=subject.split(':')[-1],account_subject=subject)
+        self.identity = patch.object(oauth,'resolve_account_identity',side_effect=identity);self.identity.start()
         self.actor = patch.object(oauth, 'session', AsyncMock(return_value=dict(subject='owner:alice', display='alice', hash='session-hash'))); self.actor.start()
         app = FastAPI(); app.include_router(oauth.router)
         async def get_db():
@@ -85,7 +88,7 @@ class OAuthTests(unittest.TestCase):
                 oauth.configuration()
 
     def tearDown(self):
-        self.client.close(); self.actor.stop(); self.active.stop(); self.setting_patch.stop(); self.db.db.close()
+        self.client.close(); self.actor.stop(); self.active.stop(); self.identity.stop(); self.setting_patch.stop(); self.db.db.close()
 
     def post(self, path, data, **kwargs):
         return self.client.post('/oauth/mcp/' + path, data=data, follow_redirects=False, **kwargs)

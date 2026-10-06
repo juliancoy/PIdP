@@ -20,6 +20,35 @@ namespaces are `owner:<id>` and `website:<website-id>:<id>` in both implementati
 OrgPortal's explicit subject mapping must point to the same existing account; do
 not map by email or silently assign administrator privileges.
 
+## Central identity and personal data
+
+PIdP owns the persisted `account_identity_links` registry. Linking requires
+successful authentication to both the primary PIdP account and the website-member
+account. Email, provider metadata, and editable profile fields never auto-link
+accounts. Open `/auth/account-links/connect?app=code-collective` in the same browser
+to authenticate both accounts, review the identities, and confirm the link.
+The API equivalent is `/auth/account-links/preview` and `/apply` with both
+session proofs and a one-use, ten-minute receipt.
+
+`GET /auth/me` returns `id` and `canonical_user_id` for the person, plus
+`account_id` and `account_subject` for the credential's original namespace.
+Linked sign-ins share name, avatar, personal fields, and theme preferences.
+Website roles and custom data stay with the website account; a website credential
+cannot administer PIdP owner websites or acquire system-administrator privileges.
+OAuth `sub`, issuer, audience, scopes, and grants retain their original semantics.
+Introspection returns the verified canonical person separately from `sub`.
+Inactive source accounts and inactive canonical identities fail closed.
+
+OrgPortal uses the canonical person for live membership authorization, private
+tasks, onboarding, and availability. Existing duplicate memberships require
+`POST /api/identity-membership/:organizationId/preview`, followed by `/apply` with
+`sourceAccountId`, the unchanged receipt, and `confirm: true`. The portal verifies
+the link with PIdP and records the consolidation in its audit log.
+
+Apply Worker migration `0010_account_identity_links.sql` before deploying PIdP.
+Python deployments run `python scripts/migrate_account_identity.py`.
+Release PIdP before the shared OrgPortal Worker through CodeCollective.
+
 The portal handoff creates a separate `__Host-pidp_mcp_session` cookie on the
 issuer in both runtimes. It does not copy, replace, or broaden the portal session.
 
