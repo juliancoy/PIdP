@@ -15,6 +15,7 @@
   },
   "vars": {
     "APP_NAME": "PIdP",
+    "MCP_OAUTH_RESOURCE_CONFIG_JSON": "{\"https://orgportal.cc/api/org/mcp\": {\"secretHash\": \"cf5146c0d9d32987d59204ddd8c4082c1ae7605c3e9b5d0b89d53ab0ab15e2bd\", \"portal\": {\"name\": \"OrgPortal\", \"loginUrl\": \"https://orgportal.cc/users/mcp-connect\"}}}",
     "ENV": "dev",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "525600",
     "ALLOWED_ORIGINS": "",

@@ -1,9 +1,10 @@
 """Browser-bound, one-use PIdP session handoff; no session tokens in URLs."""
+import re
 import hashlib
 import secrets
 import time
 from uuid import UUID
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select, delete, update, text
@@ -48,7 +49,9 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
         raise HTTPException(503, 'application_not_registered')
     target = request.query_params.get('next', destination + '/auth/callback')
     parsed = urlparse(target)
-    if f'{parsed.scheme}://{parsed.netloc}' != destination or parsed.path not in ('/auth/callback','/p/auth/callback') or parsed.username or parsed.password:
+    bridge_params = parse_qs(parsed.query, keep_blank_values=True)
+    bridge_return = parsed.path == '/pidp/oauth/mcp/link' and set(bridge_params) == {'request'} and len(bridge_params['request']) == 1 and re.fullmatch(r'login_[A-Za-z0-9_-]{43,100}', bridge_params['request'][0]) and not parsed.fragment
+    if f'{parsed.scheme}://{parsed.netloc}' != destination or (parsed.path not in ('/auth/callback','/p/auth/callback') and not bridge_return) or parsed.username or parsed.password:
         raise HTTPException(400, 'invalid_return')
     provider = request.query_params.get('provider')
     if provider and provider not in ('google','github'):

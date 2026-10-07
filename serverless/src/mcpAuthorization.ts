@@ -1,6 +1,6 @@
 import { resolveAccountIdentity } from './accountIdentity';
 import { Hono, type Context } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { importJWK, SignJWT, jwtVerify, type JWK } from 'jose';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import type { Env } from './types';
@@ -53,6 +53,11 @@ export function authorizationConfig(env: Env): Config {
     const resources = JSON.parse(env.MCP_OAUTH_RESOURCES_JSON!);
     const portals = JSON.parse(env.MCP_OAUTH_PORTALS_JSON || '{}');
     const additions = JSON.parse(env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON || '{}');
+    const configuredResources = JSON.parse(env.MCP_OAUTH_RESOURCE_CONFIG_JSON || '{}');
+    for (const [resource, addition] of Object.entries(configuredResources)) {
+      if (Object.hasOwn(additions, resource)) throw new Error();
+      additions[resource] = addition;
+    }
     for (const [resource, addition] of Object.entries(additions) as [string, { secretHash: string; portal: Portal }][]) {
       if (Object.hasOwn(resources, resource) || Object.hasOwn(portals, resource)) throw new Error();
       resources[resource] = { secretHash: addition.secretHash };
@@ -102,7 +107,7 @@ async function getClient(env: Env, cfg: Config, id: string): Promise<Client | un
   const row = await env.DB.prepare('SELECT client_json FROM mcp_oauth_clients WHERE id = ? AND revoked = 0').bind(id).first<{ client_json: string }>();
   if (!row) return undefined;
   const client: Client = JSON.parse(row.client_json);
-  return { ...client, dynamic: true, resources: client.resources.filter(r => Object.hasOwn(cfg.resources, r)) };
+  return { ...client, dynamic: true, resources: Object.keys(cfg.resources) };
 }
 async function registrationLimit(env: Env, ip: string, prefix = '', ipLimit = 10, globalLimit = 100) {
   const window = Math.floor(now() / 3600);
@@ -146,7 +151,7 @@ async function session(c: Context<{ Bindings: Env }>, resource?: string) {
   if ((resource && Object.hasOwn(cfg.portals, resource)) || (!resource && Object.keys(cfg.portals).length)) return null;
   return identitySession(c);
 }
-async function startLogin(c: Context<{ Bindings: Env }>, cfg: Config, resource: string, returnPath: string) {
+async function startLogin(c: Context<{ Bindings: Env }>, cfg: Config, resource: string, returnPath: string, changeAccount = false) {
   const portal = cfg.portals[resource];
   if (!portal) throw new OAuthError('portal_login_not_configured', 503);
   await registrationLimit(c.env, c.req.header('cf-connecting-ip') || 'unknown', 'login:', 30, 1000);
@@ -155,14 +160,16 @@ async function startLogin(c: Context<{ Bindings: Env }>, cfg: Config, resource: 
   const browserHash = await sha256Hex(browser);
   await c.env.DB.prepare('DELETE FROM mcp_oauth_logins WHERE expires_at < ?').bind(now()).run();
   const id = randomToken('login_');
-  const inserted = await c.env.DB.prepare(`INSERT INTO mcp_oauth_logins (id, browser_hash, resource, return_path, expires_at)
-    SELECT ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM mcp_oauth_logins WHERE browser_hash = ?) < 20
+  const inserted = await c.env.DB.prepare(`INSERT INTO mcp_oauth_logins (id, browser_hash, resource, return_path, expires_at, display)
+    SELECT ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM mcp_oauth_logins WHERE browser_hash = ?) < 20
     AND (SELECT COUNT(*) FROM mcp_oauth_logins) < 10000 RETURNING id`)
-    .bind(await sha256Hex(id), browserHash, resource, returnPath, now() + 600, browserHash).first();
+    .bind(await sha256Hex(id), browserHash, resource, returnPath, now() + 600, Array.from(crypto.getRandomValues(new Uint8Array(4)), byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase(), browserHash).first();
   if (!inserted) throw new OAuthError('too_many_requests', 429);
   setCookie(c, browserCookie, browser, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
-  const url = new URL(portal.loginUrl); url.searchParams.set('request', id);
-  return c.redirect(url.toString(), 303);
+  if (changeAccount) {
+    deleteCookie(c, sessionCookie, { secure: true, httpOnly: true, sameSite: 'Lax', path: '/' });
+  }
+  return c.redirect(`${cfg.issuer}/oauth/mcp/browser?${new URLSearchParams({ request: id })}`, 303);
 }
 async function authenticateClient(c: Context<{ Bindings: Env }>, p: URLSearchParams, config: Config) {
   let id = p.get('client_id') || '', secret = p.get('client_secret') || '';
@@ -211,7 +218,23 @@ mcpAuthorization.use('*', async (c, next) => {
   c.header('Content-Security-Policy', "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   await next();
 });
-mcpAuthorization.onError((err, c) => c.json({ error: err instanceof OAuthError ? err.code : 'server_error' }, err instanceof OAuthError ? err.status : 503));
+mcpAuthorization.onError((err, c) => {
+  const code = err instanceof OAuthError ? err.code : 'server_error';
+  const status = err instanceof OAuthError ? err.status : 503;
+  if (['/oauth/mcp/browser', '/oauth/mcp/link', '/oauth/mcp/browser/finish', '/oauth/mcp/browser/cancel'].includes(c.req.path)) {
+    c.status(status);
+    const messages: Record<string, [string, string]> = {
+      invalid_pairing_code: ['Matching code incorrect', 'Go back and enter the matching code displayed in your original ChatGPT browser.'],
+      invalid_browser: ['Return to your ChatGPT browser', 'Complete this step in the browser where you started connecting ChatGPT.'],
+      login_required: ['Sign in required', 'Go back to the sign-in page and sign in before confirming your account.'],
+      login_expired: ['Connection expired or completed', 'Start a fresh connection from ChatGPT. Each sign-in link can be used once and expires after 10 minutes.'],
+      too_many_requests: ['Too many attempts', 'Please wait before starting another connection.'],
+    };
+    const message = messages[code] || ['Unable to continue', 'Start a fresh connection from ChatGPT.'];
+    return bridgePage(c, message[0], `<p>${escape(message[1])}</p>`);
+  }
+  return c.json({ error: code }, status);
+});
 mcpAuthorization.get('/.well-known/oauth-authorization-server', c => {
   const cfg = authorizationConfig(c.env); const base = `${cfg.issuer}/oauth/mcp`;
   return c.json({ issuer: cfg.issuer, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
@@ -306,10 +329,11 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   if (!requested.includes(scopes[0]) || requested.some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_scope');
   const challenge = p.get('code_challenge') || '';
   if (p.get('response_type') !== 'code' || p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new OAuthError('invalid_request');
-  const actor = p.get('prompt') === 'login' ? null : await session(c, resource);
+  const changeAccountRequested = p.get('prompt') === 'login';
+  const actor = changeAccountRequested ? null : await session(c, resource);
   if (!actor) {
     p.delete('prompt');
-    if (cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search);
+    if (cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search, changeAccountRequested);
     return c.redirect(`${cfg.issuer}/app/login?next=${encodeURIComponent(u.pathname + u.search)}`, 303);
   }
   // Bound persisted pending requests per session; expired records are cheap to remove.
@@ -327,6 +351,92 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   c.header('Content-Security-Policy', `default-src 'none'; form-action 'self' ${new URL(redirect).origin}; frame-ancestors 'none'; base-uri 'none'; ${page.policy}`);
   return c.html(page.html);
 });
+// Browser-to-browser identity bridge. OAuth consent and callback stay in the initiating browser.
+const bridgeCss = 'body{font:16px system-ui;background:#f4f7f8;color:#172b3a;margin:0}main{max-width:560px;margin:6vh auto;padding:28px;background:white;border-radius:16px}h1{font-size:26px}p{line-height:1.6}input,button,a.button{font:inherit;padding:12px;box-sizing:border-box}input{width:100%}button,a.button{display:inline-block;background:#155e59;color:white;border:0;border-radius:8px;cursor:pointer;text-decoration:none}code{font-size:24px;letter-spacing:3px}label{display:block;margin:16px 0}a{overflow-wrap:anywhere}';
+async function bridgePage(c: Context<{ Bindings: Env }>, title: string, body: string, script = '') {
+  const nonce = randomToken('');
+  c.header('Referrer-Policy', 'same-origin');
+  c.header('Content-Security-Policy', `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`);
+  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)}</title><style nonce="${nonce}">${bridgeCss}</style><main><h1>${escape(title)}</h1>${body}</main>${script ? `<script nonce="${nonce}">${script}</script>` : ''}</html>`);
+}
+async function bridgeRow(c: Context<{ Bindings: Env }>, request: string, original: boolean) {
+  if (c.req.method === 'GET' && new URL(c.req.url).searchParams.getAll('request').length !== 1) throw new OAuthError('invalid_request');
+  if (!/^login_[A-Za-z0-9_-]{43,100}$/.test(request)) throw new OAuthError('invalid_request');
+  const row = await c.env.DB.prepare('SELECT * FROM mcp_oauth_logins WHERE id = ? AND expires_at >= ?')
+    .bind(await sha256Hex(request), now()).first<Login>();
+  if (!row || !authorizationConfig(c.env).portals[row.resource]) throw new OAuthError('login_expired');
+  if (original) {
+    const browser = getCookie(c, browserCookie);
+    if (new URL(c.req.url).origin !== authorizationConfig(c.env).issuer || c.req.header('x-forwarded-host') || !browser || row.browser_hash !== await sha256Hex(browser)) throw new OAuthError('invalid_browser', 403);
+  } else {
+    const portal = new URL(authorizationConfig(c.env).portals[row.resource].loginUrl);
+    const host = c.req.header('x-forwarded-host') || new URL(c.req.url).host;
+    if (host !== portal.host) throw new OAuthError('invalid_portal', 403);
+  }
+  return row;
+}
+
+mcpAuthorization.get('/oauth/mcp/browser', async c => {
+  const request = c.req.query('request') || '';
+  const row = await bridgeRow(c, request, true);
+  const portal = authorizationConfig(c.env).portals[row.resource];
+  const other = new URL('/pidp/oauth/mcp/link', new URL(portal.loginUrl).origin); other.searchParams.set('request', request);
+  const same = new URL('/pidp/auth/sso/start', other.origin);
+  const callback = new URL('/auth/callback', other.origin); callback.searchParams.set('next', new URL(portal.loginUrl).pathname + '?' + new URLSearchParams({ request }));
+  same.searchParams.set('app', c.env.PORTAL_SSO_APP_SLUG || ''); same.searchParams.set('next', callback.toString());
+  const code = row.subject ? '' : row.display || '';
+  return bridgePage(c, 'Connect using another Chrome profile', `<p>Keep this page open in your ChatGPT browser. Open the sign-in link in the Chrome profile where you use ${escape(portal.name)}.</p><label>Sign-in link<input id="link" readonly value="${escape(other.toString())}"></label><button id="copy" type="button">Copy sign-in link</button><p>Enter this matching code in the other browser:</p><p><code>${code.slice(0, 4)}-${code.slice(4)}</code></p><p>This request expires 10 minutes after it was started. Only use it to connect your own account.</p><p id="status" role="status">Waiting for account confirmation…</p><form method="post" action="/oauth/mcp/browser/finish" hidden id="finish"><input type="hidden" name="request" value="${escape(request)}"><p id="account"></p><button>Continue to permissions</button></form><p><a href="${escape(same.toString())}">Use this browser’s account instead</a></p><form method="post" action="/oauth/mcp/browser/cancel"><input type="hidden" name="request" value="${escape(request)}"><button>Cancel connection</button></form>`, `const request=${JSON.stringify(request)};document.getElementById('copy').onclick=async()=>{const input=document.getElementById('link');input.select();try{await navigator.clipboard.writeText(input.value);document.getElementById('copy').textContent='Link copied'}catch{document.getElementById('status').textContent='Copy the selected link.'}};let busy=false;const timer=setInterval(async()=>{if(busy||document.hidden)return;busy=true;try{const response=await fetch('/oauth/mcp/browser/status?'+new URLSearchParams({request}),{credentials:'same-origin',cache:'no-store'});if(!response.ok){clearInterval(timer);document.getElementById('status').textContent='This request has expired or was already completed. Start again from ChatGPT.';return}const data=await response.json();if(data.ready){clearInterval(timer);document.getElementById('account').textContent='Continue as '+data.account;document.getElementById('finish').hidden=false;document.getElementById('status').textContent='Account confirmed. Check the account below before continuing.'}}catch{}finally{busy=false}},5000);`);
+});
+mcpAuthorization.get('/oauth/mcp/browser/status', async c => {
+  const row = await bridgeRow(c, c.req.query('request') || '', true);
+  return c.json({ ready: Boolean(row.subject && row.code_hash), ...(row.subject && row.code_hash ? { account: row.display } : {}) });
+});
+mcpAuthorization.get('/oauth/mcp/link', async c => {
+  const request = c.req.query('request') || '';
+  const row = await bridgeRow(c, request, false);
+  if (row.code_hash) throw new OAuthError('login_expired');
+  const cfg = authorizationConfig(c.env), portal = cfg.portals[row.resource];
+  const actor = await identitySession(c);
+  if (!actor) {
+    const origin = new URL(portal.loginUrl).origin;
+    const callback = new URL('/pidp/oauth/mcp/link', origin); callback.searchParams.set('request', request);
+    const login = new URL('/pidp/auth/sso/start', origin); login.searchParams.set('app', c.env.PORTAL_SSO_APP_SLUG || ''); login.searchParams.set('next', callback.toString());
+    return c.redirect(login.toString(), 303);
+  }
+  return bridgePage(c, 'Confirm your account', `<p>You are signed in to ${escape(portal.name)} as <strong>${escape(actor.display)}</strong>.</p><p>This will send your account identity to the browser where you started connecting ChatGPT. Access is approved separately in that browser.</p><p>Only continue if you started this connection yourself. Enter the matching code displayed in your ChatGPT browser.</p><form method="post" action="/pidp/oauth/mcp/link"><input type="hidden" name="request" value="${escape(request)}"><label>Matching code<input name="pairing_code" autocomplete="off" required maxlength="9" placeholder="ABCD-1234"></label><button>Confirm this account</button></form>`);
+});
+mcpAuthorization.post('/oauth/mcp/link', async c => {
+  const p = await form(c), request = p.get('request') || '';
+  const row = await bridgeRow(c, request, false), cfg = authorizationConfig(c.env);
+  if (c.req.header('origin') !== new URL(cfg.portals[row.resource].loginUrl).origin) throw new OAuthError('invalid_request', 403);
+  await registrationLimit(c.env, c.req.header('cf-connecting-ip') || 'unknown', 'pairing:', 10, 1000);
+  if ((p.get('pairing_code') || '').replaceAll('-', '').toUpperCase() !== row.display) throw new OAuthError('invalid_pairing_code');
+  const actor = await identitySession(c);
+  if (!actor) throw new OAuthError('login_required', 401);
+  const claimed = await c.env.DB.prepare('UPDATE mcp_oauth_logins SET subject = ?, display = ?, code_hash = ? WHERE id = ? AND code_hash IS NULL AND expires_at >= ? RETURNING id')
+    .bind(actor.subject, actor.display, await sha256Hex(randomToken('bridge_')), row.id, now()).first();
+  if (!claimed) throw new OAuthError('login_expired');
+  return bridgePage(c, 'Account confirmed', '<p>Return to your original ChatGPT browser to check this account and review permissions. You can close this tab.</p>');
+});
+mcpAuthorization.post('/oauth/mcp/browser/cancel', async c => {
+  const cfg = authorizationConfig(c.env);
+  if (c.req.header('origin') !== cfg.issuer) throw new OAuthError('invalid_request', 403);
+  const p = await form(c), row = await bridgeRow(c, p.get('request') || '', true);
+  await c.env.DB.prepare('DELETE FROM mcp_oauth_logins WHERE id = ? AND browser_hash = ?').bind(row.id, row.browser_hash).run();
+  return bridgePage(c, 'Connection cancelled', '<p>No access was approved. Start a fresh connection from ChatGPT when you are ready.</p>');
+});
+mcpAuthorization.post('/oauth/mcp/browser/finish', async c => {
+  const cfg = authorizationConfig(c.env);
+  if (c.req.header('origin') !== cfg.issuer) throw new OAuthError('invalid_request', 403);
+  const p = await form(c), row = await bridgeRow(c, p.get('request') || '', true);
+  if (!row.subject || !row.code_hash || !await activeSubject(c.env, row.subject)) throw new OAuthError('login_required', 401);
+  const claimed = await c.env.DB.prepare('DELETE FROM mcp_oauth_logins WHERE id = ? AND browser_hash = ? AND code_hash = ? AND expires_at >= ? RETURNING id').bind(row.id, row.browser_hash, row.code_hash, now()).first();
+  if (!claimed) throw new OAuthError('login_expired');
+  const token = await new SignJWT({ resource: row.resource, display: row.display }).setProtectedHeader({ alg: 'ES256', kid: cfg.key.kid, typ: 'mcp-session+jwt' }).setSubject(row.subject).setIssuer(cfg.issuer).setAudience(cfg.issuer).setIssuedAt().setExpirationTime(now() + 600).setJti(crypto.randomUUID()).sign(await importJWK(cfg.key, 'ES256'));
+  setCookie(c, sessionCookie, token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
+  return c.redirect(row.return_path, 303);
+});
+
 mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env);
   if (c.req.header('origin') !== cfg.issuer) throw new OAuthError('invalid_request', 403);
@@ -356,8 +466,8 @@ mcpAuthorization.post('/oauth/mcp/token', async c => {
     if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new OAuthError('invalid_grant');
     const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
     const challenge = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-    const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_codes WHERE hash = ? AND client_id = ? AND redirect_uri = ? AND resource = ? AND challenge = ? AND expires_at >= ? RETURNING *')
-      .bind(await sha256Hex(p.get('code') || ''), id, p.get('redirect_uri') || '', p.get('resource') ?? (client.resources.length === 1 ? client.resources[0] : ''), challenge, now()).first<Pending>();
+    const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_codes WHERE hash = ? AND client_id = ? AND redirect_uri = ? AND (? IS NULL OR resource = ?) AND challenge = ? AND expires_at >= ? RETURNING *')
+      .bind(await sha256Hex(p.get('code') || ''), id, p.get('redirect_uri') || '', p.get('resource'), p.get('resource'), challenge, now()).first<Pending>();
     if (!row || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s)) || !await activeSubject(c.env, row.subject)) throw new OAuthError('invalid_grant');
     const grant: Grant = { id: crypto.randomUUID(), subject: row.subject, client_id: id, resource: row.resource, scope: row.scope, expires_at: client.tokenEndpointAuthMethod === 'none' ? 0 : now() + 2592000, revoked: 0 };
     await c.env.DB.prepare('INSERT INTO mcp_oauth_grants VALUES (?, ?, ?, ?, ?, ?, 0)').bind(grant.id, grant.subject, id, grant.resource, grant.scope, grant.expires_at).run();

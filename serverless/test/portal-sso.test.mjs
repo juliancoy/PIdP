@@ -109,3 +109,14 @@ test('owner session authorizes only through an explicit website member link',asy
  assert.equal(result.status,303);assert.match(result.headers.get('location'),/sso\/complete/);
  }finally{f.sql.close()}
 });
+
+test('only a validated cross-browser account link is accepted as a backend SSO return', async () => {
+ const f=fixture();
+ try{
+  const destination='https://one.example/pidp/oauth/mcp/link?request=login_'+ 'a'.repeat(54);
+  assert.equal((await f.request('one.example','/auth/sso/start?app=members&next='+encodeURIComponent(destination))).status,303);
+  for(const value of [destination+'&request=second', destination+'&next=https://evil.example', destination.replace('login_','bad_'), destination+'#fragment',destination.replace('one.example','evil.example')]){
+   assert.equal((await f.request('one.example','/auth/sso/start?app=members&next='+encodeURIComponent(value))).status,400);
+  }
+ }finally{f.sql.close()}
+});

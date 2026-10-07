@@ -9,6 +9,7 @@ export interface Env {
   MCP_OAUTH_DYNAMIC_REGISTRATION?: string;
   MCP_OAUTH_RESOURCES_JSON?: string;
   MCP_OAUTH_RESOURCE_ADDITIONS_JSON?: string;
+  MCP_OAUTH_RESOURCE_CONFIG_JSON?: string;
   MCP_OAUTH_PORTALS_JSON?: string;
   DB: D1Database;
   CF_VERSION_METADATA?: { id: string };

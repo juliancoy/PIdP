@@ -159,5 +159,51 @@ Python uses the equivalent `mcp_oauth_resource_additions_json` setting.
 LifeTech uses `https://lifetech.fyi/api/org/mcp` and
 `https://lifetech.fyi/users/mcp-connect`; MedTech remains
 `https://medtech.social/api/org/mcp`. Grants, codes, refresh tokens, bridge
-sessions and introspection remain bound to the exact resource. Register a new
-client connection when adding a resource to an existing dynamic-client setup.
+sessions and introspection remain bound to the exact resource. Dynamic clients
+use the issuer's current resource list, including newly configured resources;
+each resource still requires its own consent and audience-bound grant.
+
+### OrgPortal platform resource
+
+`MCP_OAUTH_RESOURCE_CONFIG_JSON` supplies additional resource credentials and
+portal handoffs with the same shape as `MCP_OAUTH_RESOURCE_ADDITIONS_JSON`.
+Duplicate resource URLs across these configurations or existing resources are
+rejected. Python uses `mcp_oauth_resource_config_json` with the same contract.
+The deployed OrgPortal resource is `https://orgportal.cc/api/org/mcp`, with login
+at `https://orgportal.cc/users/mcp-connect`. Its credential hash is recorded in
+`config/mcp-resources.json` and the Worker deployment variable; the corresponding
+raw introspection credential exists only as an OrgPortal Worker secret.
+
+### Separate Chrome profiles
+
+Portal-backed authorization starts at an issuer-hosted browser handoff page.
+Keep that page in the browser where ChatGPT opened it. Copy its sign-in link
+into the other Chrome profile, sign in there if required, and enter the matching
+eight-character code shown only in the original browser. Confirm the account
+in the second browser, then return to the original browser, check the displayed
+account and continue to the usual OAuth permission review. A same-browser
+sign-in option is also available.
+
+This is an internal identity bridge inspired by RFC 8628's separate-device
+interaction, not a new OAuth grant type advertised to MCP clients. The normal
+authorization-code flow, PKCE, resource audience, state, and registered callback
+remain unchanged. No MCP authorization codes or access tokens pass through the second browser.
+
+The bridge uses the existing login table: a hashed 320-bit request identifier,
+a separate random 32-bit matching code, an HttpOnly initiating-browser cookie,
+a ten-minute deadline and atomic one-use claims. Confirmation requires the
+portal's authenticated account and exact origin. Pairing attempts are rate
+limited. Status and completion require the original browser; completion checks
+the account is still active. Cancellation deletes the pending bridge. Both
+browsers explicitly confirm their part; account confirmation grants no MCP
+permissions or organization role. Referrer-Policy same-origin keeps same-origin
+form Origin checks working and prevents cross-origin capability URL leakage.
+
+No schema migration is needed. Python and Worker implementations share the
+contract. Security tests cover two isolated sessions, wrong code, wrong browser,
+CSRF, replay and account-bound token issuance. The headless browser fixture uses an in-memory database and local HTTPS
+servers with two isolated Chrome contexts in the local Docker Selenium service.
+Set `WEBDRIVER_URL`, `BROWSER_TEST_HOST` (the container-reachable host), and
+`BRIDGE_TEST_CERT_DIR` containing a disposable `test-key.pem` and
+`test-cert.pem`; run `node --import tsx browser/cross-browser.mjs`. No real
+accounts or production login endpoints are used.

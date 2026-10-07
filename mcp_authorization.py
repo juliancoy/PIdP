@@ -124,6 +124,10 @@ def configuration():
         resources = json.loads(settings.mcp_oauth_resources_json)
         portals = json.loads(settings.mcp_oauth_portals_json)
         additions = json.loads(settings.mcp_oauth_resource_additions_json)
+        for resource, addition in json.loads(settings.mcp_oauth_resource_config_json).items():
+            if resource in additions:
+                raise ValueError()
+            additions[resource] = addition
         for resource, addition in additions.items():
             if resource in resources or resource in portals:
                 raise ValueError()
@@ -211,7 +215,7 @@ async def session(request, db, resource=None):
     return await identity_session(request, db)
 
 
-async def start_login(request, db, cfg, resource, return_path):
+async def start_login(request, db, cfg, resource, return_path, change_account=False):
     portal = cfg['portals'].get(resource)
     if not portal:
         raise OAuthError('portal_login_not_configured', 503)
@@ -222,14 +226,16 @@ async def start_login(request, db, cfg, resource, return_path):
     now = int(time.time())
     await query(db, 'DELETE FROM mcp_oauth_logins WHERE expires_at < :now', now=now)
     login_id = 'login_' + secrets.token_urlsafe(40)
-    rows = await query(db, '''INSERT INTO mcp_oauth_logins (id, browser_hash, resource, return_path, expires_at)
-        SELECT :id, :browser, :resource, :return_path, :expires WHERE
+    rows = await query(db, '''INSERT INTO mcp_oauth_logins (id, browser_hash, resource, return_path, expires_at, display)
+        SELECT :id, :browser, :resource, :return_path, :expires, :pairing WHERE
         (SELECT COUNT(*) FROM mcp_oauth_logins WHERE browser_hash = :browser) < 20
         AND (SELECT COUNT(*) FROM mcp_oauth_logins) < 10000 RETURNING id''',
-        id=digest(login_id), browser=digest(browser), resource=resource, return_path=return_path, expires=now + 600)
+        id=digest(login_id), browser=digest(browser), resource=resource, return_path=return_path, expires=now + 600, pairing=secrets.token_hex(4).upper())
     if not rows:
         raise OAuthError('too_many_requests', 429)
-    result = RedirectResponse(portal['loginUrl'] + '?' + urlencode({'request': login_id}), status_code=303, headers=HEADERS)
+    result = RedirectResponse(cfg['issuer'] + '/oauth/mcp/browser?' + urlencode({'request': login_id}), status_code=303, headers=HEADERS)
+    if change_account:
+        result.delete_cookie(SESSION_COOKIE, path='/', secure=True, httponly=True, samesite='lax')
     result.set_cookie(BROWSER_COOKIE, browser, max_age=600, httponly=True, secure=True, samesite='lax', path='/')
     return result
 
@@ -315,7 +321,7 @@ async def get_client(db, cfg, client_id):
     if not rows:
         return None
     client = json.loads(rows[0]['client_json'])
-    return {**client, 'dynamic': True, 'resources': [r for r in client['resources'] if r in cfg['resources']]}
+    return {**client, 'dynamic': True, 'resources': list(cfg['resources'])}
 
 
 async def anonymous_limit(request, db, prefix='', ip_limit=10, global_limit=100):
@@ -461,11 +467,16 @@ router = APIRouter()
 
 
 @router.api_route('/.well-known/oauth-authorization-server', methods=['GET'])
-@router.api_route('/oauth/mcp/{endpoint}', methods=['GET', 'POST'])
+@router.api_route('/oauth/mcp/{endpoint:path}', methods=['GET', 'POST'])
 async def dispatch(request: Request, endpoint: str = '', db=Depends(get_session)):
     try:
         return await handle(request, endpoint, db)
     except OAuthError as exc:
+        from mcp_browser_bridge import failure
+        import sys
+        bridge_failure = failure(request, exc, sys.modules[__name__])
+        if bridge_failure is not None:
+            return bridge_failure
         return JSONResponse({'error': exc.code}, status_code=exc.status, headers=HEADERS)
     except Exception:
         # OAuth responses never expose SQL, tokens, or configuration values.
@@ -493,6 +504,11 @@ async def handle(request, endpoint, db):
         if request.method != 'POST':
             return Response(status_code=405, headers=HEADERS)
         return await register_client(request, db, cfg)
+    from mcp_browser_bridge import handle as browser_bridge
+    import sys
+    bridge_response = await browser_bridge(request, db, cfg, sys.modules[__name__])
+    if bridge_response is not None:
+        return bridge_response
     if endpoint in ('authorize', 'connections'):
         if endpoint == 'authorize' and request.method == 'GET':
             p, client, requested = await authorization_request(request, cfg, db)
@@ -503,7 +519,7 @@ async def handle(request, endpoint, db):
             params.pop('prompt', None)
             return_path = request.url.path + ('?' + urlencode(params) if params else '')
             if resource in cfg['portals']:
-                return await start_login(request, db, cfg, resource, return_path)
+                return await start_login(request, db, cfg, resource, return_path, p.get('prompt') == 'login')
             if endpoint == 'connections' and cfg['portals']:
                 resource = request.query_params.get('resource')
                 if not resource and len(cfg['portals']) == 1:
@@ -604,9 +620,9 @@ async def handle(request, endpoint, db):
         if not re.fullmatch('[A-Za-z0-9._~-]{43,128}', verifier):
             raise OAuthError('invalid_grant')
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-        rows = await query(db, 'DELETE FROM mcp_oauth_codes WHERE hash = :hash AND client_id = :client_id AND redirect_uri = :redirect_uri AND resource = :resource AND challenge = :challenge AND expires_at >= :now RETURNING *',
+        rows = await query(db, 'DELETE FROM mcp_oauth_codes WHERE hash = :hash AND client_id = :client_id AND redirect_uri = :redirect_uri AND (:resource IS NULL OR resource = :resource) AND challenge = :challenge AND expires_at >= :now RETURNING *',
             hash=digest(p.get('code', '')), client_id=client_id, redirect_uri=p.get('redirect_uri', ''),
-            resource=p.get('resource', client['resources'][0] if len(client['resources']) == 1 else ''), challenge=challenge, now=now)
+            resource=p.get('resource'), challenge=challenge, now=now)
         if not rows:
             raise OAuthError('invalid_grant')
         row = rows[0]

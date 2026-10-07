@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     mcp_oauth_dynamic_registration: bool = False
     mcp_oauth_resources_json: str | None = None
     mcp_oauth_resource_additions_json: str = '{}'
+    mcp_oauth_resource_config_json: str = '{}'
     mcp_oauth_portals_json: str = '{}'
     pii_encryption_keys: str = ""
     require_pii_encryption: bool = False

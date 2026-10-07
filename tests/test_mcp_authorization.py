@@ -78,14 +78,69 @@ class OAuthTests(unittest.TestCase):
         resource = 'https://lifetech.fyi/api/org/mcp'
         addition = {resource: dict(secretHash=oauth.digest('lifetech-resource-secret-at-least-32-chars'),
                                   portal=dict(name='LifeTech', loginUrl='https://lifetech.fyi/users/mcp-connect'))}
-        with patch.object(oauth.settings, 'mcp_oauth_resource_additions_json', json.dumps(addition)):
+        with patch.object(oauth.settings, 'mcp_oauth_resource_config_json', json.dumps(addition)):
             cfg = oauth.configuration()
             self.assertIn(self.resource, cfg['resources'])
             self.assertNotEqual(cfg['resources'][self.resource]['secretHash'], cfg['resources'][resource]['secretHash'])
             self.assertEqual(cfg['portals'][resource]['loginUrl'], 'https://lifetech.fyi/users/mcp-connect')
-        with patch.object(oauth.settings, 'mcp_oauth_resource_additions_json', json.dumps({self.resource: addition[resource]})):
+        with patch.object(oauth.settings, 'mcp_oauth_resource_config_json', json.dumps({self.resource: addition[resource]})):
             with self.assertRaises(oauth.OAuthError):
                 oauth.configuration()
+
+    def test_change_account_starts_fresh_portal_sign_in(self):
+        with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
+                'name': 'Portal', 'loginUrl': 'https://portal.example/users/mcp-connect'}})), \
+                patch.object(oauth.settings, 'portal_sso_app_slug', 'portal-app'):
+            response = self.client.get('/oauth/mcp/authorize', params={**self.params, 'prompt': 'login'}, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            login = urlsplit(response.headers['location'])
+            self.assertEqual(login.netloc, 'id.example')
+            self.assertEqual(login.path, '/oauth/mcp/browser')
+            self.assertTrue(parse_qs(login.query)['request'][0].startswith('login_'))
+            self.assertIn('__Host-pidp_mcp_session=""', response.headers['set-cookie'])
+            pending = self.db.db.execute('SELECT return_path FROM mcp_oauth_logins').fetchone()[0]
+            self.assertNotIn('prompt=', pending)
+            self.assertIn('state=state', pending)
+
+    def test_multi_resource_token_exchange_can_omit_resource(self):
+        code = self.code()
+        other = 'https://other.example/api/org/mcp'
+        clients = {'native': {**self.client_config, 'resources': [self.resource, other]}}
+        with patch.object(oauth.settings, 'mcp_oauth_clients_json', json.dumps(clients)), \
+                patch.object(oauth.settings, 'mcp_oauth_resource_config_json', json.dumps({other: {
+                    'secretHash': 'a' * 64, 'portal': {'name': 'Other', 'loginUrl': 'https://other.example/users/mcp-connect'}}})):
+            bad = self.post('token', dict(grant_type='authorization_code', code=code, client_id='native', redirect_uri=self.params['redirect_uri'], code_verifier='v' * 43, resource=other))
+            self.assertEqual(bad.status_code, 400)
+            response = self.post('token', dict(grant_type='authorization_code', code=code, client_id='native', redirect_uri=self.params['redirect_uri'], code_verifier='v' * 43))
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(jwt.get_unverified_claims(response.json()['access_token'])['aud'], self.resource)
+
+    def test_cross_browser_handoff_keeps_oauth_in_original_browser(self):
+        with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
+                'name': 'Portal', 'loginUrl': 'https://portal.example/users/mcp-connect'}})), \
+                patch.object(oauth, 'identity_session', AsyncMock(return_value=dict(subject='owner:alice', display='other@example.test', hash='other-session'))):
+            start = self.client.get('/oauth/mcp/authorize', params={**self.params, 'prompt': 'login'}, follow_redirects=False)
+            token = parse_qs(urlsplit(start.headers['location']).query)['request'][0]
+            code = self.db.db.execute('SELECT display FROM mcp_oauth_logins').fetchone()[0]
+            with TestClient(self.client.app, base_url=self.issuer) as secondary:
+                headers = {'x-forwarded-host': 'portal.example', 'origin': 'https://portal.example'}
+                denied = secondary.get('/oauth/mcp/browser/status', params={'request': token})
+                self.assertEqual(denied.status_code, 403)
+                confirm = secondary.get('/oauth/mcp/link', params={'request': token}, headers=headers)
+                self.assertEqual(confirm.status_code, 200)
+                self.assertNotIn(code, confirm.text)
+                bad = secondary.post('/oauth/mcp/link', data={'request': token, 'pairing_code': 'BAD-CODE'}, headers=headers)
+                self.assertEqual(bad.status_code, 400)
+                good = secondary.post('/oauth/mcp/link', data={'request': token, 'pairing_code': code}, headers=headers)
+                self.assertEqual(good.status_code, 200, good.text)
+                self.assertEqual(secondary.post('/oauth/mcp/browser/finish', data={'request':token}, headers={'origin':self.issuer}).status_code, 403)
+            ready = self.client.get('/oauth/mcp/browser/status', params={'request': token}).json()
+            self.assertEqual(ready, {'ready': True, 'account': 'other@example.test'})
+            self.assertEqual(self.post('browser/finish', {'request':token}, headers={'origin':'https://evil.example'}).status_code,403)
+            finish = self.post('browser/finish', {'request':token}, headers={'origin':self.issuer})
+            self.assertEqual(finish.status_code,303,finish.text)
+            self.assertEqual(parse_qs(urlsplit(finish.headers['location']).query)['state'],['state'])
+            self.assertEqual(self.post('browser/finish', {'request':token}, headers={'origin':self.issuer}).status_code,400)
 
     def tearDown(self):
         self.client.close(); self.actor.stop(); self.active.stop(); self.identity.stop(); self.setting_patch.stop(); self.db.db.close()
@@ -123,7 +178,7 @@ class OAuthTests(unittest.TestCase):
             start = self.client.get('/oauth/mcp/authorize', params=self.params, follow_redirects=False)
             self.assertEqual(start.status_code, 303, start.text)
             target = urlsplit(start.headers['location'])
-            self.assertEqual(target.netloc, 'portal.example')
+            self.assertEqual(target.netloc, 'id.example')
             request = parse_qs(target.query)['request'][0]
             self.assertIn('HttpOnly', start.headers['set-cookie'])
             self.assertNotIn('Domain=', start.headers['set-cookie'])
@@ -279,6 +334,15 @@ class OAuthTests(unittest.TestCase):
             redirect_uri=self.params['redirect_uri'], code_verifier='v' * 43))
         self.assertEqual(response.status_code, 200, response.text)
         tokens = response.json(); self.assertTrue(self.introspect(tokens['access_token'])['active'])
+        other = 'https://other.example/api/org/mcp'
+        resources = json.loads(oauth.settings.mcp_oauth_resources_json)
+        resources[other] = {'secretHash': oauth.digest('other-resource-secret-at-least-32-characters')}
+        with patch.object(oauth.settings, 'mcp_oauth_resources_json', json.dumps(resources)):
+            page = self.client.get('/oauth/mcp/authorize', params={**self.params, 'resource': other})
+            self.assertEqual(page.status_code, 200, page.text)
+            self.assertIn('other.example', page.text)
+            denied = self.client.get('/oauth/mcp/authorize', params={**self.params, 'resource': 'https://unconfigured.example/mcp'})
+            self.assertEqual(denied.status_code, 400)
         self.db.db.execute('UPDATE mcp_oauth_clients SET revoked=1 WHERE id=?', (client['client_id'],)); self.db.db.commit()
         self.assertFalse(self.introspect(tokens['access_token'])['active'])
         self.assertEqual(self.post('token', dict(client_id=client['client_id'], grant_type='refresh_token', refresh_token=tokens['refresh_token'])).status_code, 401)

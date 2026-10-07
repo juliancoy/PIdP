@@ -24,7 +24,8 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   const website=await websiteBySlug(c.env.DB,appSlug);
   if (!website) return c.json({error:'application_not_registered'},503);
   const target=new URL(c.req.query('next') || '/auth/callback',destination);
-  if(target.origin!==destination || !['/auth/callback','/p/auth/callback'].includes(target.pathname) || target.username || target.password)return c.json({error:'invalid_return'},400);
+  const bridgeReturn = target.pathname === '/pidp/oauth/mcp/link' && target.searchParams.getAll('request').length === 1 && /^login_[A-Za-z0-9_-]{43,100}$/.test(target.searchParams.get('request') || '') && [...target.searchParams.keys()].every(key => key === 'request') && !target.hash;
+  if(target.origin!==destination || (!['/auth/callback','/p/auth/callback'].includes(target.pathname) && !bridgeReturn) || target.username || target.password)return c.json({error:'invalid_return'},400);
   const window = Math.floor(now()/60);
   await c.env.DB.prepare('DELETE FROM portal_sso_limits WHERE window_start < ?').bind(window-1).run();
   const permitted = await c.env.DB.prepare(`INSERT INTO portal_sso_limits(ip_hash,window_start,requests) VALUES(?,?,1)

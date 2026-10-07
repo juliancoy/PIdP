@@ -64,11 +64,11 @@ test('portal login preserves website identity, binds the browser, and completes 
     const start = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } });
     assert.equal(start.status, 303);
     const target = new URL(start.headers.get('location'));
-    assert.equal(target.origin, 'https://portal.example');
-    assert.equal(target.pathname, '/users/mcp-connect');
+    assert.equal(target.origin, f.issuer);
+    assert.equal(target.pathname, '/oauth/mcp/browser');
     assert.equal(target.searchParams.has('owner'), false);
     assert.equal((await f.post('/oauth/mcp/handoff', { request: target.searchParams.get('request') },
-      { authorization: 'Bearer ' + f.cookie.split('=')[1], origin: target.origin })).status, 401);
+      { authorization: 'Bearer ' + f.cookie.split('=')[1], origin: 'https://portal.example' })).status, 401);
     const browser = start.headers.get('set-cookie').split(';')[0];
     assert.match(start.headers.get('set-cookie'), /HttpOnly/);
     assert.doesNotMatch(start.headers.get('set-cookie'), /Domain=/i);
@@ -79,10 +79,10 @@ test('portal login preserves website identity, binds the browser, and completes 
     assert.equal(metadata.portal, 'MedTech');
     assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: 'https://evil.example' })).status, 403);
     assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie })).status, 403);
-    const response = await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: target.origin });
+    const response = await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: 'https://portal.example' });
     assert.equal(response.status, 200);
     const resume = new URL((await response.json()).redirect_url);
-    assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: target.origin })).status, 400);
+    assert.equal((await f.post('/oauth/mcp/handoff', { request }, { cookie: portalCookie, origin: 'https://portal.example' })).status, 400);
     assert.equal((await f.request(resume.pathname + resume.search)).status, 400);
     assert.equal((await f.request(resume.pathname + resume.search, { headers: { cookie: '__Host-pidp_mcp_browser=' + 'z'.repeat(54) } })).status, 400);
     const resumed = await f.request(resume.pathname + resume.search, { headers: { cookie: browser } });
@@ -269,8 +269,11 @@ test('dynamic clients require user consent, PKCE and exact callbacks; registrati
     const stored = JSON.parse(f.sql.prepare('SELECT client_json FROM mcp_oauth_clients WHERE id = ?').get(client.client_id).client_json);
     const secondResource = 'https://other.example/mcp';
     f.env.MCP_OAUTH_RESOURCES_JSON = JSON.stringify({ ...JSON.parse(f.env.MCP_OAUTH_RESOURCES_JSON), [secondResource]: { secretHash: 'a'.repeat(64) } });
-    stored.resources.push(secondResource);
-    f.sql.prepare('UPDATE mcp_oauth_clients SET client_json = ? WHERE id = ?').run(JSON.stringify(stored), client.client_id);
+    assert.ok(!stored.resources.includes(secondResource));
+    const newResourceConsent = await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, resource: secondResource }), { headers: { cookie: f.cookie } });
+    assert.equal(newResourceConsent.status, 200);
+    assert.match(await newResourceConsent.text(), /other\.example/);
+    assert.equal((await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, resource: 'https://unconfigured.example/mcp' }), { headers: { cookie: f.cookie } })).status, 400);
     assert.equal((await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } })).status, 400);
     f.sql.prepare('UPDATE mcp_oauth_clients SET revoked = 1 WHERE id = ?').run(client.client_id);
     assert.equal((await (await f.introspect(tokens.access_token)).json()).active, false);
@@ -322,7 +325,7 @@ test('separate resources retain distinct credentials, login origins and token au
   try {
     const lifetech = 'https://lifetech.fyi/api/org/mcp';
     const code = await f.code();
-    f.env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON = JSON.stringify({ [lifetech]: {
+    f.env.MCP_OAUTH_RESOURCE_CONFIG_JSON = JSON.stringify({ [lifetech]: {
       secretHash: await sha256Hex('lifetech-resource-secret-at-least-32-chars'),
       portal: { name: 'LifeTech', loginUrl: 'https://lifetech.fyi/users/mcp-connect' },
     } });
@@ -335,14 +338,15 @@ test('separate resources retain distinct credentials, login origins and token au
     const start = await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, resource: lifetech }), { headers: { cookie: f.cookie } });
     assert.equal(start.status, 303);
     const login = new URL(start.headers.get('location'));
-    assert.equal(login.origin, 'https://lifetech.fyi');
-    assert.equal(login.pathname, '/users/mcp-connect');
+    assert.equal(login.origin, f.issuer);
+    assert.equal(login.pathname, '/oauth/mcp/browser');
+    assert.equal(f.sql.prepare('SELECT resource FROM mcp_oauth_logins ORDER BY rowid DESC LIMIT 1').get().resource, lifetech);
     assert.equal((await f.exchange(code, { resource: lifetech })).status, 400);
     const tokens = await (await f.exchange(code)).json();
     const cross = await f.post('/oauth/mcp/introspect', { token: tokens.access_token, resource: lifetech }, { authorization: 'Bearer lifetech-resource-secret-at-least-32-chars' });
     assert.equal((await cross.json()).active, false);
     assert.equal((await f.post('/oauth/mcp/introspect', { token: tokens.access_token, resource: lifetech }, { authorization: 'Bearer resource-secret-for-tests-at-least-32-chars' })).status, 401);
-    f.env.MCP_OAUTH_RESOURCE_ADDITIONS_JSON = JSON.stringify({ [f.resource]: { secretHash: 'a'.repeat(64), portal: { name: 'Other', loginUrl: 'https://other.example/users/mcp-connect' } } });
+    f.env.MCP_OAUTH_RESOURCE_CONFIG_JSON = JSON.stringify({ [f.resource]: { secretHash: 'a'.repeat(64), portal: { name: 'Other', loginUrl: 'https://other.example/users/mcp-connect' } } });
     assert.throws(() => authorizationConfig(f.env), /not_configured/);
   } finally { f.sql.close(); }
 });
@@ -373,4 +377,106 @@ test('native grants persist beyond 30 days, upgrade active legacy grants and rem
     await f.post('/oauth/mcp/revoke', { client_id: 'chatgpt', token: tokens.refresh_token });
     assert.equal((await f.post('/oauth/mcp/token', { grant_type: 'refresh_token', client_id: 'chatgpt', refresh_token: tokens.refresh_token })).status, 400);
   } finally { Date.now = originalNow; f.sql.close(); }
+});
+
+test('changing account starts fresh portal SSO and preserves the pending MCP request', async () => {
+  const f = await fixture();
+  try {
+    f.env.PORTAL_SSO_APP_SLUG = 'portal-app';
+    f.env.SESSION_COOKIE_DOMAIN = 'id.example';
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: { name: 'Portal', loginUrl: 'https://portal.example/users/mcp-connect' } });
+    const response = await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, prompt: 'login' }), { headers: { cookie: f.cookie } });
+    assert.equal(response.status, 303);
+    const login = new URL(response.headers.get('location'));
+    assert.equal(login.origin + login.pathname, f.issuer + '/oauth/mcp/browser');
+    assert.ok(login.searchParams.get('request').startsWith('login_'));
+    assert.match(response.headers.get('set-cookie'), /__Host-pidp_mcp_session=;[^,]*Max-Age=0/);
+    assert.doesNotMatch(response.headers.get('set-cookie'), /(?:^|, )pidp_session=/);
+    const row = f.sql.prepare('SELECT return_path FROM mcp_oauth_logins').get();
+    const pending = new URL(row.return_path, f.issuer);
+    assert.equal(pending.searchParams.get('prompt'), null);
+    assert.equal(pending.searchParams.get('state'), f.params.state);
+    assert.equal(pending.searchParams.get('code_challenge'), f.params.code_challenge);
+  } finally { f.sql.close(); }
+});
+
+test('multi-resource clients can redeem a code without repeating its resource', async () => {
+  const f = await fixture();
+  try {
+    const code = await f.code();
+    const other = 'https://other.example/api/org/mcp';
+    f.env.MCP_OAUTH_RESOURCE_CONFIG_JSON = JSON.stringify({ [other]: { secretHash: 'a'.repeat(64), portal: { name: 'Other', loginUrl: 'https://other.example/users/mcp-connect' } } });
+    const clients = JSON.parse(f.env.MCP_OAUTH_CLIENTS_JSON);
+    clients.chatgpt.resources.push(other);
+    f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify(clients);
+    assert.equal((await f.exchange(code, { resource: other })).status, 400);
+    const response = await f.post('/oauth/mcp/token', { grant_type: 'authorization_code', code, client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars', redirect_uri: f.params.redirect_uri, code_verifier: 'v'.repeat(43) });
+    assert.equal(response.status, 200);
+    const tokens = await response.json();
+    assert.equal(JSON.parse(Buffer.from(tokens.access_token.split('.')[1], 'base64url').toString()).aud, f.resource);
+    assert.equal((await f.exchange(code)).status, 400);
+  } finally { f.sql.close(); }
+});
+
+test('two isolated browsers confirm identity then finish OAuth only in the initiating browser', async () => {
+  const f = await fixture();
+  try {
+    f.env.PORTAL_SSO_APP_SLUG = 'members';
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: { name: 'Portal', loginUrl: 'https://portal.example/users/mcp-connect' } });
+    const start = await f.request('/oauth/mcp/authorize?' + new URLSearchParams({ ...f.params, prompt: 'login' }));
+    const location = new URL(start.headers.get('location')), request = location.searchParams.get('request');
+    const browser = start.headers.getSetCookie().find(value => value.startsWith('__Host-pidp_mcp_browser=')).split(';')[0];
+    const code = f.sql.prepare('SELECT display FROM mcp_oauth_logins').get().display;
+    const primary = { cookie: browser };
+    const secondary = { cookie: f.bobCookie, 'x-forwarded-host': 'portal.example' };
+    assert.equal((await f.request(location.pathname + location.search, { headers: primary })).status, 200);
+    assert.equal((await f.request(location.pathname + location.search, { headers: secondary })).status, 403);
+    const statusUrl = '/oauth/mcp/browser/status?' + new URLSearchParams({ request });
+    assert.deepEqual(await (await f.request(statusUrl, { headers: primary })).json(), { ready: false });
+    const confirmation = await f.request('/oauth/mcp/link?' + new URLSearchParams({ request }), { headers: secondary });
+    assert.equal(confirmation.status, 200);
+    const html = await confirmation.text();
+    assert.ok(!html.includes(code));
+    assert.match(html, /Confirm this account/);
+    assert.equal((await f.post('/oauth/mcp/link', { request, pairing_code: code }, { ...secondary, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await f.post('/oauth/mcp/link', { request, pairing_code: 'BAD-CODE' }, { ...secondary, origin: 'https://portal.example' })).status, 400);
+    assert.equal((await f.post('/oauth/mcp/link', { request, pairing_code: code }, { ...secondary, origin: 'https://portal.example' })).status, 200);
+    assert.equal((await f.post('/oauth/mcp/link', { request, pairing_code: code }, { ...secondary, origin: 'https://portal.example' })).status, 400);
+    const ready = await (await f.request(statusUrl, { headers: primary })).json();
+    assert.equal(ready.ready, true);
+    const finishArgs = { request };
+    assert.equal((await f.post('/oauth/mcp/browser/finish', finishArgs, { ...secondary, origin: f.issuer })).status, 403);
+    assert.equal((await f.post('/oauth/mcp/browser/finish', finishArgs, { ...primary, origin: 'https://evil.example' })).status, 403);
+    const finish = await f.post('/oauth/mcp/browser/finish', finishArgs, { ...primary, origin: f.issuer });
+    assert.equal(finish.status, 303);
+    const cookie = finish.headers.get('set-cookie').split(';')[0];
+    const consent = await f.request(finish.headers.get('location'), { headers: { cookie } });
+    assert.equal(consent.status, 200);
+    assert.match(await consent.clone().text(), /bob/);
+    const nonce = (await consent.text()).match(/name="request" value="([^"]+)"/)[1];
+    const allowed = await f.post('/oauth/mcp/authorize', { request: nonce, decision: 'allow' }, { cookie, origin: f.issuer });
+    const authCode = new URL(allowed.headers.get('location')).searchParams.get('code');
+    const tokens = await (await f.exchange(authCode)).json();
+    const claims = JSON.parse(Buffer.from(tokens.access_token.split('.')[1], 'base64url').toString());
+    assert.equal(claims.sub, 'owner:bob');
+    assert.equal(claims.aud, f.resource);
+    assert.equal((await f.post('/oauth/mcp/browser/finish', finishArgs, { ...primary, origin: f.issuer })).status, 400);
+  } finally { f.sql.close(); }
+});
+
+test('handoffs expire, cancel, and reject inactive confirmed accounts', async () => {
+ const f=await fixture();
+ try {
+  f.env.MCP_OAUTH_PORTALS_JSON=JSON.stringify({[f.resource]:{name:'Portal',loginUrl:'https://portal.example/users/mcp-connect'}});
+  const begin=async()=>{const response=await f.request('/oauth/mcp/authorize?'+new URLSearchParams({...f.params,prompt:'login'}));return{request:new URL(response.headers.get('location')).searchParams.get('request'),cookie:response.headers.getSetCookie().find(c=>c.startsWith('__Host-pidp_mcp_browser=')).split(';')[0]}};
+  let pending=await begin();f.sql.exec('UPDATE mcp_oauth_logins SET expires_at=0');
+  assert.equal((await f.request('/oauth/mcp/browser/status?'+new URLSearchParams({request:pending.request}),{headers:{cookie:pending.cookie}})).status,400);
+  pending=await begin();
+  assert.equal((await f.post('/oauth/mcp/browser/cancel',{request:pending.request},{cookie:pending.cookie,origin:f.issuer})).status,200);
+  assert.equal((await f.request('/oauth/mcp/link?'+new URLSearchParams({request:pending.request}),{headers:{cookie:f.bobCookie,'x-forwarded-host':'portal.example'}})).status,400);
+  pending=await begin();const row=f.sql.prepare('SELECT display FROM mcp_oauth_logins WHERE id=?').get(await sha256Hex(pending.request));
+  assert.equal((await f.post('/oauth/mcp/link',{request:pending.request,pairing_code:row.display},{cookie:f.bobCookie,'x-forwarded-host':'portal.example',origin:'https://portal.example'})).status,200);
+  f.sql.exec("UPDATE users SET is_active=0 WHERE id='bob'");
+  assert.equal((await f.post('/oauth/mcp/browser/finish',{request:pending.request},{cookie:pending.cookie,origin:f.issuer})).status,401);
+ }finally{f.sql.close()}
 });
