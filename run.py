@@ -337,7 +337,8 @@ def run(prefix, network_name):
     docker_utils.initializeFiles(current_dir)
     import pidp_editme
 
-    db_name = prefix + "pidpdb"
+    service_prefix = "lifetech-" if prefix == "bmoremedtech-" else prefix
+    db_name = service_prefix + "identity-db"
     db_url = (
         f"postgresql+asyncpg://{pidp_editme.PIDP_POSTGRES_USER}:"
         f"{pidp_editme.PIDP_POSTGRES_PASSWORD}@{db_name}:5432/PIdP"
@@ -392,7 +393,7 @@ def run(prefix, network_name):
     prod_image = _resolve_prod_image()
     pidp_prod = {
         "image": prod_image,
-        "name": prefix + "pidp",
+        "name": service_prefix + "identity-api-build",
         "environment": {
             **env_base,
             "ENV": "production",
@@ -428,7 +429,7 @@ def run(prefix, network_name):
     # Dev: local code with watcher/reload.
     pidp_dev = {
         "image": os.getenv("PIDP_DEV_IMAGE", "pidp-dev"),
-        "name": prefix + "pidp-dev",
+        "name": service_prefix + "identity-api",
         "build": {"context": str(current_dir), "dockerfile": "Dockerfile"},
         "rebuild_image_on_restart": True,
         "volumes": {str(current_dir): {"bind": container_app_dir, "mode": "rw"}},
@@ -449,7 +450,8 @@ def run(prefix, network_name):
             "GOOGLE_REDIRECT_URI": dev_oauth["google"] or env_base.get("GOOGLE_REDIRECT_URI"),
             "GITHUB_REDIRECT_URI": dev_oauth["github"] or env_base.get("GITHUB_REDIRECT_URI"),
             "FRONTEND_REDIRECT_URL": dev_oauth["frontend"] or env_base.get("FRONTEND_REDIRECT_URL"),
-            "WATCHFILES_FORCE_POLLING": "true",
+            # Native notifications avoid repeatedly scanning Linux bind mounts.
+            "WATCHFILES_FORCE_POLLING": os.getenv("WATCHFILES_FORCE_POLLING", "false"),
             "BACKEND_IMAGE_RUNNING": "dev-local-build",
         },
         "network": network_name,

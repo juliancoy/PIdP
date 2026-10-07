@@ -202,6 +202,7 @@ values match. OrgPortal grants organization roles to an explicitly selected
 account ID through its own permission checks and audited membership workflow.
 - `PIDP_PROD_IMAGE` (optional prod release image override; default `ghcr.io/juliancoy/pidp:latest`)
 - `PIDP_DEV_IMAGE` (optional local dev image tag used for the watcher container; default `pidp-dev`)
+- `WATCHFILES_FORCE_POLLING` (optional, default `false`): native file notifications for local development; set `true` only on filesystems that do not deliver change notifications.
 - `PIDP_PROD_PUBLIC_BASE_URL` (optional explicit prod callback base, e.g. `https://pidp.example.com/`)
 - `PIDP_DEV_PUBLIC_BASE_URL` (optional explicit dev callback base, e.g. `https://dev.pidp.example.com/`)
 
