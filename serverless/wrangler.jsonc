@@ -10,6 +10,7 @@
   },
   "compatibility_date": "2026-06-03",
   "workers_dev": true,
+  "limits": { "cpu_ms": 1000 },
   "triggers": { "crons": ["*/5 * * * *"] },
   "observability": {
     "redact_query_string": true,
