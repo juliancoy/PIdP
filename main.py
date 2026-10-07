@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import asyncio
+from retention import retention_loop
 import logging
 import os
 import re
@@ -1399,6 +1401,7 @@ async def startup() -> None:
             await conn.run_sync(Base.metadata.create_all)
     await _ensure_runtime_schema()
     await _warn_identity_uuid_collisions()
+    app.state.retention_task = asyncio.create_task(retention_loop())
 
 
 @app.get("/", include_in_schema=False)
@@ -3299,3 +3302,14 @@ async def social_callback(
     response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(response, token)
     return response
+
+
+@app.on_event("shutdown")
+async def stop_retention() -> None:
+    task = getattr(app.state, "retention_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

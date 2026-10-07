@@ -1,3 +1,4 @@
+import { runRetention } from './retention';
 import { Hono, type Context } from "hono";
 import { accountLinkBrowserRoutes } from "./accountLinkBrowser";
 import { accountIdentityRoutes, resolveAccountIdentity } from "./accountIdentity";
@@ -1322,4 +1323,10 @@ app.get("/auth/:provider/login", oauthLogin);
 
 app.get("/auth/:provider/callback", oauthCallback);
 
-export default app;
+export default Object.assign(app, {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runRetention(env.DB, controller.scheduledTime).then(counts => {
+      console.info(JSON.stringify({event:'pidp.retention',counts,backlog:Object.values(counts).some(n=>n===500)}));
+    }).catch(() => { console.error(JSON.stringify({event:'pidp.retention',outcome:'error'})); throw new Error('Retention cleanup failed'); }));
+  }
+});
