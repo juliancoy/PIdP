@@ -480,3 +480,20 @@ test('handoffs expire, cancel, and reject inactive confirmed accounts', async ()
   assert.equal((await f.post('/oauth/mcp/browser/finish',{request:pending.request},{cookie:pending.cookie,origin:f.issuer})).status,401);
  }finally{f.sql.close()}
 });
+
+
+test('portal-only DCR and authorization preserve least-privilege scopes', async () => {
+  const f = await fixture(); try {
+    f.env.MCP_OAUTH_DYNAMIC_REGISTRATION = 'true';
+    const metadata = { client_name: '<ChatGPT>', token_endpoint_auth_method: 'none', redirect_uris: [f.params.redirect_uri], scope: 'org:portal.read' };
+    const register = scope => f.request('/oauth/mcp/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...metadata, scope }) });
+    const response = await register('org:portal.read'); assert.equal(response.status, 201);
+    const client = await response.json();
+    f.params.client_id = client.client_id; f.params.scope = 'org:portal.read';
+    const issued = await f.post('/oauth/mcp/token', { grant_type: 'authorization_code', code: await f.code(), client_id: client.client_id, redirect_uri: f.params.redirect_uri, resource: f.resource, code_verifier: 'v'.repeat(43) });
+    assert.equal(issued.status, 200); assert.equal((await issued.json()).scope, 'org:portal.read');
+    for (const scope of ['', 'org:unknown']) assert.equal((await register(scope)).status, 400);
+    f.params.scope = 'org:events.read';
+    assert.equal((await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } })).status, 400);
+  } finally { f.sql.close(); }
+});

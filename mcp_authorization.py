@@ -377,7 +377,7 @@ async def register_client(request, db, cfg):
         raise OAuthError('invalid_client_metadata')
     requested = list(dict.fromkeys(p['scope'].split(' '))) if 'scope' in p else SCOPES
     requested = [s for s in requested if s]
-    if SCOPES[0] not in requested or any(s not in SCOPES for s in requested):
+    if not requested or any(s not in SCOPES for s in requested):
         raise OAuthError('invalid_client_metadata')
     client_id = 'mcp_dynamic_' + secrets.token_urlsafe(32)
     secret = None if method == 'none' else 'mcp_client_' + secrets.token_urlsafe(32)
@@ -456,7 +456,7 @@ async def authorization_request(request, cfg, db):
     if not client or not redirect_allowed(client, p.get('redirect_uri', '')) or p.get('resource') not in client['resources']:
         raise OAuthError('invalid_request')
     requested = list(dict.fromkeys(p.get('scope', '').split()))
-    if SCOPES[0] not in requested or any(s not in client['scopes'] for s in requested):
+    if not requested or any(s not in client['scopes'] for s in requested):
         raise OAuthError('invalid_scope')
     if p.get('response_type') != 'code' or p.get('code_challenge_method') != 'S256' or not re.fullmatch('[A-Za-z0-9_-]{43}', p.get('code_challenge', '')):
         raise OAuthError('invalid_request')

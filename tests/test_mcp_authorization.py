@@ -310,6 +310,21 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(self.post('connections', dict(grant=grant, csrf=csrf), headers={'origin': self.issuer}).status_code, 303)
         self.assertFalse(self.introspect(tokens['access_token'])['active'])
 
+    def test_portal_only_dynamic_client_scope(self):
+        oauth.settings.mcp_oauth_dynamic_registration = True
+        metadata = dict(client_name='Portal only', token_endpoint_auth_method='none',
+                        redirect_uris=['http://127.0.0.1/callback'], scope='org:portal.read')
+        response = self.client.post('/oauth/mcp/register', json=metadata)
+        self.assertEqual(response.status_code, 201, response.text)
+        registered = response.json()
+        self.params.update(client_id=registered['client_id'], scope='org:portal.read')
+        tokens = self.exchange(self.code(), client_id=registered['client_id']).json()
+        self.assertEqual(tokens['scope'], 'org:portal.read')
+        for scope in ('', 'org:unknown'):
+            self.assertEqual(self.client.post('/oauth/mcp/register', json={**metadata, 'scope': scope}).status_code, 400)
+        self.params['scope'] = 'org:events.read'
+        self.assertEqual(self.client.get('/oauth/mcp/authorize', params=self.params).status_code, 400)
+
     def test_dynamic_registration_requires_consent_pkce_and_supports_client_revocation(self):
         metadata = dict(client_name='Codex', token_endpoint_auth_method='none', redirect_uris=['http://127.0.0.1/callback'])
         self.assertEqual(self.client.post('/oauth/mcp/register', json=metadata).status_code, 403)

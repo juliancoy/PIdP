@@ -270,7 +270,7 @@ mcpAuthorization.post('/oauth/mcp/register', async c => {
   if (typeof name !== 'string' || !name.trim() || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) throw new OAuthError('invalid_client_metadata');
   if (p.scope !== undefined && (typeof p.scope !== 'string' || p.scope.length > 1000)) throw new OAuthError('invalid_client_metadata');
   const requested = p.scope === undefined ? scopes : [...new Set((p.scope as string).split(' ').filter(Boolean))];
-  if (!requested.includes(scopes[0]) || requested.some(s => !scopes.includes(s))) throw new OAuthError('invalid_client_metadata');
+  if (!requested.length || requested.some(s => !scopes.includes(s))) throw new OAuthError('invalid_client_metadata');
   const id = randomToken('mcp_dynamic_');
   const secret = method === 'none' ? undefined : randomToken('mcp_client_');
   const client: Client = { name: name.trim(), redirectUris: [...new Set(redirects)], resources: Object.keys(cfg.resources), scopes: requested,
@@ -326,7 +326,7 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const resource = p.get('resource') ?? (client?.resources.length === 1 ? client.resources[0] : '');
   if (!client || !redirectAllowed(client, redirect) || !client.resources.includes(resource)) throw new OAuthError('invalid_request');
   const requested = [...new Set((p.get('scope') || '').split(' ').filter(Boolean))];
-  if (!requested.includes(scopes[0]) || requested.some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_scope');
+  if (!requested.length || requested.some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_scope');
   const challenge = p.get('code_challenge') || '';
   if (p.get('response_type') !== 'code' || p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new OAuthError('invalid_request');
   const changeAccountRequested = p.get('prompt') === 'login';
