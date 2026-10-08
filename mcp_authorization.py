@@ -197,6 +197,15 @@ async def identity_session(request, db):
     return dict(subject=subject, display=str(payload.get('email') or payload['sub']), hash=digest(token))
 
 
+async def system_admin_session(request, db):
+    actor = await identity_session(request, db)
+    if not actor:
+        return None
+    if not actor['subject'].startswith('owner:') or actor['subject'][6:] not in settings.admin_user_ids_list:
+        raise OAuthError('system_administrator_required', 403)
+    return actor
+
+
 async def session(request, db, resource=None):
     cfg = configuration()
     token = request.cookies.get(SESSION_COOKIE)
@@ -513,19 +522,27 @@ async def handle(request, endpoint, db):
         if endpoint == 'authorize' and request.method == 'GET':
             p, client, requested = await authorization_request(request, cfg, db)
         resource = p['resource'] if endpoint == 'authorize' and request.method == 'GET' else None
-        actor = None if resource and p.get('prompt') == 'login' else await session(request, db, resource)
+        admin_login = endpoint == 'authorize' and request.method == 'GET' and p.get('account') == 'system_admin'
+        if endpoint == 'authorize' and request.method == 'GET' and 'account' in p and not admin_login:
+            raise OAuthError('invalid_request')
+        if endpoint == 'authorize' and request.method == 'POST':
+            p = await form(request)
+            if 'account' in p and p['account'] != 'system_admin':
+                raise OAuthError('invalid_request')
+            admin_login = p.get('account') == 'system_admin'
+        actor = None if resource and p.get('prompt') == 'login' else await system_admin_session(request, db) if admin_login else await session(request, db, resource)
         if request.method == 'GET' and not actor:
             params = dict(request.query_params)
             params.pop('prompt', None)
             return_path = request.url.path + ('?' + urlencode(params) if params else '')
-            if resource in cfg['portals']:
+            if not admin_login and resource in cfg['portals']:
                 return await start_login(request, db, cfg, resource, return_path, p.get('prompt') == 'login')
             if endpoint == 'connections' and cfg['portals']:
                 resource = request.query_params.get('resource')
                 if not resource and len(cfg['portals']) == 1:
                     resource = next(iter(cfg['portals']))
                 return await start_login(request, db, cfg, resource, return_path)
-            return RedirectResponse(issuer + '/app/login?next=' + quote(return_path, safe=''), status_code=303, headers=HEADERS)
+            return RedirectResponse(issuer + '/app/login?' + ('owner=1&' if admin_login else '') + 'next=' + quote(return_path, safe=''), status_code=303, headers=HEADERS)
         if request.method == 'POST':
             if request.headers.get('origin') != issuer:
                 raise OAuthError('invalid_request', 403)
@@ -555,11 +572,10 @@ async def handle(request, endpoint, db):
             portal = cfg['portals'].get(p['resource'])
             markup, policy = render_consent_page(client=client['name'], account=actor['display'], resource=p['resource'],
                 callback=p['redirect_uri'], request=nonce, change_account='/oauth/mcp/authorize?' + urlencode({**p, 'prompt': 'login'}),
-                requested=requested, dynamic=bool(client.get('dynamic')), portal=portal)
+                requested=requested, dynamic=bool(client.get('dynamic')), portal=portal, system_admin_login=admin_login)
             headers = consent_headers(p['redirect_uri'])
             headers['Content-Security-Policy'] += '; ' + policy
             return HTMLResponse(markup, headers=headers)
-        p = await form(request)
         if p.get('decision') not in ('allow', 'deny'):
             raise OAuthError('invalid_request')
         rows = await query(db, 'DELETE FROM mcp_oauth_requests WHERE id = :id AND session_hash = :hash AND subject = :subject AND expires_at >= :now RETURNING *',
@@ -608,7 +624,7 @@ async def handle(request, endpoint, db):
             identity = await resolve_account_identity(db, grant['subject'])
         except Exception:
             return response({'active': False})
-        return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}, **identity))
+        return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}, **identity, is_sysadmin=grant['subject'].startswith('owner:') and identity['account_id'] in settings.admin_user_ids_list))
     client_id, client = await authenticate_client(request, p, cfg, db)
     if endpoint == 'revoke':
         await query(db, 'UPDATE mcp_oauth_grants SET revoked = 1 WHERE client_id = :client AND id IN (SELECT grant_id FROM mcp_oauth_refresh WHERE hash = :hash)', client=client_id, hash=digest(p.get('token', '')))

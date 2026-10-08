@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 PAGE = json.loads((Path(__file__).parent / 'shared/mcp-consent.json').read_text())
 
 
-def render_consent_page(*, client, account, resource, callback, request, change_account, requested, dynamic, portal=None):
+def render_consent_page(*, client, account, resource, callback, request, change_account, requested, dynamic, portal=None, system_admin_login=False):
     url = urlsplit(portal['loginUrl'] if portal else resource)
     origin = url.scheme + '://' + url.netloc
     brand = PAGE['brands'].get(url.netloc)
@@ -21,6 +21,7 @@ def render_consent_page(*, client, account, resource, callback, request, change_
         brandName=brand['name'] if brand else (portal['name'] if portal else 'OrgPortal'),
         tagline=brand['tagline'] if brand else 'ACCOUNT AUTHORIZATION', portalUrl=origin, portalHost=url.netloc,
         resource=resource, callback=callback, request=request, changeAccount=change_account).items()}
+    values['accountMode'] = '<input type="hidden" name="account" value="system_admin">' if system_admin_login else ''
     values['css'] = css
     values['logo'] = f'<img src="{html.escape(brand["logo"])}" alt="{html.escape(brand["name"])} logo" width="52" height="52">' if brand else ''
     values['permissions'] = ''.join(

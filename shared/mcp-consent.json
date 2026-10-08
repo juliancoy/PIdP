@@ -41,7 +41,7 @@
     "<section aria-labelledby=\"permissions-title\"><h2 id=\"permissions-title\">Permissions requested by {{client}}:</h2><ul class=\"permissions\">{{permissions}}</ul></section>",
     "<p class=\"assurance\">Your organization permissions still apply. You can revoke this connection at any time in PIdP.</p>{{notice}}",
     "<details><summary>Connection details</summary><dl><dt>Portal</dt><dd>{{portalHost}}</dd><dt>Service</dt><dd>{{resource}}</dd><dt>Callback</dt><dd>{{callback}}</dd></dl></details>",
-    "<form method=\"post\" action=\"/oauth/mcp/authorize\"><input type=\"hidden\" name=\"request\" value=\"{{request}}\"><div class=\"actions\"><button class=\"deny\" name=\"decision\" value=\"deny\">Deny</button><button class=\"allow\" name=\"decision\" value=\"allow\">Allow access</button></div></form></main>",
+    "<form method=\"post\" action=\"/oauth/mcp/authorize\"><input type=\"hidden\" name=\"request\" value=\"{{request}}\">{{accountMode}}<div class=\"actions\"><button class=\"deny\" name=\"decision\" value=\"deny\">Deny</button><button class=\"allow\" name=\"decision\" value=\"allow\">Allow access</button></div></form></main>",
     "<footer class=\"footer\"><span>Identity secured by <strong>PIdP</strong></span><a href=\"/oauth/mcp/connections\">Connected apps</a></footer></body></html>"
   ]
 }

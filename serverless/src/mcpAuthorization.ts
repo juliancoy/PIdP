@@ -137,6 +137,12 @@ async function identitySession(c: Context<{ Bindings: Env }>) {
     return { subject, display: String(payload.email || payload.sub), hash: await sha256Hex(token) };
   } catch { return null; }
 }
+async function systemAdminSession(c: Context<{ Bindings: Env }>) {
+  const actor = await identitySession(c);
+  if (!actor) return null;
+  if (!actor.subject.startsWith('owner:') || !(c.env.ADMIN_USER_IDS || '').split(',').map(id => id.trim()).includes(actor.subject.slice(6))) throw new OAuthError('system_administrator_required', 403);
+  return actor;
+}
 async function session(c: Context<{ Bindings: Env }>, resource?: string) {
   const cfg = authorizationConfig(c.env);
   const token = getCookie(c, sessionCookie);
@@ -330,11 +336,13 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const challenge = p.get('code_challenge') || '';
   if (p.get('response_type') !== 'code' || p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new OAuthError('invalid_request');
   const changeAccountRequested = p.get('prompt') === 'login';
-  const actor = changeAccountRequested ? null : await session(c, resource);
+  const adminLogin = p.get('account') === 'system_admin';
+  if (p.has('account') && !adminLogin) throw new OAuthError('invalid_request');
+  const actor = changeAccountRequested ? null : adminLogin ? await systemAdminSession(c) : await session(c, resource);
   if (!actor) {
     p.delete('prompt');
-    if (cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search, changeAccountRequested);
-    return c.redirect(`${cfg.issuer}/app/login?next=${encodeURIComponent(u.pathname + u.search)}`, 303);
+    if (!adminLogin && cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search, changeAccountRequested);
+    return c.redirect(`${cfg.issuer}/app/login?${adminLogin ? "owner=1&" : ""}next=${encodeURIComponent(u.pathname + u.search)}`, 303);
   }
   // Bound persisted pending requests per session; expired records are cheap to remove.
   await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE expires_at < ?').bind(now()).run();
@@ -346,7 +354,7 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const portal = cfg.portals[resource];
   const changeAccount = new URL(u); changeAccount.searchParams.set('prompt', 'login');
   const page = await renderConsentPage({ client: client.name, account: actor.display, resource, callback: redirect,
-    request: nonce, changeAccount: changeAccount.pathname + changeAccount.search, requested, dynamic: Boolean(client.dynamic), portal });
+    systemAdminLogin: adminLogin, request: nonce, changeAccount: changeAccount.pathname + changeAccount.search, requested, dynamic: Boolean(client.dynamic), portal });
   // Chromium applies form-action to the redirect after the same-origin consent POST.
   c.header('Content-Security-Policy', `default-src 'none'; form-action 'self' ${new URL(redirect).origin}; frame-ancestors 'none'; base-uri 'none'; ${page.policy}`);
   return c.html(page.html);
@@ -440,8 +448,10 @@ mcpAuthorization.post('/oauth/mcp/browser/finish', async c => {
 mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   const cfg = authorizationConfig(c.env);
   if (c.req.header('origin') !== cfg.issuer) throw new OAuthError('invalid_request', 403);
-  const actor = await session(c); if (!actor) throw new OAuthError('login_required', 401);
-  const p = await form(c); if (!['allow', 'deny'].includes(p.get('decision') || '')) throw new OAuthError('invalid_request');
+  const p = await form(c);
+  if (p.has('account') && p.get('account') !== 'system_admin') throw new OAuthError('invalid_request');
+  const actor = p.get('account') === 'system_admin' ? await systemAdminSession(c) : await session(c);
+  if (!actor) throw new OAuthError('login_required', 401); if (!['allow', 'deny'].includes(p.get('decision') || '')) throw new OAuthError('invalid_request');
   const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE id = ? AND session_hash = ? AND subject = ? AND expires_at >= ? RETURNING *')
     .bind(await sha256Hex(p.get('request') || ''), actor.hash, actor.subject, now()).first<Pending>();
   if (!row) throw new OAuthError('invalid_request');
@@ -500,7 +510,7 @@ mcpAuthorization.post('/oauth/mcp/introspect', async c => {
   if (!grant || !await validateGrant(c.env, cfg, grant) || grant.resource !== resource || grant.subject !== payload.sub || grant.scope !== payload.scope || !await activeSubject(c.env, grant.subject)) return c.json({ active: false });
   let identity;
   try {identity=await resolveAccountIdentity(c.env,grant.subject);} catch{return c.json({active:false});}
-  return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp, ...identity });
+  return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp, ...identity, is_sysadmin: grant.subject.startsWith('owner:') && (c.env.ADMIN_USER_IDS || '').split(',').map(id => id.trim()).includes(identity.account_id) });
 });
 mcpAuthorization.post('/oauth/mcp/revoke', async c => {
   const cfg = authorizationConfig(c.env); const p = await form(c); const { id } = await authenticateClient(c, p, cfg);

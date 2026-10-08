@@ -106,6 +106,8 @@ test('portal login preserves website identity, binds the browser, and completes 
     const keys = await (await f.request('/.well-known/jwks.json')).json();
     const verified = await jwtVerify(tokens.access_token, await importJWK(keys.keys[0]), { issuer: f.issuer, audience: f.resource });
     assert.equal(verified.payload.sub, 'website:portal-site:member');
+    f.env.ADMIN_USER_IDS='member';
+    assert.equal((await(await f.introspect(tokens.access_token)).json()).is_sysadmin,false);
     assert.equal((await f.request('/oauth/mcp/connections', { headers: { cookie } })).status, 200);
     f.sql.exec("UPDATE website_users SET is_active = 0");
     assert.equal((await (await f.introspect(tokens.access_token)).json()).active, false);
@@ -496,4 +498,23 @@ test('portal-only DCR and authorization preserve least-privilege scopes', async 
     f.params.scope = 'org:events.read';
     assert.equal((await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.cookie } })).status, 400);
   } finally { f.sql.close(); }
+});
+
+test('explicit system-admin consent preserves primary identity and introspects live authority', async () => {
+  const f=await fixture();try{
+    f.env.ADMIN_USER_IDS='alice';f.env.MCP_OAUTH_PORTALS_JSON=JSON.stringify({[f.resource]:{name:'Portal',loginUrl:'https://portal.example/users/mcp-connect'}});
+    const params=new URLSearchParams({...f.params,account:'system_admin'});
+    const absent=await f.request('/oauth/mcp/authorize?'+params);assert.equal(absent.status,303);assert.equal(new URL(absent.headers.get('location')).searchParams.get('owner'),'1');
+    assert.equal((await f.request('/oauth/mcp/authorize?'+params,{headers:{cookie:f.bobCookie}})).status,403);
+    f.sql.exec("INSERT INTO website_users VALUES ('alice','site',1)");
+    const member=`pidp_session=${await signJwt(f.env,{sub:'alice',actor_type:'website_user',website_id:'site',is_sysadmin:true})}`;
+    assert.equal((await f.request('/oauth/mcp/authorize?'+params,{headers:{cookie:member}})).status,403);
+    const consent=await f.request('/oauth/mcp/authorize?'+params,{headers:{cookie:f.cookie}});assert.equal(consent.status,200);const html=await consent.text();assert.match(html,/name="account" value="system_admin"/);
+    const nonce=html.match(/name="request" value="([^"]+)"/)[1];
+    assert.equal((await f.post('/oauth/mcp/authorize',{request:nonce,decision:'allow',account:'system_admin'},{cookie:member,origin:f.issuer})).status,403);
+    const approved=await f.post('/oauth/mcp/authorize',{request:nonce,decision:'allow',account:'system_admin'},{cookie:f.cookie,origin:f.issuer});assert.equal(approved.status,303);
+    const code=new URL(approved.headers.get('location')).searchParams.get('code');const tokens=await(await f.exchange(code)).json();
+    const status=await(await f.introspect(tokens.access_token)).json();assert.equal(status.active,true);assert.equal(status.sub,'owner:alice');assert.equal(status.is_sysadmin,true);
+    f.env.ADMIN_USER_IDS='';assert.equal((await(await f.introspect(tokens.access_token)).json()).is_sysadmin,false);
+  }finally{f.sql.close()}
 });

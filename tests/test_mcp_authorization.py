@@ -427,3 +427,22 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class AdministratorOAuthTests(OAuthTests):
+    def test_explicit_primary_admin_consent_and_live_introspection(self):
+        with patch.object(oauth.settings, 'admin_user_ids', 'alice'), patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {'name':'Portal','loginUrl':'https://portal.example/users/mcp-connect'}})), patch.object(oauth, 'identity_session', AsyncMock(return_value=dict(subject='owner:alice',display='Admin',hash='admin-session'))):
+            params = dict(self.params, account='system_admin', scope='org:portal.read org:portal.write')
+            consent = self.client.get('/oauth/mcp/authorize', params=params)
+            self.assertEqual(consent.status_code, 200, consent.text)
+            self.assertIn('name="account" value="system_admin"', consent.text)
+            nonce = re.search('name="request" value="([^"]+)"', consent.text)[1]
+            approved = self.post('authorize', dict(request=nonce,decision='allow',account='system_admin'),headers={'origin':self.issuer})
+            self.assertEqual(approved.status_code,303,approved.text)
+            code = parse_qs(urlsplit(approved.headers['location']).query)['code'][0]
+            tokens = self.exchange(code).json()
+            self.assertTrue(self.introspect(tokens['access_token'])['is_sysadmin'])
+            with patch.object(oauth.settings,'admin_user_ids',''):
+                self.assertFalse(self.introspect(tokens['access_token'])['is_sysadmin'])
+            with patch.object(oauth,'identity_session',AsyncMock(return_value=dict(subject='website:site:alice',display='Same ID',hash='website-session'))):
+                denied=self.client.get('/oauth/mcp/authorize',params=params)
+                self.assertEqual(denied.status_code,403)

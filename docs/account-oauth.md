@@ -305,3 +305,17 @@ still rotate once. Existing active native grants become persistent on the next
 successful refresh. Expired and revoked grants are never revived. Confidential
 clients retain their existing 30-day grant expiry. Persistent grants remain visible
 in Connected apps and can be revoked individually.
+
+### Explicit system-administrator MCP consent
+
+An administrator may request `account=system_admin` in an OAuth authorization
+request. This explicit flow uses the active primary PIdP account and verifies its
+system-admin authority before displaying consent and again at consent submission.
+Normal portal connections retain their website identity flow. A website account
+cannot select this mode based on matching UUIDs, emails, profile fields or links.
+
+Protected live token introspection includes `is_sysadmin`, computed from the
+active primary account and PIdP's administrator configuration. Website grants
+always report false. Role removal is visible without issuing a new access token.
+OrgPortal applies this verified authority to catalog profile management while
+preserving portal scopes, resource restrictions and preview/apply receipts.
