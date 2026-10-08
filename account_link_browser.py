@@ -10,7 +10,9 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import HTMLResponse, RedirectResponse
 from db import get_session
-from models import User, Website, AccountIdentityLink, AccountIdentityLinkRequest
+from models import User, Website, AccountIdentityLink, AccountIdentityLinkRequest, PortalSsoRequest
+from config import settings
+from portal_clients import sso_return, login_portal
 from security import safe_decode_token
 from account_identity import digest
 
@@ -33,6 +35,18 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
         if request.headers.get('origin') != origin(request):
             raise HTTPException(403, 'Invalid origin')
 
+    async def continuation(request, session, website_id):
+        ticket = request.query_params.get('sso')
+        if not ticket:
+            return ''
+        result = await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == ticket,
+            PortalSsoRequest.website_id == str(website_id), PortalSsoRequest.expires_at >= int(time.time()),
+            PortalSsoRequest.code_hash.is_(None)))
+        row = result.scalar_one_or_none()
+        if not row or not sso_return(row.origin,row.app,row.next):
+            raise HTTPException(400, 'Sign-in request expired; restart from your portal')
+        return '?' + urlencode({'sso': row.id})
+
     async def website(request, session):
         result = await session.execute(select(Website).where(Website.slug == request.query_params.get('app', '')))
         row = result.scalar_one_or_none()
@@ -43,6 +57,8 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
     @router.get('/connect')
     async def connect(request: Request, session=Depends(session_dependency)):
         app = await website(request, session)
+        resume = await continuation(request, session, app.id)
+        portal = await login_portal(app.slug, origin(request)+'/auth/sso/authorize?'+urlencode({'request':request.query_params.get('sso','')}),session)
         owner = None
         token = request.cookies.get('pidp_token')
         if token:
@@ -51,10 +67,10 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
             except HTTPException:
                 pass
         if not owner or not owner.is_active:
-            login = '/auth/google/login?' + urlencode(dict(owner='true', next=str(request.url)))
+            login = '/app/login?' + urlencode(dict(owner='true', next=str(request.url)))
             return page('Link your portal sign-in', f'<p>First sign in to your primary PIdP account.</p><a href="{escape(login)}">Sign in to PIdP</a>')
-        action = '/auth/account-links/connect?' + urlencode(dict(app=app.slug))
-        return page('Link your portal sign-in', f'<p>Primary account: {escape(owner.full_name or owner.email)} ({escape(owner.email)})</p><p>Next, authenticate your {escape(app.name)} member account. Linking will give both sign-ins one personal profile and portal identity.</p><form method="post" action="{escape(action)}"><button>Authenticate the portal account</button></form>')
+        action = '/auth/account-links/connect?' + urlencode(dict(app=app.slug)) + ('&'+resume[1:] if resume else '')
+        return page('Link your portal sign-in', f'<p>Primary account: {escape(owner.full_name or owner.email)} ({escape(owner.email)})</p><p>Next, authenticate your {escape(portal["name"] if portal else app.name)} member account. Linking will give both sign-ins one personal profile and portal identity.</p><form method="post" action="{escape(action)}"><button>Authenticate the portal account</button></form>')
 
     @router.post('/connect')
     async def start(request: Request, session=Depends(session_dependency)):
@@ -66,6 +82,7 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
         if not owner.is_active:
             raise HTTPException(401, 'Inactive account')
         app = await website(request, session)
+        resume = await continuation(request, session, app.id)
         claims = safe_decode_token(token)
         now = int(time.time())
         nonce = 'identity_link_' + secrets.token_urlsafe(32)
@@ -73,7 +90,7 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
         session.add(AccountIdentityLinkRequest(id=str(uuid4()), canonical_user_id=owner.id, website_id=app.id,
             browser_hash=digest(nonce), primary_proof_hash=digest(token), expires_at=min(now+600, int(claims['exp']))))
         await session.commit()
-        login = '/auth/google/login?' + urlencode(dict(app=app.slug, next=origin(request)+'/auth/account-links/finish'))
+        login = '/app/login?' + urlencode(dict(app=app.slug, next=origin(request)+'/auth/account-links/finish'+resume))
         response = RedirectResponse(login, status_code=303, headers=HEADERS)
         response.set_cookie(COOKIE, nonce, max_age=600, secure=True, httponly=True, samesite='lax', path='/')
         return response
@@ -102,11 +119,12 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
         link = result.scalar_one_or_none()
         if link and link.canonical_user_id != owner.id:
             raise HTTPException(409, 'Account is linked to another identity')
-        return row, owner, member, subject
+        resume = await continuation(request, session, row.website_id)
+        return row, owner, member, subject, resume
 
     @router.get('/finish')
     async def finish(request: Request, session=Depends(session_dependency)):
-        row, owner, member, subject = await context(request, session)
+        row, owner, member, subject, resume = await context(request, session)
         changed = await session.execute(update(AccountIdentityLinkRequest).where(
             AccountIdentityLinkRequest.id == row.id, AccountIdentityLinkRequest.used_at.is_(None),
             AccountIdentityLinkRequest.expires_at >= int(time.time()),
@@ -115,12 +133,12 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
         if not changed.rowcount:
             raise HTTPException(409, 'Account-link request changed')
         await session.commit()
-        return page('Confirm account link', f'<p>Primary PIdP account: {escape(owner.email)}</p><p>Portal account: {escape(member.email)}</p><p>These sign-ins will share your personal profile, onboarding, and portal identity. Organization access will use that person’s live memberships; website tokens remain website tokens.</p><form method="post" action="/auth/account-links/complete"><button>Link these accounts</button></form>')
+        return page('Confirm account link', f'<p>Primary PIdP account: {escape(owner.email)}</p><p>Portal account: {escape(member.email)}</p><p>These sign-ins will share your personal profile, onboarding, and portal identity. Organization access will use that person’s live memberships; website tokens remain website tokens.</p><form method="post" action="/auth/account-links/complete{escape(resume)}"><button>Link these accounts</button></form>')
 
     @router.post('/complete')
     async def complete(request: Request, session=Depends(session_dependency)):
         same_origin(request)
-        row, owner, member, subject = await context(request, session)
+        row, owner, member, subject, resume = await context(request, session)
         if row.subject != subject:
             raise HTTPException(409, 'Review the account link first')
         at = datetime.now(timezone.utc).isoformat()
@@ -140,7 +158,10 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
         except Exception:
             await session.rollback()
             raise
-        response = page('Accounts linked', '<p>Your sign-ins now share one identity and personal profile.</p><p>Return to your portal to continue.</p>')
+        if resume:
+            response = RedirectResponse(origin(request)+'/auth/sso/authorize?'+urlencode({'request':request.query_params['sso']}),status_code=303,headers=HEADERS)
+        else:
+            response = page('Accounts linked', '<p>Your sign-ins now share one identity and personal profile.</p><p>Return to your portal to continue.</p>')
         response.delete_cookie(COOKIE, path='/', secure=True)
         return response
 

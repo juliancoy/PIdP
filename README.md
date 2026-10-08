@@ -326,3 +326,5 @@ python mcp_server.py
 - `list_service_websites` -> calls `GET /service/websites`
 - `create_service_website` -> calls `POST /service/websites`
 - `check_login_redirect_authorization` -> validates that `/auth/{provider}/login?next=...` accepts a frontend URL and reports stored `frontend_redirect_url`
+
+Portal identity integration follows [the explicit portal identity boundaries and registration contract](docs/PORTAL_IDENTITY_BOUNDARIES.md).

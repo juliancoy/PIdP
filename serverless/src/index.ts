@@ -1,3 +1,4 @@
+import {loginPortal,browserReturn} from './portalClients';
 import { runRetention } from './retention';
 import { Hono, type Context } from "hono";
 import { accountLinkBrowserRoutes } from "./accountLinkBrowser";
@@ -240,14 +241,7 @@ function portalAuthOrigins(env: Env): string[] {
 }
 
 function redirectTarget(env: Env, next: string): string {
-  const fallback = env.FRONTEND_REDIRECT_URL || "/";
-  const target = next.trim() || fallback;
-  if (target.startsWith("/")) return target;
-  if (allowedNativeRedirect(env, target)) return target;
-  const targetOrigin = originOf(target);
-  if (targetOrigin && portalAuthOrigins(env).includes(targetOrigin)) return target;
-  if (sameOrigin(target, env.FRONTEND_REDIRECT_URL) || sameOrigin(target, env.PUBLIC_BASE_URL)) return target;
-  return fallback;
+  return browserReturn(env,next.trim()) || browserReturn(env,env.FRONTEND_REDIRECT_URL||'/') || '/';
 }
 
 function redirectWithSession(env: Env, next: string, token: string, headers = new Headers()): Response {
@@ -275,11 +269,11 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
   });
 }
 
-function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[] }) {
+function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string }) {
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
-  const title = params.ownerMode ? `${params.appName} Owner Login` : `${params.appName} Login`;
+  const title = params.ownerMode ? `${params.appName} Owner Login` : params.portalName ? `Sign in to ${params.portalName}` : `${params.appName} Login`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -288,7 +282,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
   <title>${escapeHtml(title)}</title>
   <style>
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; color: #111827; }
-    main { width: min(100% - 32px, 420px); background: #fff; border: 1px solid #d7dce3; border-radius: 8px; padding: 24px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08); }
+    main { box-sizing: border-box; width: min(100% - 32px, 420px); background: #fff; border: 1px solid #d7dce3; border-radius: 8px; padding: 24px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08); }
     h1 { font-size: 1.4rem; margin: 0 0 16px; }
     label { display: grid; gap: 6px; font-size: 0.92rem; margin: 12px 0; }
     input { font: inherit; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; }
@@ -300,6 +294,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
 <body>
   <main>
     <h1>${escapeHtml(title)}</h1>
+    ${params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
     ${error}
     ${params.socialLinks.map(link => `<a class="social-login" href="${escapeHtml(link.href)}">Continue with ${escapeHtml(link.label)}</a>`).join("\n")}
     <form method="post" action="/app/login">
@@ -619,6 +614,7 @@ app.get("/app/login", async (c) => {
   const appName = c.env.APP_NAME || "PIdP";
   const ownerMode = Boolean(url.searchParams.get("owner"));
   const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
+  const portalName=ownerMode?undefined:(await loginPortal(c.env,appSlug,next,portalRequestOrigin(c)))?.name;
   if (url.searchParams.get("auto") && (c.env.GOOGLE_CLIENT_ID || c.env.GITHUB_CLIENT_ID)) {
     const provider = c.env.GOOGLE_CLIENT_ID ? "google" : "github";
     const portalOrigin = portalRequestOrigin(c);
@@ -630,7 +626,7 @@ app.get("/app/login", async (c) => {
     else if (appSlug) redirect.searchParams.set("app", appSlug);
     return c.redirect(redirect.toString(), 303);
   }
-  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
+  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
 });
 
 app.get("/app/login/", (c) => {
@@ -648,19 +644,21 @@ app.post("/app/login", async (c) => {
   const appName = c.env.APP_NAME || "PIdP";
   const ownerMode = Boolean(form.owner);
   const next = String(form.next || c.env.FRONTEND_REDIRECT_URL || "/");
+  const portalName=ownerMode?undefined:(await loginPortal(c.env,appSlug,next,portalRequestOrigin(c)))?.name;
   if (!email || !password) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
   }
 
   if (!ownerMode && appSlug) {
     const website = await websiteBySlug(c.env.DB, appSlug);
+    if (!website) fail(404,"Application not found");
     if (website) {
       const websiteUser = await websiteUserByEmail(c.env.DB, website.id, email);
       if (!websiteUser || !(await verifyPassword(password, websiteUser.hashed_password))) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
       }
       if (!websiteUser.is_active) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
@@ -671,7 +669,7 @@ app.post("/app/login", async (c) => {
 
   const user = await userByEmail(c.env.DB, email);
   if (!user || !(await verifyPassword(password, user.hashed_password))) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();

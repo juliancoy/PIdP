@@ -1,4 +1,5 @@
 import os
+import json
 os.environ.setdefault('SECRET_KEY','sso-test-secret')
 os.environ.setdefault('DATABASE_URL','postgresql+asyncpg://test:test@localhost/test')
 import unittest
@@ -38,9 +39,9 @@ class SsoTests(unittest.TestCase):
         async def dependency():yield AsyncAdapter(self.db)
         app=FastAPI();app.include_router(sso.router);app.dependency_overrides[sso.get_session]=dependency
         self.client=TestClient(app,base_url='https://one.example',follow_redirects=False)
-        self.settings=patch.multiple(sso.settings,public_base_url='https://id.example',portal_auth_origins='https://one.example,https://two.example',portal_sso_app_slug='members');self.settings.start()
+        self.settings=patch.multiple(sso.settings,public_base_url='https://id.example',portal_auth_origins='https://one.example,https://two.example',portal_sso_app_slug='members',portal_clients_json=json.dumps({**{origin:{'name':'Test Portal','accountApp':'members','callbacks':['/auth/callback','/p/auth/callback']} for origin in ['https://one.example','https://two.example','https://orgportal.cc']},'https://codecollective.us':{'name':'Test Portal','accountApp':'members','callbacks':['/auth/callback','/p/auth/callback'],'restartOrigin':'https://orgportal.cc'}}));self.settings.start()
         self.decode=patch.object(sso,'safe_decode_token',return_value={'sub':str(self.member_id),'actor_type':'website_user','website_id':str(self.website_id)});self.decode_mock=self.decode.start()
-        self.issue=patch.object(sso,'create_access_token',return_value='local-session');self.issue.start()
+        self.issue=patch.object(sso,'create_access_token',return_value='local-session');self.issue_mock=self.issue.start()
     def tearDown(self):
         self.issue.stop();self.decode.stop();self.settings.stop();self.client.close();self.db.close();self.engine.dispose()
     def test_member_handoff_is_bound_to_browser_origin_and_one_use(self):
@@ -59,8 +60,11 @@ class SsoTests(unittest.TestCase):
         self.decode_mock.return_value = {'sub': str(self.user_id), 'actor_type': 'owner'}
         started = self.client.get('/auth/sso/start', params={'app': 'members'})
         denied = self.client.get(started.headers['location'])
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.json()['detail'], 'account_link_required')
+        self.assertEqual(denied.status_code, 200)
+        self.assertIn('Link my portal account', denied.text)
+        self.assertIn('Sign in to the portal separately', denied.text)
+        self.assertEqual(self.db.query(AccountIdentityLink).count(), 0)
+        self.assertIsNone(self.db.query(PortalSsoRequest).one().code_hash)
         self.db.add(AccountIdentityLink(subject=f'website:{self.website_id}:{self.member_id}',
             canonical_user_id=self.user_id, website_id=self.website_id,
             website_user_id=self.member_id, linked_at='2026-10-05T00:00:00Z'))
@@ -68,6 +72,41 @@ class SsoTests(unittest.TestCase):
         authorized = self.client.get(started.headers['location'])
         self.assertEqual(authorized.status_code, 303)
         self.assertIn('/auth/sso/complete?', authorized.headers['location'])
+
+    def test_retired_portal_restarts_on_orgportal(self):
+        with patch.object(sso.settings, 'portal_auth_origins', 'https://codecollective.us,https://orgportal.cc'):
+            response = self.client.get('https://codecollective.us/auth/sso/start', params={'app':'members',
+                'next':'https://codecollective.us/p/auth/callback?next=%2Fchat','provider':'google','login_hint':'123456789'})
+            self.assertEqual(response.status_code,303)
+            target = urlsplit(response.headers['location'])
+            params = parse_qs(target.query)
+            self.assertEqual(target.netloc,'orgportal.cc')
+            self.assertEqual(target.path,'/pidp/auth/sso/start')
+            self.assertEqual(params['next'],['https://orgportal.cc/auth/callback?next=%2Fchat'])
+            self.assertEqual(params['provider'],['google'])
+            self.assertEqual(params['login_hint'],['123456789'])
+            self.assertNotIn('set-cookie',response.headers)
+            self.assertEqual(self.db.query(PortalSsoRequest).count(),0)
+
+    def test_every_registered_product_keeps_its_destination_and_namespace(self):
+        from portal_clients import DEFAULTS
+        with patch.multiple(sso.settings,portal_clients_json='',portal_auth_origins=','.join(DEFAULTS)):
+            self.db.query(Website).one().slug='code-collective'
+            self.db.commit()
+            for origin, client in DEFAULTS.items():
+                if client.get('restartOrigin'):
+                    continue
+                started=self.client.get(origin+'/auth/sso/start',params={'app':'code-collective','next':origin+'/auth/callback?next=%2Fpeople'})
+                self.assertEqual(started.status_code,303)
+                authorized=self.client.get(started.headers['location'])
+                self.assertEqual(authorized.status_code,303)
+                self.assertIn(origin+'/pidp/auth/sso/complete',authorized.headers['location'])
+                completed=self.client.get(authorized.headers['location'].replace('/pidp/auth','/auth'))
+                self.assertEqual(completed.status_code,303)
+                self.assertEqual(completed.headers['location'],origin+'/auth/callback?next=%2Fpeople')
+                self.assertNotIn('Domain=',completed.headers['set-cookie'])
+                self.assertEqual(self.issue_mock.call_args.kwargs['extra_claims']['actor_type'],'website_user')
+                self.assertEqual(self.issue_mock.call_args.kwargs['extra_claims']['website_id'],str(self.website_id))
 
     def test_external_returns_unknown_apps_and_wrong_namespace_are_rejected(self):
         for params in [{'app':'other'},{'app':'members','next':'https://evil.example/auth/callback'}]:

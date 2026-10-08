@@ -118,7 +118,7 @@ class PidpSmokeTests(unittest.TestCase):
             self.main.oauth.create_client = original_create_client
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
-    def test_social_login_preserves_next_before_oauth_without_website_allowlist(self):
+    def test_social_login_rejects_unregistered_next_before_oauth(self):
         class _FakeOAuthClient:
             async def authorize_redirect(self, request, redirect_uri):
                 return JSONResponse(
@@ -144,15 +144,13 @@ class PidpSmokeTests(unittest.TestCase):
                     },
                     follow_redirects=False,
                 )
-            self.assertEqual(response.status_code, 200)
-            payload = response.json()
-            self.assertEqual(payload["saved_next"], "https://evil.example/admin")
-            self.assertEqual(payload["redirect_uri"], os.environ["GOOGLE_REDIRECT_URI"])
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("/app/login",response.headers["location"])
         finally:
             self.main.oauth.create_client = original_create_client
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 
-    def test_app_login_preserves_next_without_website_allowlist(self):
+    def test_app_login_drops_unregistered_next(self):
         original_resolve_login_website_from_host = self.main._resolve_login_website_from_host
         async def _fake_resolve_login_website_from_host(_session, _request):
             return None
@@ -168,7 +166,7 @@ class PidpSmokeTests(unittest.TestCase):
                     follow_redirects=False,
                 )
             self.assertEqual(response.status_code, 200)
-            self.assertIn('value="https://evil.example/admin"', response.text)
+            self.assertNotIn('value="https://evil.example/admin"', response.text)
         finally:
             self.main._resolve_login_website_from_host = original_resolve_login_website_from_host
 

@@ -13,7 +13,8 @@ function fixture(real = false) {
  CREATE TABLE users(id TEXT,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
  CREATE TABLE website_users(id TEXT,website_id TEXT,is_active INTEGER,email TEXT,identity_data TEXT,profile_data TEXT);INSERT INTO website_users VALUES('member','site',1,'member@example.test','{}','{}');`);
  const DB={prepare(query){const statement=sql.prepare(query);return{bind(...args){return{async run(){return statement.run(...args)},async first(){return statement.get(...args) || null}}}}}};
- const env={DB,SECRET_KEY:'test-key',PUBLIC_BASE_URL:'https://id.example',PORTAL_AUTH_ORIGINS:'https://one.example,https://two.example',PORTAL_SSO_APP_SLUG:'members'};
+ const clients=Object.fromEntries(['https://one.example','https://two.example','https://orgportal.cc'].map(origin=>[origin,{name:'Test Portal',accountApp:'members',callbacks:['/auth/callback','/p/auth/callback']} ]));clients['https://codecollective.us']={name:'Test Portal',accountApp:'members',callbacks:['/auth/callback','/p/auth/callback'],restartOrigin:'https://orgportal.cc'};
+ const env={PORTAL_CLIENTS_JSON:JSON.stringify(clients),DB,SECRET_KEY:'test-key',PUBLIC_BASE_URL:'https://id.example',PORTAL_AUTH_ORIGINS:'https://one.example,https://two.example',PORTAL_SSO_APP_SLUG:'members'};
  const app=real ? fullApp : portalSso(async (_env,subject)=>'session-for-'+subject);
  const request=(host,path,headers={})=>app.request('https://'+host+path,{headers},env);
  return {env,sql,request};
@@ -65,14 +66,14 @@ test('untrusted origins, external returns, wrong apps, expired requests and name
  assert.equal((await f.request('one.example','/auth/sso/start?app=members&next=https://evil.example/auth/callback')).status,400);
  const s=await start(f);const url=new URL(s.authorize);const path=url.pathname+url.search;
  for(const payload of [{sub:'owner'},{sub:'member',actor_type:'website_user',website_id:'other'}]){
- const token=await signJwt(f.env,payload);const r=await f.request('id.example',path,{cookie:'pidp_session='+token});if(payload.sub==='owner'){assert.equal(r.status,403);assert.equal((await r.json()).error,'account_link_required')}else assert.match(r.headers.get('location'),/\/app\/login/);
+ const token=await signJwt(f.env,payload);const r=await f.request('id.example',path,{cookie:'pidp_session='+token});if(payload.sub==='owner'){assert.equal(r.status,200);const html=await r.text();assert.match(html,/Link my portal account/);assert.match(html,/Sign in to the portal separately/);assert.equal(f.sql.prepare('SELECT count(*) n FROM account_identity_links').get().n,0);assert.equal(f.sql.prepare('SELECT code_hash FROM portal_sso_requests').get().code_hash,null)}else assert.match(r.headers.get('location'),/\/app\/login/);
  }
  f.sql.exec('UPDATE portal_sso_requests SET expires_at=0');assert.equal((await f.request('id.example',path)).status,400);
  }finally{f.sql.close()}
 });
 test('missing portal applications never fall back to an owner account',async()=>{
  const f=fixture();try{
- f.env.PORTAL_SSO_APP_SLUG='unregistered';
+ f.env.PORTAL_SSO_APP_SLUG='unregistered';const clients=JSON.parse(f.env.PORTAL_CLIENTS_JSON);clients['https://one.example'].accountApp='unregistered';f.env.PORTAL_CLIENTS_JSON=JSON.stringify(clients);
  const response=await f.request('one.example','/auth/sso/start?app=unregistered');
  assert.equal(response.status,503);assert.deepEqual(await response.json(),{error:'application_not_registered'});
  assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_sso_requests').get().n,0);
@@ -117,6 +118,43 @@ test('only a validated cross-browser account link is accepted as a backend SSO r
   assert.equal((await f.request('one.example','/auth/sso/start?app=members&next='+encodeURIComponent(destination))).status,303);
   for(const value of [destination+'&request=second', destination+'&next=https://evil.example', destination.replace('login_','bad_'), destination+'#fragment',destination.replace('one.example','evil.example')]){
    assert.equal((await f.request('one.example','/auth/sso/start?app=members&next='+encodeURIComponent(value))).status,400);
+  }
+ }finally{f.sql.close()}
+});
+
+test('retired portal restarts login on OrgPortal before binding a browser or session',async()=>{
+ const f=fixture();try{
+  f.env.PORTAL_AUTH_ORIGINS+=',https://codecollective.us,https://orgportal.cc';
+  const r=await f.request('codecollective.us','/auth/sso/start?'+new URLSearchParams({app:'members',next:'https://codecollective.us/p/auth/callback?next=%2Fchat',provider:'google',login_hint:'123456789'}));
+  assert.equal(r.status,303);const url=new URL(r.headers.get('location'));assert.equal(url.origin,'https://orgportal.cc');assert.equal(url.pathname,'/pidp/auth/sso/start');assert.equal(url.searchParams.get('next'),'https://orgportal.cc/auth/callback?next=%2Fchat');assert.equal(url.searchParams.get('provider'),'google');assert.equal(url.searchParams.get('login_hint'),'123456789');assert.equal(r.headers.get('set-cookie'),null);assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_sso_requests').get().n,0);
+  const fresh=await f.request('orgportal.cc',url.pathname.replace('/pidp','')+url.search);assert.equal(fresh.status,303);const row=f.sql.prepare('SELECT origin,next FROM portal_sso_requests').get();assert.equal(row.origin,'https://orgportal.cc');assert.equal(row.next,'https://orgportal.cc/auth/callback?next=%2Fchat');
+ }finally{f.sql.close()}
+});
+
+test('login branding follows the live portal ticket; revoked registrations cannot complete sign-in',async()=>{
+ const f=fixture(true);try{
+  const started=await start(f);const auth=new URL(started.authorize);
+  const login=await f.request('id.example','/app/login?'+new URLSearchParams({app:'members',next:auth.href}));assert.equal(login.status,200);assert.match(await login.text(),/Sign in to Test Portal/);
+  const token=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const authorized=await f.request('id.example',auth.pathname+auth.search,{cookie:'pidp_session='+token});assert.equal(authorized.status,303);
+  const complete=new URL(authorized.headers.get('location'));
+  f.env.PORTAL_CLIENTS_JSON='{}';
+  assert.equal((await f.request('one.example',complete.pathname.replace('/pidp','')+complete.search,{cookie:started.browser})).status,400);
+ }finally{f.sql.close()}
+});
+
+test('every registered product keeps its brand, host-only session and original destination',async()=>{
+ const defaults=JSON.parse(readFileSync(new URL('../../shared/portal-clients.json',import.meta.url),'utf8'));
+ const f=fixture(true);try{
+  f.env.PORTAL_CLIENTS_JSON=undefined;f.env.PORTAL_AUTH_ORIGINS=Object.keys(defaults).join(',');f.env.PORTAL_SSO_APP_SLUG='code-collective';f.sql.exec("UPDATE websites SET slug='code-collective'");
+  const token=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  for(const [origin,client] of Object.entries(defaults).filter(([,c])=>!c.restartOrigin)){
+   const host=new URL(origin).host,started=await start(f,host),authorize=new URL(started.authorize);
+   const login=await f.request('id.example','/app/login?'+new URLSearchParams({app:'code-collective',next:authorize.href}));assert.match(await login.text(),new RegExp('Sign in to '+client.name));
+   const approved=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+token});assert.equal(approved.status,303);
+   const complete=new URL(approved.headers.get('location'));assert.equal(complete.origin,origin);assert.equal(complete.searchParams.has('token'),false);
+   const finished=await f.request(host,complete.pathname.replace('/pidp','')+complete.search,{cookie:started.browser});assert.equal(finished.status,303);assert.equal(finished.headers.get('location'),origin+'/auth/callback?next=%2Fpeople');
+   const session=finished.headers.getSetCookie().find(c=>c.startsWith('pidp_session='));assert.ok(!session.includes('Domain='));const claims=await verifyJwt(f.env,decodeURIComponent(session.split(';')[0].slice('pidp_session='.length)));assert.equal(claims.actor_type,'website_user');assert.equal(claims.website_id,'site');assert.equal(claims.sub,'member');assert.notEqual(claims.is_sysadmin,true);
   }
  }finally{f.sql.close()}
 });

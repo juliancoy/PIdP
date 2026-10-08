@@ -20,6 +20,7 @@ export interface Env {
   ACCESS_TOKEN_EXPIRE_MINUTES?: string;
   SESSION_COOKIE_DOMAIN?: string;
   PORTAL_AUTH_ORIGINS?: string;
+  PORTAL_CLIENTS_JSON?: string;
   PORTAL_SSO_APP_SLUG?: string;
   ALLOWED_ORIGINS?: string;
   ADMIN_EMAILS?: string;

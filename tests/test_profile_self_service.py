@@ -125,6 +125,11 @@ class ProfileSelfServiceTests(unittest.TestCase):
     def test_browser_account_link_requires_both_sessions_and_same_browser(self):
         import time
         import account_link_browser
+        from models import PortalSsoRequest
+        ticket = 'recovery-ticket'
+        self.db.add(PortalSsoRequest(id=ticket,browser_hash='bound-browser',origin='https://portal.example',
+            next='https://portal.example/auth/callback?next=%2Fevents%2Fpitch',website_id=str(self.site_id),app='site',expires_at=int(time.time())+600))
+        self.db.commit()
         member = self.db.get(self.WebsiteUser, self.member_id)
         secondary_id = uuid4()
         member.id = secondary_id
@@ -132,31 +137,64 @@ class ProfileSelfServiceTests(unittest.TestCase):
         primary = {'sub': str(self.member_id), 'actor_type': 'owner', 'exp': int(time.time())+600}
         secondary = {'sub': str(secondary_id), 'actor_type': 'website_user', 'website_id': str(self.site_id), 'exp': int(time.time())+600}
         self.decoder.side_effect = lambda token: primary if token == 'primary' else secondary
-        with patch.object(account_link_browser, 'safe_decode_token', return_value=primary):
+        with patch.object(account_link_browser, 'safe_decode_token', return_value=primary), patch.multiple(account_link_browser.settings, public_base_url='https://id.example',portal_auth_origins='https://portal.example',portal_clients_json=__import__('json').dumps({'https://portal.example':{'name':'Test Portal','accountApp':'site','callbacks':['/auth/callback']}})):
             browser = TestClient(self.main.app, base_url='https://id.example')
             try:
+                login=browser.get('/app/login?app=site&next='+__import__('urllib.parse',fromlist=['quote']).quote('https://id.example/auth/sso/authorize?request=recovery-ticket',safe=''))
+                self.assertIn('Sign in to Test Portal',login.text)
                 browser.cookies.set('pidp_token', 'primary')
-                review = browser.get('/auth/account-links/connect?app=site')
+                review = browser.get('/auth/account-links/connect?app=site&sso=recovery-ticket')
                 self.assertEqual(review.status_code, 200, review.text)
-                self.assertEqual(browser.post('/auth/account-links/connect?app=site', headers={'Origin': 'https://evil.example'}).status_code,403)
-                start = browser.post('/auth/account-links/connect?app=site', headers={'Origin': 'https://id.example'}, follow_redirects=False)
+                self.assertEqual(browser.post('/auth/account-links/connect?app=site&sso=recovery-ticket', headers={'Origin': 'https://evil.example'}).status_code,403)
+                start = browser.post('/auth/account-links/connect?app=site&sso=recovery-ticket', headers={'Origin': 'https://id.example'}, follow_redirects=False)
                 self.assertEqual(start.status_code,303,start.text)
                 self.assertIn('app=site',start.headers['location'])
                 self.assertIn('HttpOnly',start.headers['set-cookie'])
                 self.assertIn('Secure',start.headers['set-cookie'])
                 self.assertNotIn('primary',start.headers['location'])
                 browser.cookies.set('pidp_token', 'secondary')
-                self.assertEqual(browser.post('/auth/account-links/complete',headers={'Origin':'https://id.example'}).status_code,409)
-                review = browser.get('/auth/account-links/finish')
+                self.assertEqual(browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://id.example'}).status_code,409)
+                review = browser.get('/auth/account-links/finish?sso=recovery-ticket')
                 self.assertEqual(review.status_code,200,review.text)
                 self.assertIn('Link these accounts',review.text)
-                self.assertEqual(browser.post('/auth/account-links/complete',headers={'Origin':'https://evil.example'}).status_code,403)
-                complete = browser.post('/auth/account-links/complete',headers={'Origin':'https://id.example'})
-                self.assertEqual(complete.status_code,200,complete.text)
+                self.assertEqual(browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://evil.example'}).status_code,403)
+                complete = browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://id.example'},follow_redirects=False)
+                self.assertEqual(complete.status_code,303,complete.text)
+                self.assertEqual(complete.headers['location'],'https://id.example/auth/sso/authorize?request=recovery-ticket')
                 self.assertEqual(browser.get('/auth/me',headers={'Authorization':'Bearer secondary'}).json()['id'],str(self.member_id))
-                self.assertNotEqual(browser.post('/auth/account-links/complete',headers={'Origin':'https://id.example'}).status_code,200)
+                self.assertNotEqual(browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://id.example'}).status_code,200)
             finally:
                 browser.close()
+
+    def test_browser_password_login_uses_the_member_namespace_and_never_falls_back_to_owner(self):
+        member=self.db.get(self.WebsiteUser,self.member_id)
+        member.hashed_password='fixture-hash'
+        member.identity_data={'email_verified':True}
+        self.db.commit()
+        browser=TestClient(self.main.app,base_url='https://id.example',follow_redirects=False)
+        try:
+            with patch.object(self.main,'verify_password',return_value=True), patch.object(self.main,'_create_website_user_access_token',return_value='member-session') as issue, patch.object(self.main,'authenticate_user') as owner_auth:
+                response=browser.post('/session/login',headers={'Origin':'https://id.example'},data={'app':'site','email':member.email,'password':'fixture','next':'/chat'})
+                self.assertEqual(response.status_code,303,response.text)
+                self.assertEqual(response.headers['location'],'/chat')
+                self.assertIn('member-session',response.headers['set-cookie'])
+                self.assertEqual(issue.call_args.args[0].website_id,self.site_id)
+                owner_auth.assert_not_called()
+                bad=browser.post('/session/login',headers={'Origin':'https://id.example'},data={'app':'missing','email':member.email,'password':'fixture','next':'/chat'})
+                self.assertEqual(bad.status_code,404)
+                owner_auth.assert_not_called()
+        finally:
+            browser.close()
+
+    def test_browser_handoffs_use_cookies_while_native_returns_remain_explicit(self):
+        from starlette.requests import Request
+        request=Request({'type':'http','scheme':'https','server':('id.example',443),'path':'/','headers':[]})
+        response=self.main._session_redirect(request,'https://id.example/auth/sso/authorize?request=ticket','fixture-session')
+        self.assertNotIn('fixture-session',response.headers['location'])
+        self.assertIn('HttpOnly',response.headers['set-cookie'])
+        with patch.object(self.main.settings,'allowed_native_redirect_schemes','org.arkavo.portal'):
+            response=self.main._session_redirect(request,'org.arkavo.portal://auth/callback','fixture-session')
+            self.assertIn('token=fixture-session',response.headers['location'])
 
     def test_account_link_api_requires_proofs_and_a_one_use_preview(self):
         member = self.db.get(self.WebsiteUser, self.member_id)

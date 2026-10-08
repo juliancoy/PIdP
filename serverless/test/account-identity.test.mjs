@@ -7,7 +7,7 @@ import {signJwt} from '../src/crypto.ts';
 import {resolveAccountIdentity} from '../src/accountIdentity.ts';
 function fixture(){
  const sql=new DatabaseSync(':memory:');
- for(const name of ['0001_initial.sql','0010_account_identity_links.sql'])sql.exec(readFileSync(new URL(`../migrations/${name}`,import.meta.url),'utf8'));
+ for(const name of ['0001_initial.sql','0010_account_identity_links.sql','0009_portal_sso.sql'])sql.exec(readFileSync(new URL(`../migrations/${name}`,import.meta.url),'utf8'));
  sql.exec(`INSERT INTO users(id,email,full_name) VALUES ('person','same@example.test','Person'),('other','other@example.test','Other');
  INSERT INTO websites(id,owner_id,name,slug) VALUES ('site','other','Site','site');
  INSERT INTO website_users(id,website_id,email,full_name) VALUES ('member','site','same@example.test','Member');`);
@@ -77,5 +77,27 @@ test('browser linking binds both authenticated accounts to one browser and expli
   const applied=await call('/complete','POST',`${cookie}; pidp_session=${secondary}`,'https://id.example');assert.equal(applied.status,200);
   assert.equal((await resolveAccountIdentity(f.env,'website:site:member')).canonical_user_id,'person');
   assert.equal((await call('/complete','POST',`${cookie}; pidp_session=${secondary}`,'https://id.example')).status,409);
+ }finally{f.sql.close()}
+});
+
+
+test('SSO recovery preserves the validated portal return through two-account confirmation',async()=>{
+ const f=fixture();try{
+  f.env.PORTAL_CLIENTS_JSON=JSON.stringify({'https://portal.example':{name:'Test Portal',accountApp:'site',callbacks:['/auth/callback']}});f.env.PUBLIC_BASE_URL='https://id.example';f.env.PORTAL_AUTH_ORIGINS='https://portal.example';f.env.PORTAL_SSO_APP_SLUG='site';
+  const primary=await signJwt(f.env,{sub:'person'}),secondary=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const call=(path,method='GET',cookie='',origin)=>app.request('https://id.example'+path,{method,headers:{cookie,...(origin?{origin}:{})}},f.env);
+  const started=await app.request('https://portal.example/auth/sso/start?app=site&next='+encodeURIComponent('https://portal.example/auth/callback?next=%2Fevents%2Fpitch'),{},f.env);
+  const authorize=new URL(started.headers.get('location'));const id=authorize.searchParams.get('request');
+  const recovery=await call(authorize.pathname+authorize.search,'GET','pidp_session='+primary);assert.equal(recovery.status,200);assert.match(await recovery.text(),/Link my portal account/);
+  const path='/auth/account-links/connect?app=site&sso='+id;
+  assert.equal((await call(path.replace(id,'missing'),'GET','pidp_session='+primary)).status,400);
+  const startedLink=await call(path,'POST','pidp_session='+primary,'https://id.example');assert.equal(startedLink.status,303);
+  const login=new URL(startedLink.headers.get('location'));assert.equal(login.pathname,'/app/login');const finish=new URL(login.searchParams.get('next'));assert.equal(finish.searchParams.get('sso'),id);
+  const cookies=startedLink.headers.getSetCookie()[0].split(';')[0]+'; pidp_session='+secondary;
+  const reviewed=await call(finish.pathname+finish.search,'GET',cookies);assert.equal(reviewed.status,200);assert.match(await reviewed.text(),new RegExp('/complete\\?sso='+id));
+  const confirmed=await call('/auth/account-links/complete?sso='+id,'POST',cookies,'https://id.example');assert.equal(confirmed.status,303);assert.equal(new URL(confirmed.headers.get('location')).searchParams.get('request'),id);
+  const resumed=await call(authorize.pathname+authorize.search,'GET','pidp_session='+secondary);assert.equal(resumed.status,303);assert.equal(new URL(resumed.headers.get('location')).origin,'https://portal.example');
+  assert.equal(f.sql.prepare('SELECT next FROM portal_sso_requests').get().next,'https://portal.example/auth/callback?next=%2Fevents%2Fpitch');
+  assert.equal(f.sql.prepare('SELECT subject FROM portal_sso_requests').get().subject,'website:site:member');
  }finally{f.sql.close()}
 });

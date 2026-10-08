@@ -1,3 +1,4 @@
+import {browserReturn} from './portalClients';
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { googleLoginHint } from './loginHints';
 import type { Context } from "hono";
@@ -179,21 +180,8 @@ function allowedNativeRedirect(env: Env, target: string): boolean {
 }
 
 function resolveRedirectTarget(env: Env, rawTarget: string | undefined, website: WebsiteRow | null): string | undefined {
-  const target = String(rawTarget || "").trim();
-  if (!target) return env.FRONTEND_REDIRECT_URL || "/";
-  if (target.startsWith("/")) return target;
-  if (allowedNativeRedirect(env, target)) return target;
-  const targetOrigin = originOf(target);
-  if (!targetOrigin) return env.FRONTEND_REDIRECT_URL || "/";
-  if (portalAuthOrigins(env).includes(targetOrigin)) return target;
-  if (targetOrigin === originOf(env.PUBLIC_BASE_URL) && ["/auth/sso/authorize", "/auth/account-links/connect", "/auth/account-links/finish"].includes(new URL(target).pathname)) return target;
-  const frontendOrigin = originOf(env.FRONTEND_REDIRECT_URL);
-  if (frontendOrigin && targetOrigin === frontendOrigin) return target;
-  if (website) {
-    const allowed = parseJson<string[]>(website.allowed_redirect_origins, []);
-    if (allowed.includes(targetOrigin)) return target;
-  }
-  return env.FRONTEND_REDIRECT_URL || "/";
+  const allowed=website?parseJson<string[]>(website.allowed_redirect_origins,[]):[];
+  return browserReturn(env,String(rawTarget||'').trim(),allowed) || browserReturn(env,env.FRONTEND_REDIRECT_URL||'/') || '/';
 }
 
 function socialIdentityPayload(profile: SocialProfile, schemaFields: Record<string, WebsiteSchemaField>): Record<string, unknown> {
@@ -413,6 +401,7 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
 
   let loginWebsite: WebsiteRow | null = null;
   if (state.app_slug) loginWebsite = await websiteBySlug(c.env.DB, normalizeSlug(state.app_slug));
+  if(state.app_slug && !loginWebsite)fail(404,"Application not found");
   if (!loginWebsite && !state.force_owner) {
     loginWebsite = await findWebsiteFromHost(c.env, normalizeHost(new URL(c.req.url).host));
   }

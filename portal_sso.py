@@ -6,7 +6,8 @@ import time
 from uuid import UUID
 from urllib.parse import parse_qs, urlencode, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
+from html import escape
 from sqlalchemy import select, delete, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
@@ -14,6 +15,7 @@ from db import get_session
 from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
 from security import safe_decode_token, create_access_token
 from login_hints import google_login_hint
+from portal_clients import portal_client, sso_return
 
 router = APIRouter()
 BROWSER = '__Host-pidp_sso_browser'
@@ -33,29 +35,52 @@ def origin(request):
 def issuer(request):
     return (settings.public_base_url or str(request.base_url)).rstrip('/')
 
+def unique_query(request):
+    if any(len(request.query_params.getlist(key)) != 1 for key in request.query_params):
+        raise HTTPException(400, 'invalid_request')
+
 def redirect(url):
     return RedirectResponse(url, status_code=303, headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
 
+@router.get('/auth/sso/client')
+async def registration(request: Request):
+    client = portal_client(origin(request))
+    if not client:
+        raise HTTPException(400, 'invalid_portal')
+    return {**client,'origin':client.get('restartOrigin') or origin(request)}
+
 @router.get('/auth/sso/start')
 async def start(request: Request, session: AsyncSession = Depends(get_session)):
+    unique_query(request)
     destination = origin(request)
-    if destination not in origins():
+    client = portal_client(destination)
+    if not client:
         raise HTTPException(400, 'invalid_portal')
-    app_slug = request.query_params.get('app', '')
-    if not settings.portal_sso_app_slug or app_slug != settings.portal_sso_app_slug:
+    app_slug = request.query_params.get('app') or client['accountApp']
+    if app_slug != client['accountApp']:
         raise HTTPException(400, 'unknown_application')
-    website = (await session.execute(select(Website).where(Website.slug == app_slug))).scalar_one_or_none()
-    if website is None:
-        raise HTTPException(503, 'application_not_registered')
-    target = request.query_params.get('next', destination + '/auth/callback')
-    parsed = urlparse(target)
-    bridge_params = parse_qs(parsed.query, keep_blank_values=True)
-    bridge_return = parsed.path == '/pidp/oauth/mcp/link' and set(bridge_params) == {'request'} and len(bridge_params['request']) == 1 and re.fullmatch(r'login_[A-Za-z0-9_-]{43,100}', bridge_params['request'][0]) and not parsed.fragment
-    if f'{parsed.scheme}://{parsed.netloc}' != destination or (parsed.path not in ('/auth/callback','/p/auth/callback') and not bridge_return) or parsed.username or parsed.password:
+    target = sso_return(destination, app_slug, request.query_params.get('next') or '/auth/callback')
+    if not target:
         raise HTTPException(400, 'invalid_return')
     provider = request.query_params.get('provider')
     if provider and provider not in ('google','github'):
         raise HTTPException(400, 'invalid_provider')
+    if client.get('restartOrigin'):
+        destination_client = portal_client(client['restartOrigin'])
+        if not destination_client:
+            raise HTTPException(400, 'invalid_portal')
+        parsed = urlparse(target)
+        callback = client['restartOrigin']+'/auth/callback'+('?' + parsed.query if parsed.query else '')
+        params = {'app':destination_client['accountApp'],'next':callback}
+        if provider:
+            params['provider'] = provider
+        hint = google_login_hint(provider, request.query_params.get('login_hint'))
+        if hint:
+            params['login_hint'] = hint
+        return redirect(client['restartOrigin']+'/pidp/auth/sso/start?' + urlencode(params))
+    website = (await session.execute(select(Website).where(Website.slug == app_slug))).scalar_one_or_none()
+    if website is None:
+        raise HTTPException(503, 'application_not_registered')
     window = int(time.time()) // 60
     await session.execute(delete(PortalSsoLimit).where(PortalSsoLimit.window_start < window-1))
     permitted = (await session.execute(text("""INSERT INTO portal_sso_limits(ip_hash,window_start,requests) VALUES(:ip,:window,1)
@@ -83,12 +108,13 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
 
 @router.get('/auth/sso/authorize')
 async def authorize(request: Request, session: AsyncSession = Depends(get_session)):
+    unique_query(request)
     parsed_issuer = urlparse(issuer(request))
     if origin(request) != f'{parsed_issuer.scheme}://{parsed_issuer.netloc}' or request.headers.get('x-forwarded-host'):
         raise HTTPException(400, 'issuer_required')
     row = (await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == request.query_params.get('request'),
         PortalSsoRequest.expires_at >= int(time.time()), PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
-    if not row or row.origin not in origins():
+    if not row or not sso_return(row.origin,row.app,row.next):
         raise HTTPException(400, 'expired_request')
     if not row.website_id:
         raise HTTPException(503, 'application_not_registered')
@@ -107,7 +133,10 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
                 AccountIdentityLink.website_id == UUID(row.website_id),
                 WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
             if not user:
-                raise HTTPException(403, 'account_link_required')
+                link = issuer(request)+'/auth/account-links/connect?'+urlencode({'app':row.app,'sso':row.id})
+                resume = issuer(request)+'/auth/sso/authorize?'+urlencode({'request':row.id})
+                login = issuer(request)+'/app/login?'+urlencode({'app':row.app,'next':resume})
+                return HTMLResponse(f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Continue to {escape(portal_client(row.origin)["name"])}</title><main><h1>Connect your {escape(portal_client(row.origin)["name"])} account</h1><p>You are signed in to your primary PIdP account. Connect your portal account to continue with the same identity.</p><p><a href="{escape(link)}">Link my portal account</a></p><p><a href="{escape(login)}">Sign in to the portal separately</a></p><p>Linking requires signing in to both accounts and confirming the connection.</p></main></html>',headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'; base-uri 'none'"})
     hint = google_login_hint(request.query_params.get('provider'), request.query_params.get('login_hint'))
     if not user or hint:
         provider = request.query_params.get('provider')
@@ -131,6 +160,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
 
 @router.get('/auth/sso/complete')
 async def complete(request: Request, session: AsyncSession = Depends(get_session)):
+    unique_query(request)
     browser = request.cookies.get(BROWSER)
     if not browser:
         raise HTTPException(400, 'invalid_browser')
@@ -138,7 +168,7 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
         PortalSsoRequest.code_hash == digest(request.query_params.get('code','')), PortalSsoRequest.browser_hash == digest(browser),
         PortalSsoRequest.origin == origin(request), PortalSsoRequest.expires_at >= int(time.time())).returning(PortalSsoRequest))).scalar_one_or_none()
     await session.commit()
-    if not row or not row.subject or row.app != settings.portal_sso_app_slug or row.origin not in origins():
+    if not row or not row.subject or not sso_return(row.origin,row.app,row.next):
         raise HTTPException(400, 'invalid_handoff')
     parts = row.subject.split(':')
     if len(parts) == 3 and parts[0] == 'website' and parts[1] == row.website_id:

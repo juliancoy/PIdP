@@ -4,28 +4,38 @@ import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import { websiteBySlug, websiteUserById, userById } from './db';
 import type { Env } from './types';
 import { googleLoginHint } from './loginHints';
+import { portalClient, ssoReturn } from './portalClients';
 
+const escapeHtml=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const browserCookie = '__Host-pidp_sso_browser';
 type Ticket = { id: string; browser_hash: string; origin: string; next: string; website_id: string; app: string; subject: string | null; code_hash: string | null; expires_at: number };
 const now = () => Math.floor(Date.now()/1000);
-function origins(env: Env) { return (env.PORTAL_AUTH_ORIGINS || '').split(',').map(s=>s.trim()).filter(Boolean); }
 function origin(c: Context<{ Bindings: Env }>) {
  const host = c.req.header('x-forwarded-host');
  return host && c.req.header('x-forwarded-proto') === 'https' ? `https://${host}` : new URL(c.req.url).origin;
 }
 export function portalSso(issue: (env: Env, subject: string) => Promise<string>) {
  const app = new Hono<{Bindings:Env}>();
- app.use('/auth/sso/*', async (c,next) => { c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');await next(); });
+ app.use('/auth/sso/*', async (c,next) => { c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');const params=new URL(c.req.url).searchParams;for(const key of params.keys())if(params.getAll(key).length!==1)return c.json({error:'invalid_request'},400);await next(); });
+ app.get('/auth/sso/client',c=>{const client=portalClient(c.env,origin(c));return client?c.json({name:client.name,accountApp:client.accountApp,callbacks:client.callbacks,origin:client.restartOrigin||origin(c)}):c.json({error:'invalid_portal'},400)});
  app.get('/auth/sso/start', async c => {
-  const destination=origin(c);
-  if(!origins(c.env).includes(destination))return c.json({error:'invalid_portal'},400);
-  const appSlug = c.req.query('app') || '';
-  if (!c.env.PORTAL_SSO_APP_SLUG || appSlug !== c.env.PORTAL_SSO_APP_SLUG) return c.json({error:'unknown_application'},400);
+  const destination=origin(c),client=portalClient(c.env,destination);
+  if(!client)return c.json({error:'invalid_portal'},400);
+  const appSlug=c.req.query('app') || client.accountApp;
+  if(appSlug!==client.accountApp)return c.json({error:'unknown_application'},400);
+  const target=ssoReturn(c.env,destination,appSlug,c.req.query('next')||'/auth/callback');
+  if(!target)return c.json({error:'invalid_return'},400);
+  const provider=c.req.query('provider');if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
+  if(client.restartOrigin){
+   const destinationClient=portalClient(c.env,client.restartOrigin);if(!destinationClient)return c.json({error:'invalid_portal'},400);
+   const callback=new URL('/auth/callback',client.restartOrigin);callback.search=target.search;
+   const restart=new URL('/pidp/auth/sso/start',client.restartOrigin);restart.searchParams.set('app',destinationClient.accountApp);restart.searchParams.set('next',callback.toString());
+   if(provider)restart.searchParams.set('provider',provider);
+   const hint=googleLoginHint(provider,c.req.query('login_hint'));if(hint)restart.searchParams.set('login_hint',hint);
+   return c.redirect(restart.toString(),303);
+  }
   const website=await websiteBySlug(c.env.DB,appSlug);
-  if (!website) return c.json({error:'application_not_registered'},503);
-  const target=new URL(c.req.query('next') || '/auth/callback',destination);
-  const bridgeReturn = target.pathname === '/pidp/oauth/mcp/link' && target.searchParams.getAll('request').length === 1 && /^login_[A-Za-z0-9_-]{43,100}$/.test(target.searchParams.get('request') || '') && [...target.searchParams.keys()].every(key => key === 'request') && !target.hash;
-  if(target.origin!==destination || (!['/auth/callback','/p/auth/callback'].includes(target.pathname) && !bridgeReturn) || target.username || target.password)return c.json({error:'invalid_return'},400);
+  if(!website)return c.json({error:'application_not_registered'},503);
   const window = Math.floor(now()/60);
   await c.env.DB.prepare('DELETE FROM portal_sso_limits WHERE window_start < ?').bind(window-1).run();
   const permitted = await c.env.DB.prepare(`INSERT INTO portal_sso_limits(ip_hash,window_start,requests) VALUES(?,?,1)
@@ -41,7 +51,6 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   setCookie(c,browserCookie,browser,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:600});
   const authorize=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);
   authorize.searchParams.set('request',id);
-  const provider=c.req.query('provider');if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
   if(provider)authorize.searchParams.set('provider',provider);
   const hint=googleLoginHint(provider,c.req.query('login_hint'));
   if(hint)authorize.searchParams.set('login_hint',hint);
@@ -50,7 +59,7 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
  app.get('/auth/sso/authorize', async c => {
   if(new URL(c.req.url).origin!==new URL(c.env.PUBLIC_BASE_URL || c.req.url).origin || c.req.header('x-forwarded-host'))return c.json({error:'issuer_required'},400);
   const row=await c.env.DB.prepare('SELECT * FROM portal_sso_requests WHERE id=? AND expires_at>=? AND code_hash IS NULL').bind(c.req.query('request') || '',now()).first<Ticket>();
-  if(!row || !origins(c.env).includes(row.origin))return c.json({error:'expired_request'},400);
+  if(!row || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'expired_request'},400);
   if(!row.website_id)return c.json({error:'application_not_registered'},503);
   let account;
   try { const payload=await verifyJwt(c.env,getCookie(c,'pidp_session') || '');
@@ -64,7 +73,13 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
       JOIN account_identity_links link ON link.website_user_id=member.id
       WHERE link.canonical_user_id=? AND link.website_id=? AND member.website_id=? AND member.is_active=1`)
       .bind(owner.id,row.website_id,row.website_id).first<{id:string}>();
-     if(!linked)return c.json({error:'account_link_required'},403);
+     if(!linked){
+      const link=new URL('/auth/account-links/connect',c.env.PUBLIC_BASE_URL);link.searchParams.set('app',row.app);link.searchParams.set('sso',row.id);
+      const resume=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);resume.searchParams.set('request',row.id);
+      const login=new URL('/app/login',c.env.PUBLIC_BASE_URL);login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
+      c.header('Content-Security-Policy',"default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+      return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)}</title><main><h1>Connect your ${escapeHtml(portalClient(c.env,row.origin)!.name)} account</h1><p>You are signed in to your primary PIdP account. Connect your portal account to continue with the same identity.</p><p><a href="${link.toString().replaceAll('&','&amp;')}">Link my portal account</a></p><p><a href="${login.toString().replaceAll('&','&amp;')}">Sign in to the portal separately</a></p><p>Linking requires signing in to both accounts and confirming the connection.</p></main></html>`);
+     }
      account=`website:${row.website_id}:${linked.id}`;
     }
    }
@@ -90,7 +105,7 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   const browser=getCookie(c,browserCookie);if(!browser)return c.json({error:'invalid_browser'},400);
   const row=await c.env.DB.prepare('DELETE FROM portal_sso_requests WHERE id=? AND code_hash=? AND browser_hash=? AND origin=? AND expires_at>=? RETURNING *')
    .bind(c.req.query('request') || '',await sha256Hex(c.req.query('code') || ''),await sha256Hex(browser),origin(c),now()).first<Ticket>();
-  if(!row?.website_id || !row.subject?.startsWith(`website:${row.website_id}:`) || row.app !== c.env.PORTAL_SSO_APP_SLUG || !origins(c.env).includes(row.origin))return c.json({error:'invalid_handoff'},400);
+  if(!row?.website_id || !row.subject?.startsWith(`website:${row.website_id}:`) || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'invalid_handoff'},400);
   let token;try{token=await issue(c.env,row.subject);}catch{return c.json({error:'inactive_account'},401);}
   setCookie(c,'pidp_session',token,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || '525600')*60});
   setCookie(c,browserCookie,'',{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:0});

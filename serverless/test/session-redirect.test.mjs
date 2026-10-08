@@ -28,9 +28,9 @@ test("browser sessions can be scoped to the parent portal domain", () => {
   assert.match(oauthSource, /\.\.\.\(domain \? \{ domain \} : \{\}\)/);
 });
 
-test("browser app login can return to configured tenant portal origins", () => {
-  const source = readFileSync(path.join(import.meta.dirname, "../src/index.ts"), "utf8");
-
-  assert.match(source, /function portalAuthOrigins/);
-  assert.match(source, /portalAuthOrigins\(env\)\.includes\(targetOrigin\)/);
+test("browser app login uses the shared destination policy", async () => {
+  const {browserReturn}=await import('../src/portalClients.ts');
+  const env={PUBLIC_BASE_URL:'https://id.example',PORTAL_AUTH_ORIGINS:'https://medtech.social'};
+  assert.equal(browserReturn(env,'https://medtech.social/auth/callback'),'https://medtech.social/auth/callback');
+  for(const value of ['//evil.example','/\\evil.example','https://evil.example','https://name:password@medtech.social/auth/callback'])assert.equal(browserReturn(env,value),null);
 });

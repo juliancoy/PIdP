@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from portal_clients import login_portal, browser_return
+
 import json
 import asyncio
 from retention import retention_loop
@@ -193,6 +195,16 @@ def _set_session_cookie(response: Response, token: str) -> None:
     )
 
 
+def _session_redirect(request: Request, target: str | None, token: str) -> RedirectResponse:
+    destination = target or _resolve_frontend_redirect_target(request, settings.frontend_redirect_url) or '/'
+    if _is_native_redirect_target(destination):
+        separator = '&' if '#' in destination else '#'
+        return RedirectResponse(destination + separator + urlencode({'token':token,'token_type':'bearer'}),status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(destination,status_code=status.HTTP_303_SEE_OTHER)
+    _set_session_cookie(response,token)
+    return response
+
+
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
 
@@ -246,18 +258,17 @@ def _render_template(
     )
 
 
-def _resolve_frontend_redirect_target(request: Request, raw_target: str | None) -> str | None:
+def _resolve_frontend_redirect_target(request: Request, raw_target: str | None, extra_origins=()) -> str | None:
     redirect_target = (raw_target or "").strip() or None
     if not redirect_target:
         return None
-    if redirect_target.startswith("/"):
+    if not browser_return(redirect_target, str(request.base_url).rstrip('/'), extra_origins):
+        return None
+    if redirect_target.startswith('/'):
         return redirect_target
     parsed = urlparse(redirect_target)
-    native_scheme = (parsed.scheme or "").strip().lower()
-    if native_scheme and native_scheme in settings.native_redirect_schemes_list:
+    if parsed.scheme in settings.native_redirect_schemes_list:
         return redirect_target
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
     if parsed.netloc == request.url.netloc:
         return f"{parsed.path or '/'}{f'?{parsed.query}' if parsed.query else ''}"
     request_lane = _host_environment_lane(_request_host(request))
@@ -1228,12 +1239,12 @@ def _resolve_frontend_redirect_for_website(
     raw_target: str | None,
     website: Website | None,
 ) -> str | None:
-    resolved = _resolve_frontend_redirect_target(request, raw_target)
+    resolved = _resolve_frontend_redirect_target(request, raw_target, _website_allowed_origins(website) if website else ())
     if not resolved:
         return None
     if _is_native_redirect_target(resolved):
         return resolved
-    if resolved.startswith("/") or website is None:
+    if resolved.startswith("/") or website is None or browser_return(resolved,str(request.base_url).rstrip("/")):
         return resolved
 
     parsed = urlparse(resolved)
@@ -1470,6 +1481,10 @@ async def frontend_app_login(
     if raw_next and not resolved_next:
         LOG.info("Rejected app login redirect target for app=%s next=%s", app_slug or "none", raw_next)
     branding = _website_branding(website)
+    portal = None if force_owner_login else await login_portal(app_slug, raw_next or '/', session,
+        request.headers.get('x-forwarded-proto','https')+'://'+request.headers['x-forwarded-host'] if request.headers.get('x-forwarded-host') else str(request.base_url).rstrip('/'))
+    if portal:
+        branding = {'hero_title': 'Sign in to '+portal['name']}
     if app_slug and not website:
         return _render_template(
             request,
@@ -1530,22 +1545,19 @@ async def frontend_app_login(
 
             if can_bypass:
                 if resolved_next:
-                    if not resolved_next.startswith("/"):
-                        params = urlencode({"token": request_token, "token_type": "bearer"})
-                        return RedirectResponse(f"{resolved_next}#{params}", status_code=status.HTTP_303_SEE_OTHER)
-                    return RedirectResponse(url=resolved_next, status_code=status.HTTP_303_SEE_OTHER)
+                    return _session_redirect(request,resolved_next,request_token)
                 return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
     return _render_template(
         request,
         "home.html",
         {
-            "page_title": f"Sign in to {website.name}" if website else "PIdP Console",
+            "page_title": "Sign in to "+portal["name"] if portal else f"Sign in to {website.name}" if website else "PIdP Console",
             "active_page": "home",
             "login_next": resolved_next or "",
             "login_app_slug": website.slug if website else "",
             "login_force_owner": force_owner_login,
-            "login_app_name": website.name if website else "",
+            "login_app_name": portal["name"] if portal else website.name if website else "",
             "login_app_description": website.description if website else "",
             "login_branding": branding,
             "configuration": {
@@ -1573,6 +1585,8 @@ async def frontend_login(
     app_website = await _resolve_login_website(session, requested_app)
     if not app_website and not requested_app and not force_owner_login:
         app_website = await _resolve_login_website_from_host(session, request)
+    if requested_app and not app_website:
+        raise HTTPException(404,"Application not found")
     app_slug = app_website.slug if app_website else ""
     redirect_target = _resolve_frontend_redirect_for_website(request, next_url, app_website)
     if next_url and not redirect_target:
@@ -1584,8 +1598,14 @@ async def frontend_login(
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    user = await authenticate_user(session, email, password)
-    if not user:
+    if app_website:
+        user = (await session.execute(select(WebsiteUser).where(WebsiteUser.website_id == app_website.id,
+            WebsiteUser.email == email.strip().lower()))).scalar_one_or_none()
+        if not user or not user.hashed_password or not verify_password(password,user.hashed_password):
+            user = None
+    else:
+        user = await authenticate_user(session, email, password)
+    if not user or not user.is_active:
         LOG.info("Login failed for email=%s app=%s", email, app_slug or requested_app or "none")
         return RedirectResponse(
             url=_frontend_login_path(
@@ -1606,17 +1626,12 @@ async def frontend_login(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    token = _create_owner_access_token(user)
+    token = _create_website_user_access_token(user) if app_website else _create_owner_access_token(user)
     LOG.info("Login succeeded for user=%s app=%s", user.email, app_slug or "none")
     if redirect_target:
         request.session["frontend_redirect_url"] = redirect_target
-    redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
-    if redirect_target and not redirect_target.startswith("/"):
-        params = urlencode({"token": token, "token_type": "bearer"})
-        return RedirectResponse(f"{redirect_target}#{params}")
-    response = RedirectResponse(url=redirect_target or "/", status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
-    return response
+    redirect_target = _resolve_frontend_redirect_for_website(request, request.session.pop("frontend_redirect_url", None), app_website)
+    return _session_redirect(request,redirect_target,token)
 
 
 @app.post("/session/register", include_in_schema=False)
@@ -3124,6 +3139,8 @@ async def social_callback(
     login_website: Website | None = None
     if app_slug:
         login_website = await _resolve_login_website(session, app_slug)
+    if app_slug and not login_website:
+        raise HTTPException(404,"Application not found")
     if not login_website and not force_owner_login:
         login_website = await _resolve_login_website_from_host(session, request)
     if login_website and not app_slug:
@@ -3215,25 +3232,8 @@ async def social_callback(
         await session.commit()
         await session.refresh(website_user)
         token = _create_website_user_access_token(website_user)
-        redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
-        if redirect_target:
-            if redirect_target.startswith("/"):
-                response = RedirectResponse(redirect_target, status_code=status.HTTP_303_SEE_OTHER)
-                _set_session_cookie(response, token)
-                return response
-            params = urlencode({"token": token, "token_type": "bearer"})
-            return RedirectResponse(f"{redirect_target}#{params}")
-        if settings.frontend_redirect_url:
-            parsed = urlparse(settings.frontend_redirect_url)
-            if parsed.netloc == request.url.netloc:
-                response = RedirectResponse(parsed.path or "/", status_code=status.HTTP_303_SEE_OTHER)
-                _set_session_cookie(response, token)
-                return response
-            params = urlencode({"token": token, "token_type": "bearer"})
-            return RedirectResponse(f"{settings.frontend_redirect_url}#{params}")
-        response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
-        _set_session_cookie(response, token)
-        return response
+        redirect_target = _resolve_frontend_redirect_for_website(request, request.session.pop("frontend_redirect_url", None), login_website)
+        return _session_redirect(request,redirect_target,token)
 
     result = await session.execute(
         select(User).where(
@@ -3284,24 +3284,7 @@ async def social_callback(
 
     token = _create_owner_access_token(user)
     redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
-    if redirect_target:
-        if redirect_target.startswith("/"):
-            response = RedirectResponse(redirect_target, status_code=status.HTTP_303_SEE_OTHER)
-            _set_session_cookie(response, token)
-            return response
-        params = urlencode({"token": token, "token_type": "bearer"})
-        return RedirectResponse(f"{redirect_target}#{params}")
-    if settings.frontend_redirect_url:
-        parsed = urlparse(settings.frontend_redirect_url)
-        if parsed.netloc == request.url.netloc:
-            response = RedirectResponse(parsed.path or "/", status_code=status.HTTP_303_SEE_OTHER)
-            _set_session_cookie(response, token)
-            return response
-        params = urlencode({"token": token, "token_type": "bearer"})
-        return RedirectResponse(f"{settings.frontend_redirect_url}#{params}")
-    response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
-    return response
+    return _session_redirect(request,redirect_target,token)
 
 
 @app.on_event("shutdown")

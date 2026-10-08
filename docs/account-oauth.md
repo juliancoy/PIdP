@@ -30,6 +30,20 @@ to authenticate both accounts, review the identities, and confirm the link.
 The API equivalent is `/auth/account-links/preview` and `/apply` with both
 session proofs and a one-use, ten-minute receipt.
 
+Regular portal SSO shows an account-linking page when a primary account has no
+linked portal member. Users can authenticate both accounts and confirm the link,
+or sign in to the portal separately. Linking uses the normal password/social
+sign-in page. The original SSO ticket is carried through confirmation, validated
+against its application, expiry, and allowed portal origin, then resumed to the
+saved destination. No identity link or portal session is created by viewing the
+recovery page.
+
+Legacy sign-in requests for `codecollective.us/p/auth/callback` restart on
+`orgportal.cc/pidp/auth/sso/start` before creating a browser-bound ticket. PIdP
+then authenticates and returns to the OrgPortal root callback with the saved
+destination. The existing `code-collective` application slug identifies the
+account namespace; it does not select the portal destination.
+
 `GET /auth/me` returns `id` and `canonical_user_id` for the person, plus
 `account_id` and `account_subject` for the credential's original namespace.
 Linked sign-ins share name, avatar, personal fields, and theme preferences.
@@ -319,3 +333,7 @@ active primary account and PIdP's administrator configuration. Website grants
 always report false. Role removal is visible without issuing a new access token.
 OrgPortal applies this verified authority to catalog profile management while
 preserving portal scopes, resource restrictions and preview/apply receipts.
+
+The normative separation and rollout checklist is
+[Portal identity boundaries](PORTAL_IDENTITY_BOUNDARIES.md). Account namespaces,
+portal products, hostnames, and deployment owners are separate concepts.
