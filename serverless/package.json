@@ -17,7 +17,8 @@
     "test:browser": "node --import tsx --test browser/mcp-forms.mjs",
     "db:migrate:local": "wrangler d1 migrations apply pidp --local",
     "db:migrate:remote": "wrangler d1 migrations apply pidp --remote",
-    "test:portal-browser": "node --import tsx --test browser/portal-signin.mjs"
+    "test:portal-browser": "node --import tsx --test browser/portal-signin.mjs",
+    "test:identity-lab": "node --test identity-lab/clickthrough.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^2.4.0",

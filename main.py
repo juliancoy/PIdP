@@ -1485,6 +1485,8 @@ async def frontend_app_login(
         request.headers.get('x-forwarded-proto','https')+'://'+request.headers['x-forwarded-host'] if request.headers.get('x-forwarded-host') else str(request.base_url).rstrip('/'))
     if portal:
         branding = {'hero_title': 'Sign in to '+portal['name']}
+    elif force_owner_login:
+        branding = {'hero_title': 'Sign in to PIdP'}
     if app_slug and not website:
         return _render_template(
             request,
@@ -3125,7 +3127,7 @@ async def social_login(
     LOG.info("Starting social login provider=%s app=%s", provider, app_slug or "none")
     from login_hints import google_login_hint
     hint = google_login_hint(provider, request.query_params.get('login_hint'))
-    return await client.authorize_redirect(request, redirect_uri, **({'login_hint': hint} if hint else {}))
+    return await client.authorize_redirect(request, redirect_uri, **({**({'login_hint': hint} if hint else {}), **({'prompt': 'select_account'} if provider == 'google' else {})}))
 
 
 @app.get("/auth/{provider}/callback")

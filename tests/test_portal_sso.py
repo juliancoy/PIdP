@@ -44,6 +44,21 @@ class SsoTests(unittest.TestCase):
         self.issue=patch.object(sso,'create_access_token',return_value='local-session');self.issue_mock=self.issue.start()
     def tearDown(self):
         self.issue.stop();self.decode.stop();self.settings.stop();self.client.close();self.db.close();self.engine.dispose()
+    def test_prompt_select_account_and_fresh_login_preserve_context(self):
+        started=self.client.get('/auth/sso/start',params={'prompt':'select_account'})
+        self.assertEqual(started.status_code,303)
+        self.assertIn('prompt=select_account',started.headers['location'])
+        chooser=self.client.get(started.headers['location'])
+        self.assertEqual(chooser.status_code,200)
+        self.assertIn('Choose an account',chooser.text)
+        self.assertIsNone(self.db.query(PortalSsoRequest).one().code_hash)
+        from urllib.parse import urlsplit,parse_qs
+        ticket=parse_qs(urlsplit(started.headers['location']).query)['request'][0]
+        fresh=self.client.get('https://id.example/auth/sso/authorize',params={'request':ticket,'prompt':'login'})
+        self.assertEqual(fresh.status_code,303)
+        self.assertIn('/app/login',fresh.headers['location'])
+        self.assertEqual(self.client.get('/auth/sso/start',params={'prompt':'unsupported'}).status_code,400)
+
     def test_member_handoff_is_bound_to_browser_origin_and_one_use(self):
         for host in ['one.example','two.example']:
             r=self.client.get(f'https://{host}/auth/sso/start',params={'app':'members','next':f'https://{host}/auth/callback?next=%2Fpeople'})

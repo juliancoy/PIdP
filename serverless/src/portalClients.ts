@@ -42,8 +42,9 @@ export async function loginPortal(env:Env,app:string,next:string,requestOrigin?:
   const target=new URL(next,env.PUBLIC_BASE_URL);
   const issuer=new URL(env.PUBLIC_BASE_URL!).origin;
   if(target.origin!==issuer || target.username || target.password)return null;
-  if(target.pathname==='/auth/sso/authorize' && target.searchParams.getAll('request').length===1 && env.DB){
-   const row=await env.DB.prepare('SELECT origin,app,next FROM portal_sso_requests WHERE id=? AND expires_at>=? AND code_hash IS NULL').bind(target.searchParams.get('request'),Math.floor(Date.now()/1000)).first<{origin:string;app:string;next:string}>();
+  const ticketParam=target.pathname==='/auth/sso/authorize'?'request':['/auth/account-links/finish','/auth/account-links/connect'].includes(target.pathname)?'sso':null;
+  if(ticketParam && target.searchParams.getAll(ticketParam).length===1 && env.DB){
+   const row=await env.DB.prepare('SELECT origin,app,next FROM portal_sso_requests WHERE id=? AND expires_at>=? AND code_hash IS NULL').bind(target.searchParams.get(ticketParam),Math.floor(Date.now()/1000)).first<{origin:string;app:string;next:string}>();
    if(row?.app===app && ssoReturn(env,row.origin,row.app,row.next))return portalClient(env,row.origin);
   }
  }catch{return null}

@@ -273,7 +273,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
-  const title = params.ownerMode ? `${params.appName} Owner Login` : params.portalName ? `Sign in to ${params.portalName}` : `${params.appName} Login`;
+  const title = params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to PIdP`;
   return `<!doctype html>
 <html lang="en">
 <head>

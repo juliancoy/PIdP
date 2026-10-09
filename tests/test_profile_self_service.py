@@ -137,7 +137,7 @@ class ProfileSelfServiceTests(unittest.TestCase):
         primary = {'sub': str(self.member_id), 'actor_type': 'owner', 'exp': int(time.time())+600}
         secondary = {'sub': str(secondary_id), 'actor_type': 'website_user', 'website_id': str(self.site_id), 'exp': int(time.time())+600}
         self.decoder.side_effect = lambda token: primary if token == 'primary' else secondary
-        with patch.object(account_link_browser, 'safe_decode_token', return_value=primary), patch.multiple(account_link_browser.settings, public_base_url='https://id.example',portal_auth_origins='https://portal.example',portal_clients_json=__import__('json').dumps({'https://portal.example':{'name':'Test Portal','accountApp':'site','callbacks':['/auth/callback']}})):
+        with patch.object(account_link_browser, 'safe_decode_token', side_effect=lambda token: primary if token == 'primary' else secondary), patch.multiple(account_link_browser.settings, public_base_url='https://id.example',portal_auth_origins='https://portal.example',portal_clients_json=__import__('json').dumps({'https://portal.example':{'name':'Test Portal','accountApp':'site','callbacks':['/auth/callback']}})):
             browser = TestClient(self.main.app, base_url='https://id.example')
             try:
                 login=browser.get('/app/login?app=site&next='+__import__('urllib.parse',fromlist=['quote']).quote('https://id.example/auth/sso/authorize?request=recovery-ticket',safe=''))
@@ -157,6 +157,15 @@ class ProfileSelfServiceTests(unittest.TestCase):
                 review = browser.get('/auth/account-links/finish?sso=recovery-ticket')
                 self.assertEqual(review.status_code,200,review.text)
                 self.assertIn('Link these accounts',review.text)
+                self.assertIn('Use another PIdP account',review.text)
+                self.assertIn('Use another portal account',review.text)
+                switch_path='/auth/account-links/switch?app=site&sso=recovery-ticket&account=portal'
+                self.assertEqual(browser.post(switch_path,headers={'Origin':'https://evil.example'},follow_redirects=False).status_code,403)
+                switched=browser.post(switch_path,headers={'Origin':'https://id.example'},follow_redirects=False)
+                self.assertEqual(switched.status_code,303,switched.text)
+                self.assertIn('prompt=select_account',switched.headers['location'])
+                self.assertEqual(browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://id.example'}).status_code,409)
+                self.assertEqual(browser.get('/auth/account-links/finish?sso=recovery-ticket').status_code,200)
                 self.assertEqual(browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://evil.example'}).status_code,403)
                 complete = browser.post('/auth/account-links/complete?sso=recovery-ticket',headers={'Origin':'https://id.example'},follow_redirects=False)
                 self.assertEqual(complete.status_code,303,complete.text)

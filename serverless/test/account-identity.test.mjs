@@ -101,3 +101,19 @@ test('SSO recovery preserves the validated portal return through two-account con
   assert.equal(f.sql.prepare('SELECT subject FROM portal_sso_requests').get().subject,'website:site:member');
  }finally{f.sql.close()}
 });
+
+test('switching accounts requires the browser origin and discards the earlier confirmed proof',async()=>{
+ const f=fixture();try{
+  const primary=await signJwt(f.env,{sub:'person'}),secondary=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const call=(path,cookie,origin)=>app.request('https://id.example/auth/account-links'+path,{method:'POST',headers:{cookie,origin}},f.env);
+  const start=await call('/connect?app=site','pidp_session='+primary,'https://id.example');
+  const bound=start.headers.getSetCookie()[0].split(';')[0]+'; pidp_session='+secondary;
+  const review=await app.request('https://id.example/auth/account-links/finish',{headers:{cookie:bound}},f.env);assert.equal(review.status,200);
+  assert.equal((await call('/switch?app=site&account=portal',bound,'https://evil.example')).status,403);
+  const switched=await call('/switch?app=site&account=portal',bound,'https://id.example');assert.equal(switched.status,303);
+  assert.equal(f.sql.prepare('SELECT subject FROM account_identity_link_requests').get().subject,null);
+  assert.equal((await call('/complete',bound,'https://id.example')).status,409);
+  const primarySwitch=await call('/switch?app=site&account=primary',bound,'https://id.example');assert.equal(primarySwitch.status,303);
+  assert.equal(f.sql.prepare('SELECT count(*) n FROM account_identity_link_requests').get().n,0);
+ }finally{f.sql.close()}
+});

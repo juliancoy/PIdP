@@ -360,7 +360,7 @@ export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Respons
   authorize.searchParams.set("state", stateValue);
   authorize.searchParams.set("code_challenge", codeChallenge);
   authorize.searchParams.set("code_challenge_method", "S256");
-  if (cfg.provider === "google") authorize.searchParams.set("access_type", "online");
+  if (cfg.provider === "google") { authorize.searchParams.set("access_type", "online"); authorize.searchParams.set("prompt", "select_account"); }
   const hint = googleLoginHint(cfg.provider, c.req.query('login_hint'));
   if (hint) authorize.searchParams.set('login_hint', hint);
   return c.redirect(authorize.toString(), 303);

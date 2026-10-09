@@ -104,3 +104,5 @@ provider callback URLs remain on PIdP; browser tokens never travel in return
 URLs. Explicit native app deep links retain their existing token handoff.
 
 PIdP Worker release: `5a44fb80-3cb6-4cb9-b04e-4572cad47aea`. The Python backend implementation is tested in source; production continues to use the single Worker issuer. No account namespace or membership migration was performed.
+
+Account selection, link recovery, and the isolated Docker clickthrough are documented in [the identity audit](testing/IDENTITY_CLICKTHROUGH_AUDIT.md).

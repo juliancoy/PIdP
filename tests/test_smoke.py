@@ -120,7 +120,7 @@ class PidpSmokeTests(unittest.TestCase):
 
     def test_social_login_rejects_unregistered_next_before_oauth(self):
         class _FakeOAuthClient:
-            async def authorize_redirect(self, request, redirect_uri):
+            async def authorize_redirect(self, request, redirect_uri, **kwargs):
                 return JSONResponse(
                     {
                         "saved_next": request.session.get("frontend_redirect_url"),
@@ -426,7 +426,7 @@ class PidpSmokeTests(unittest.TestCase):
         )
 
         class _FakeOAuthClient:
-            async def authorize_redirect(self, request, redirect_uri):
+            async def authorize_redirect(self, request, redirect_uri, **kwargs):
                 return JSONResponse(
                     {
                         "saved_next": request.session.get("frontend_redirect_url"),

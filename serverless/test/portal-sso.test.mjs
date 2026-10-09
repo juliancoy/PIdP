@@ -158,3 +158,17 @@ test('every registered product keeps its brand, host-only session and original d
   }
  }finally{f.sql.close()}
 });
+
+test('account chooser and fresh login preserve portal context without silent session reuse',async()=>{
+ const f=fixture();try{
+  const session=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const started=await f.request('one.example','/auth/sso/start?prompt=select_account');
+  const authorize=new URL(started.headers.get('location'));assert.equal(authorize.searchParams.get('prompt'),'select_account');
+  const chooser=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+session});
+  assert.equal(chooser.status,200);assert.match(await chooser.text(),/Choose an account/);
+  assert.equal(f.sql.prepare('SELECT code_hash FROM portal_sso_requests').get().code_hash,null);
+  const fresh=await f.request('id.example',authorize.pathname+'?request='+authorize.searchParams.get('request')+'&prompt=login',{cookie:'pidp_session='+session});
+  assert.match(fresh.headers.get('location'),/app\/login/);
+  assert.equal((await f.request('one.example','/auth/sso/start?prompt=unknown')).status,400);
+ }finally{f.sql.close()}
+});
