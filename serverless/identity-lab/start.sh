@@ -4,8 +4,8 @@ lab_root="$(cd "$(dirname "$0")/../.." && pwd)"
 lab_state="$lab_root/.local/identity-lab"
 mkdir -p "$lab_state"
 chmod 700 "$lab_state"
-if [[ ! -f "$lab_state/key.pem" ]]; then
- openssl req -x509 -newkey rsa:2048 -nodes -days 30 -keyout "$lab_state/key.pem" -out "$lab_state/cert.pem" -subj '/CN=pidp.localhost' -addext 'subjectAltName=DNS:pidp.localhost,DNS:lifetech.localhost,DNS:orgportal.localhost,DNS:medtech.localhost' >/dev/null 2>&1
+if [[ ! -f "$lab_state/key.pem" ]] || ! openssl x509 -in "$lab_state/cert.pem" -noout -checkhost pidp.identity.test >/dev/null 2>&1; then
+ openssl req -x509 -newkey rsa:2048 -nodes -days 30 -keyout "$lab_state/key.pem" -out "$lab_state/cert.pem" -subj '/CN=pidp.identity.test' -addext 'subjectAltName=DNS:pidp.identity.test,DNS:lifetech.identity.test,DNS:orgportal.identity.test,DNS:medtech.identity.test' >/dev/null 2>&1
 fi
 if ! docker network inspect pidp-identity-lab >/dev/null 2>&1; then docker network create --internal pidp-identity-lab >/dev/null; fi
 if docker container inspect pidp-identity-lab >/dev/null 2>&1; then docker rm -f pidp-identity-lab >/dev/null; fi
@@ -22,7 +22,7 @@ docker start pidp-identity-lab-gateway >/dev/null
 
 for attempt in $(seq 1 30); do
  if docker exec pidp-identity-lab wget --no-check-certificate -qO- https://127.0.0.1:8443/health >/dev/null 2>&1; then
-  echo 'Identity lab: https://pidp.localhost:8891 (local test accounts only)'
+  echo 'Identity lab: https://pidp.identity.test:8891 (local test accounts only)'
   exit 0
  fi
  sleep 1

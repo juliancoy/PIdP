@@ -153,12 +153,12 @@ function redirectLocationForSession(env: Env, target: string | undefined, token:
 
 function setLoginSession(c: Context<{ Bindings: Env }>, token: string) {
   const domain = String(c.env.SESSION_COOKIE_DOMAIN || "").trim().replace(/^Domain=/i, "").replace(/;.*$/g, "");
+  if(domain)deleteCookie(c,SESSION_COOKIE,{path:"/",domain,secure:true});
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
     secure: true,
     sameSite: "Lax",
     path: "/",
-    ...(domain ? { domain } : {}),
     maxAge: Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "525600") * 60,
   });
 }

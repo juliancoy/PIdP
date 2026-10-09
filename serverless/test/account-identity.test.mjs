@@ -68,6 +68,7 @@ test('browser linking binds both authenticated accounts to one browser and expli
   const location=new URL(start.headers.get('location'));assert.equal(location.searchParams.get('app'),'site');assert.equal(location.searchParams.get('next'),'https://id.example/auth/account-links/finish');
   assert.ok(!location.href.includes(primary));
   const cookie=start.headers.get('set-cookie').split(';')[0];
+  const recover=await call('/finish','GET',`${cookie}; pidp_session=${primary}`);assert.equal(recover.status,303);assert.equal(new URL(recover.headers.get('location')).searchParams.get('app'),'site');
   assert.match(start.headers.get('set-cookie'),/HttpOnly/);assert.match(start.headers.get('set-cookie'),/Secure/);
   assert.equal((await call('/finish','GET',`pidp_session=${secondary}`)).status,401);
   assert.equal((await call('/complete','POST',`${cookie}; pidp_session=${secondary}`,'https://id.example')).status,409);

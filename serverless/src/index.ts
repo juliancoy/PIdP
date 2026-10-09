@@ -179,10 +179,10 @@ function sessionCookieDomain(env: Env): string {
 
 function setSessionCookie(headers: Headers, env: Env, token: string, maxAgeSeconds: number) {
   const domain = sessionCookieDomain(env);
-  const domainPart = domain ? `; Domain=${domain}` : "";
+  if(domain)headers.append("set-cookie",`${SESSION_COOKIE}=; Path=/; Max-Age=0; Domain=${domain}; HttpOnly; Secure; SameSite=Lax`);
   headers.append(
     "set-cookie",
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}${domainPart}; HttpOnly; Secure; SameSite=Lax`,
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Lax`,
   );
 }
 

@@ -46,14 +46,14 @@ production database, provider secrets, or outbound access. Its companion
 certificates live in ignored `.local/identity-lab/`. Restarting the lab resets
 all fixture accounts, sessions, and links.
 
-The browser blocks every request outside the four local hostnames. The fixture
+The browser maps four reserved `.identity.test` hostnames to loopback. Google authorization is intercepted without network access and redirected to a local chooser; token exchange and userinfo use deterministic local responses. Every other external request is blocked. The fixture
 serves portal landing/callback pages; it does not run the full OrgPortal UI.
 Authenticated production browser testing remains outside this automated suite.
 
 Test accounts use `Local-test-password-42` and `@example.test` addresses: `owner`,
 `other`, `member`, and `alternate`. The issuer is
-`https://pidp.localhost:8891`; product fixtures use `lifetech.localhost`,
-`orgportal.localhost`, and `medtech.localhost` on the same port. Local browsers
+`https://pidp.identity.test:8891`; product fixtures use `lifetech.identity.test`,
+`orgportal.identity.test`, and `medtech.identity.test` on the same port. Local browsers
 must resolve those names to 127.0.0.1 and accept the disposable certificate.
 
 ## Audit coverage
@@ -72,9 +72,11 @@ must resolve those names to 127.0.0.1 and accept the disposable certificate.
 | Bad destination / expired request / wrong handoff | Browser HTTP checks deny with 400 |
 | CSRF / duplicate parameters / changed proofs | Server rejection and proof invalidation regression tests |
 | Cross-origin or wrong-browser completion / replay | Existing Worker and Python SSO regression tests |
-| Provider account chooser | Google authorization URL assertion; provider UI is not automated |
+| Provider account chooser | Local Google stand-in exercises the actual PIdP OAuth state, PKCE, callback, member-token issuance and cookie replacement; real Google UI is not automated |
 
 The audit caught two browser-only defects: `no-referrer` suppressed the form
 Origin header, and confirmation's form-action policy blocked the cross-origin
 handoff. Linking pages now send referrers only within the issuer and permit form
 redirects only to registered portal origins. The CSRF check remains strict.
+
+The cookie regression seeds both a host-only primary session and a legacy parent-domain session before switching to a portal account. Successful authentication expires the legacy cookie and replaces the host-only cookie. A confirmation reached with an owner token restarts member authentication while retaining the validated pending link.

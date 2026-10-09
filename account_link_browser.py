@@ -169,6 +169,18 @@ def account_link_browser_routes(get_owner, get_member, session_dependency=get_se
 
     @router.get('/finish')
     async def finish(request: Request, session=Depends(session_dependency)):
+        token = request.cookies.get('pidp_token')
+        claims = safe_decode_token(token) if token else None
+        if claims and claims.get('actor_type') != 'website_user':
+            nonce = request.cookies.get(COOKIE)
+            if not nonce:
+                raise HTTPException(401, 'Restart account linking in the same browser')
+            pending = (await session.execute(select(AccountIdentityLinkRequest).where(AccountIdentityLinkRequest.browser_hash == digest(nonce), AccountIdentityLinkRequest.expires_at >= int(time.time()), AccountIdentityLinkRequest.used_at.is_(None)))).scalar_one_or_none()
+            if not pending:
+                raise HTTPException(409, 'Account-link request expired or already used')
+            await continuation(request, session, pending.website_id)
+            app = (await session.execute(select(Website).where(Website.id == pending.website_id))).scalar_one()
+            return RedirectResponse('/app/login?' + urlencode({'app':app.slug,'next':str(request.url)}),status_code=303,headers=HEADERS)
         row, owner, member, subject, resume = await context(request, session, switching=True)
         app = (await session.execute(select(Website).where(Website.id == UUID(str(row.website_id))))).scalar_one()
         linked = (await session.execute(select(AccountIdentityLink).where(AccountIdentityLink.subject == subject))).scalar_one_or_none()

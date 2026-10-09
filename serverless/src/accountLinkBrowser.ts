@@ -81,6 +81,16 @@ export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promis
   return {row,owner,member,subject,resume,conflict:Boolean(link&&link.canonical_user_id!==owner.id)};
  }
  app.get('/finish',async c=>{
+  const token=getCookie(c,'pidp_session');
+  if(token){const claims=await verifyJwt(c.env,token);if(claims.actor_type!=='website_user'){
+   const nonce=getCookie(c,cookie);if(!nonce)fail(401,'Restart account linking in the same browser');
+   const pending=await c.env.DB.prepare('SELECT website_id FROM account_identity_link_requests WHERE browser_hash=? AND expires_at>=? AND used_at IS NULL').bind(await sha256Hex(nonce),Math.floor(Date.now()/1000)).first<{website_id:string}>();
+   if(!pending)fail(409,'Account-link request expired or already used');
+   await continuation(c,pending.website_id);
+   const website=await c.env.DB.prepare('SELECT slug FROM websites WHERE id=?').bind(pending.website_id).first<{slug:string}>();if(!website)fail(404,'Application not found');
+   const login=new URL('/app/login',c.req.url);login.searchParams.set('app',website.slug);login.searchParams.set('next',c.req.url);return c.redirect(login.toString(),303);
+  }}
+
   const {row,owner,member,subject,resume,conflict}=await context(c,true);
   const website=await c.env.DB.prepare('SELECT slug FROM websites WHERE id=?').bind(row.website_id).first<{slug:string}>();
   if(conflict || (row.subject && row.subject!==subject))return c.html(page('Choose a different account',`<p>This account cannot be connected with the current selection. Choose the matching PIdP account or another portal account.</p>${switchForm(website!.slug,resume,"portal","Use another portal account")}${switchForm(website!.slug,resume,"primary","Use another PIdP account")}`),409);
