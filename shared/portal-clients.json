@@ -1,0 +1,9 @@
+{
+  "https://orgportal.cc": {"name":"OrgPortal","accountApp":"code-collective","callbacks":["/auth/callback"]},
+  "https://lifetech.fyi": {"name":"LifeTech","accountApp":"code-collective","callbacks":["/auth/callback"]},
+  "https://medtech.social": {"name":"MedTech","accountApp":"code-collective","callbacks":["/auth/callback"]},
+  "https://timebank.codecollective.us": {"name":"Timebank","accountApp":"code-collective","callbacks":["/auth/callback"]},
+  "https://bmoretimebank.codecollective.us": {"name":"Baltimore Timebank","accountApp":"code-collective","callbacks":["/auth/callback"]},
+  "https://codecollective.us": {"name":"OrgPortal","accountApp":"code-collective","callbacks":["/auth/callback","/p/auth/callback"],"restartOrigin":"https://orgportal.cc"},
+  "https://www.codecollective.us": {"name":"OrgPortal","accountApp":"code-collective","callbacks":["/auth/callback","/p/auth/callback"],"restartOrigin":"https://orgportal.cc"}
+}

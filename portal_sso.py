@@ -6,7 +6,9 @@ import time
 from uuid import UUID
 from urllib.parse import parse_qs, urlencode, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
+from html import escape
+from browser_pages import identity_document
 from sqlalchemy import select, delete, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
@@ -14,6 +16,7 @@ from db import get_session
 from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
 from security import safe_decode_token, create_access_token
 from login_hints import google_login_hint
+from portal_clients import portal_client, sso_return
 
 router = APIRouter()
 BROWSER = '__Host-pidp_sso_browser'
@@ -33,29 +36,57 @@ def origin(request):
 def issuer(request):
     return (settings.public_base_url or str(request.base_url)).rstrip('/')
 
+def unique_query(request):
+    if any(len(request.query_params.getlist(key)) != 1 for key in request.query_params):
+        raise HTTPException(400, 'invalid_request')
+
 def redirect(url):
     return RedirectResponse(url, status_code=303, headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
 
+@router.get('/auth/sso/client')
+async def registration(request: Request):
+    client = portal_client(origin(request))
+    if not client:
+        raise HTTPException(400, 'invalid_portal')
+    return {**client,'origin':client.get('restartOrigin') or origin(request)}
+
 @router.get('/auth/sso/start')
 async def start(request: Request, session: AsyncSession = Depends(get_session)):
+    unique_query(request)
     destination = origin(request)
-    if destination not in origins():
+    client = portal_client(destination)
+    if not client:
         raise HTTPException(400, 'invalid_portal')
-    app_slug = request.query_params.get('app', '')
-    if not settings.portal_sso_app_slug or app_slug != settings.portal_sso_app_slug:
+    app_slug = request.query_params.get('app') or client['accountApp']
+    if app_slug != client['accountApp']:
         raise HTTPException(400, 'unknown_application')
-    website = (await session.execute(select(Website).where(Website.slug == app_slug))).scalar_one_or_none()
-    if website is None:
-        raise HTTPException(503, 'application_not_registered')
-    target = request.query_params.get('next', destination + '/auth/callback')
-    parsed = urlparse(target)
-    bridge_params = parse_qs(parsed.query, keep_blank_values=True)
-    bridge_return = parsed.path == '/pidp/oauth/mcp/link' and set(bridge_params) == {'request'} and len(bridge_params['request']) == 1 and re.fullmatch(r'login_[A-Za-z0-9_-]{43,100}', bridge_params['request'][0]) and not parsed.fragment
-    if f'{parsed.scheme}://{parsed.netloc}' != destination or (parsed.path not in ('/auth/callback','/p/auth/callback') and not bridge_return) or parsed.username or parsed.password:
+    target = sso_return(destination, app_slug, request.query_params.get('next') or '/auth/callback')
+    if not target:
         raise HTTPException(400, 'invalid_return')
+    prompt = request.query_params.get('prompt')
+    if prompt and prompt not in ('select_account','login'):
+        raise HTTPException(400, 'invalid_prompt')
     provider = request.query_params.get('provider')
     if provider and provider not in ('google','github'):
         raise HTTPException(400, 'invalid_provider')
+    if client.get('restartOrigin'):
+        destination_client = portal_client(client['restartOrigin'])
+        if not destination_client:
+            raise HTTPException(400, 'invalid_portal')
+        parsed = urlparse(target)
+        callback = client['restartOrigin']+'/auth/callback'+('?' + parsed.query if parsed.query else '')
+        params = {'app':destination_client['accountApp'],'next':callback}
+        if prompt:
+            params['prompt'] = prompt
+        if provider:
+            params['provider'] = provider
+        hint = google_login_hint(provider, request.query_params.get('login_hint'))
+        if hint:
+            params['login_hint'] = hint
+        return redirect(client['restartOrigin']+'/pidp/auth/sso/start?' + urlencode(params))
+    website = (await session.execute(select(Website).where(Website.slug == app_slug))).scalar_one_or_none()
+    if website is None:
+        raise HTTPException(503, 'application_not_registered')
     window = int(time.time()) // 60
     await session.execute(delete(PortalSsoLimit).where(PortalSsoLimit.window_start < window-1))
     permitted = (await session.execute(text("""INSERT INTO portal_sso_limits(ip_hash,window_start,requests) VALUES(:ip,:window,1)
@@ -72,6 +103,8 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
     session.add(row)
     await session.commit()
     params = {'request':row.id}
+    if prompt:
+        params['prompt'] = prompt
     if provider:
         params['provider'] = provider
     hint = google_login_hint(provider, request.query_params.get('login_hint'))
@@ -83,16 +116,32 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
 
 @router.get('/auth/sso/authorize')
 async def authorize(request: Request, session: AsyncSession = Depends(get_session)):
+    unique_query(request)
     parsed_issuer = urlparse(issuer(request))
     if origin(request) != f'{parsed_issuer.scheme}://{parsed_issuer.netloc}' or request.headers.get('x-forwarded-host'):
         raise HTTPException(400, 'issuer_required')
     row = (await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == request.query_params.get('request'),
         PortalSsoRequest.expires_at >= int(time.time()), PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
-    if not row or row.origin not in origins():
+    if not row or not sso_return(row.origin,row.app,row.next):
         raise HTTPException(400, 'expired_request')
     if not row.website_id:
         raise HTTPException(503, 'application_not_registered')
-    payload = safe_decode_token(request.cookies.get('pidp_token','')) or {}
+    prompt = request.query_params.get('prompt')
+    if prompt and prompt not in ('select_account','login'):
+        raise HTTPException(400, 'invalid_prompt')
+    if prompt == 'select_account':
+        resume = issuer(request) + '/auth/sso/authorize?' + urlencode({'request': row.id})
+        login = issuer(request) + '/app/login?' + urlencode({'app': row.app, 'next': resume})
+        claims = safe_decode_token(request.cookies.get('pidp_token','')) or {}
+        selected = None
+        if claims.get('sub'):
+            if claims.get('actor_type') == 'website_user' and str(claims.get('website_id')) == row.website_id:
+                selected = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(claims['sub'])), WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
+            elif claims.get('actor_type','owner') == 'owner':
+                selected = (await session.execute(select(User).where(User.id == UUID(str(claims['sub'])),User.is_active.is_(True)))).scalar_one_or_none()
+        current = f'<p><a href="{escape(resume)}">Continue as {escape(selected.email)}</a></p>' if selected else ''
+        return HTMLResponse(identity_document('Choose an account', f'<h1>Choose an account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p>{current}<p><a href="{escape(login)}">Use another portal account</a></p><p><a href="{escape(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>'),headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+    payload = {} if prompt == 'login' else safe_decode_token(request.cookies.get('pidp_token','')) or {}
     user = None
     if payload.get('actor_type') == 'website_user' and str(payload.get('website_id')) == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(payload['sub'])),
@@ -107,7 +156,10 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
                 AccountIdentityLink.website_id == UUID(row.website_id),
                 WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
             if not user:
-                raise HTTPException(403, 'account_link_required')
+                link = issuer(request)+'/auth/account-links/connect?'+urlencode({'app':row.app,'sso':row.id})
+                resume = issuer(request)+'/auth/sso/authorize?'+urlencode({'request':row.id})
+                login = issuer(request)+'/app/login?'+urlencode({'app':row.app,'next':resume})
+                return HTMLResponse(identity_document(f'Continue to {escape(portal_client(row.origin)["name"])}', f'<h1>Connect your {escape(portal_client(row.origin)["name"])} account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p><p>Signed in to PIdP as {escape(owner.email)}. Connect your portal account to continue with the same identity.</p><p><a href="{escape(link)}">Link my portal account</a></p><p><a href="{escape(login)}">Sign in to the portal separately</a></p><form method="post" action="/auth/account-links/switch?{escape(urlencode(dict(app=row.app,sso=row.id,account="primary")))}"><button>Use another PIdP account</button></form><p><a href="{escape(row.origin)}">Cancel and return to {escape(portal_client(row.origin)["name"])}</a></p><p>Authentication provided by PIdP. Linking requires signing in to both accounts and confirming the connection.</p>'),headers={'Cache-Control':'no-store','Referrer-Policy':'same-origin','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"})
     hint = google_login_hint(request.query_params.get('provider'), request.query_params.get('login_hint'))
     if not user or hint:
         provider = request.query_params.get('provider')
@@ -131,6 +183,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
 
 @router.get('/auth/sso/complete')
 async def complete(request: Request, session: AsyncSession = Depends(get_session)):
+    unique_query(request)
     browser = request.cookies.get(BROWSER)
     if not browser:
         raise HTTPException(400, 'invalid_browser')
@@ -138,7 +191,7 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
         PortalSsoRequest.code_hash == digest(request.query_params.get('code','')), PortalSsoRequest.browser_hash == digest(browser),
         PortalSsoRequest.origin == origin(request), PortalSsoRequest.expires_at >= int(time.time())).returning(PortalSsoRequest))).scalar_one_or_none()
     await session.commit()
-    if not row or not row.subject or row.app != settings.portal_sso_app_slug or row.origin not in origins():
+    if not row or not row.subject or not sso_return(row.origin,row.app,row.next):
         raise HTTPException(400, 'invalid_handoff')
     parts = row.subject.split(':')
     if len(parts) == 3 and parts[0] == 'website' and parts[1] == row.website_id:

@@ -1,0 +1,7 @@
+"""Shared presentation for the PIdP account chooser and linking pages."""
+from html import escape
+
+STYLE = '*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;font:16px/1.5 system-ui,sans-serif;color:#182230;background:#f6f8fb}main{width:100%;max-width:480px;background:white;border:1px solid #d0d5dd;border-radius:20px;padding:32px;overflow-wrap:anywhere}h1{font-size:26px;line-height:1.25;margin:16px 0}p{margin:16px 0}a{color:#175cd3}button{font:inherit;cursor:pointer;min-height:44px;width:100%;border:1px solid #175cd3;border-radius:24px;padding:10px 16px;margin:8px 0;color:#175cd3;background:white}button:hover{background:#eff4ff}button:focus-visible,a:focus-visible{outline:3px solid #84adff;outline-offset:3px}.provider{font-weight:600;color:#344054;font-size:14px}@media(max-width:480px){body{padding:12px}main{padding:24px}}'
+
+def identity_document(title, body):
+    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><style>{STYLE}</style><body><main><div class="provider">PIdP</div>{body}</main></body></html>'

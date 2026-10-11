@@ -59,6 +59,7 @@ test('only numeric Google account hints reach the provider authorization URL', a
 for (const provider of ['google', 'github']) test(`${provider} returns to the initiating portal before issuing a session`, async t => {
   const { request, start } = fixture();
   const { state, cookie, authorize } = await start(provider);
+  assert.equal(authorize.searchParams.get('prompt'),provider==='google'?'select_account':null);
   assert.equal(authorize.searchParams.get('redirect_uri'), `https://id.codecollective.us/auth/${provider}/callback`);
   const callback = `https://id.codecollective.us/auth/${provider}/callback?code=one-use-provider-code&state=${encodeURIComponent(state)}`;
   const relay = await request(callback, { cookie: 'pidp_oauth_state=unrelated-other-tab' });

@@ -310,6 +310,21 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(self.post('connections', dict(grant=grant, csrf=csrf), headers={'origin': self.issuer}).status_code, 303)
         self.assertFalse(self.introspect(tokens['access_token'])['active'])
 
+    def test_portal_only_dynamic_client_scope(self):
+        oauth.settings.mcp_oauth_dynamic_registration = True
+        metadata = dict(client_name='Portal only', token_endpoint_auth_method='none',
+                        redirect_uris=['http://127.0.0.1/callback'], scope='org:portal.read')
+        response = self.client.post('/oauth/mcp/register', json=metadata)
+        self.assertEqual(response.status_code, 201, response.text)
+        registered = response.json()
+        self.params.update(client_id=registered['client_id'], scope='org:portal.read')
+        tokens = self.exchange(self.code(), client_id=registered['client_id']).json()
+        self.assertEqual(tokens['scope'], 'org:portal.read')
+        for scope in ('', 'org:unknown'):
+            self.assertEqual(self.client.post('/oauth/mcp/register', json={**metadata, 'scope': scope}).status_code, 400)
+        self.params['scope'] = 'org:events.read'
+        self.assertEqual(self.client.get('/oauth/mcp/authorize', params=self.params).status_code, 400)
+
     def test_dynamic_registration_requires_consent_pkce_and_supports_client_revocation(self):
         metadata = dict(client_name='Codex', token_endpoint_auth_method='none', redirect_uris=['http://127.0.0.1/callback'])
         self.assertEqual(self.client.post('/oauth/mcp/register', json=metadata).status_code, 403)
@@ -412,3 +427,22 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class AdministratorOAuthTests(OAuthTests):
+    def test_explicit_primary_admin_consent_and_live_introspection(self):
+        with patch.object(oauth.settings, 'admin_user_ids', 'alice'), patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {'name':'Portal','loginUrl':'https://portal.example/users/mcp-connect'}})), patch.object(oauth, 'identity_session', AsyncMock(return_value=dict(subject='owner:alice',display='Admin',hash='admin-session'))):
+            params = dict(self.params, account='system_admin', scope='org:portal.read org:portal.write')
+            consent = self.client.get('/oauth/mcp/authorize', params=params)
+            self.assertEqual(consent.status_code, 200, consent.text)
+            self.assertIn('name="account" value="system_admin"', consent.text)
+            nonce = re.search('name="request" value="([^"]+)"', consent.text)[1]
+            approved = self.post('authorize', dict(request=nonce,decision='allow',account='system_admin'),headers={'origin':self.issuer})
+            self.assertEqual(approved.status_code,303,approved.text)
+            code = parse_qs(urlsplit(approved.headers['location']).query)['code'][0]
+            tokens = self.exchange(code).json()
+            self.assertTrue(self.introspect(tokens['access_token'])['is_sysadmin'])
+            with patch.object(oauth.settings,'admin_user_ids',''):
+                self.assertFalse(self.introspect(tokens['access_token'])['is_sysadmin'])
+            with patch.object(oauth,'identity_session',AsyncMock(return_value=dict(subject='website:site:alice',display='Same ID',hash='website-session'))):
+                denied=self.client.get('/oauth/mcp/authorize',params=params)
+                self.assertEqual(denied.status_code,403)

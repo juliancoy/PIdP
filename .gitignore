@@ -21,3 +21,6 @@ test-results/
 serverless/src/generated/
 .env
 .env.pidp
+
+# Isolated test certificates and container configuration
+.local/

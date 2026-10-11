@@ -4,7 +4,7 @@ const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '
 
 export async function renderConsentPage(input: {
   client: string; account: string; resource: string; callback: string; request: string;
-  changeAccount: string; requested: string[]; dynamic: boolean; portal?: { name: string; loginUrl: string };
+  changeAccount: string; requested: string[]; dynamic: boolean; systemAdminLogin?: boolean; portal?: { name: string; loginUrl: string };
 }) {
   const portalUrl = new URL(input.portal?.loginUrl || input.resource).origin;
   const portalHost = new URL(portalUrl).host;
@@ -15,6 +15,7 @@ export async function renderConsentPage(input: {
     client: escape(input.client), account: escape(input.account), shortName: escape(brand?.shortName || input.portal?.name || 'OrgPortal'),
     brandName: escape(brand?.name || input.portal?.name || 'OrgPortal'), tagline: escape(brand?.tagline || 'ACCOUNT AUTHORIZATION'),
     portalUrl: escape(portalUrl), portalHost: escape(portalHost), resource: escape(input.resource), callback: escape(input.callback),
+    accountMode: input.systemAdminLogin ? '<input type="hidden" name="account" value="system_admin">' : '',
     request: escape(input.request), changeAccount: escape(input.changeAccount), css,
     logo: brand ? `<img src="${escape(brand.logo)}" alt="${escape(brand.name)} logo" width="52" height="52">` : '',
     permissions: input.requested.map(scope => {

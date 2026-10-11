@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     frontend_redirect_url: str | None = None
     public_base_url: str | None = None
     portal_auth_origins: str = ""
+    portal_clients_json: str = ""
     portal_sso_app_slug: str = ""
     allow_cross_lane_redirect: bool = False
     allowed_native_redirect_schemes: str = "org.arkavo.portal"

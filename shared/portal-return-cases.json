@@ -1,0 +1,14 @@
+[
+ {"value":"/auth/callback?next=%2Fchat","valid":true},
+ {"value":"/auth/callback?next=%2Fevents%2Fpitch","valid":true},
+ {"value":"/auth/callback?next=https%3A%2F%2Fevil.example","valid":false},
+ {"value":"/auth/callback?next=%2F%2Fevil.example","valid":false},
+ {"value":"/auth/callback?next=%2F%5Cevil.example","valid":false},
+ {"value":"/auth/callback?next=%2Fchat&next=%2Fother","valid":false},
+ {"value":"/auth/callback?unexpected=1","valid":false},
+ {"value":"/auth/callback#fragment","valid":false},
+ {"value":"//evil.example/auth/callback","valid":false},
+ {"value":"https://evil.example/auth/callback","valid":false},
+ {"value":"/p/auth/callback","valid":false},
+ {"value":"/auth/callback?next=%2Fchat%0A","valid":false}
+]
