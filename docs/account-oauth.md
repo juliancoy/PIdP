@@ -25,7 +25,7 @@ not map by email or silently assign administrator privileges.
 PIdP owns the persisted `account_identity_links` registry. Linking requires
 successful authentication to both the primary PIdP account and the website-member
 account. Email, provider metadata, and editable profile fields never auto-link
-accounts. Open `/auth/account-links/connect?app=code-collective` in the same browser
+accounts. Open `/auth/account-links/connect?app=orgportal` in the same browser
 to authenticate both accounts, review the identities, and confirm the link.
 The API equivalent is `/auth/account-links/preview` and `/apply` with both
 session proofs and a one-use, ten-minute receipt.

@@ -20,9 +20,20 @@ async def register():
     if not slug:
         raise RuntimeError('PORTAL_SSO_APP_SLUG is required.')
     async with SessionLocal() as session:
-        # Serialize repeat startup calls; never change an existing registration.
+        # Serialize registration and the one-time application rename.
         await session.execute(text("SELECT pg_advisory_xact_lock(736410229)"))
         website = (await session.execute(select(Website).where(Website.slug == slug))).scalar_one_or_none()
+        if slug == 'orgportal':
+            previous = (await session.execute(select(Website).where(
+                Website.slug == 'code-collective'))).scalar_one_or_none()
+            if website is not None and previous is not None:
+                raise RuntimeError('Conflicting OrgPortal registrations require review before startup.')
+            if website is None and previous is not None:
+                website = previous
+                website.slug = 'orgportal'
+                website.name = 'OrgPortal'
+                website.description = 'One OrgPortal account for all groups.'
+                await session.commit()
         if website is None:
             owner_id = uuid5(NAMESPACE_URL, 'orgportal:local-registration-owner')
             if await session.get(User, owner_id) is None:
