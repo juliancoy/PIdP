@@ -8,7 +8,7 @@ const env={PORTAL_AUTH_ORIGINS:Object.keys(defaults).join(','),PUBLIC_BASE_URL:'
 
 test('product origins own their name, callbacks and account namespace independently of hosting',()=>{
  for(const [origin,client] of Object.entries(defaults)){
-  assert.equal(portalClient(env,origin).name,client.name);assert.equal(portalClient(env,origin).accountApp,'code-collective');
+  assert.equal(portalClient(env,origin).name,client.name);assert.equal(portalClient(env,origin).accountApp,'orgportal');
   assert.equal(ssoReturn(env,origin,'wrong','/auth/callback'),null);
   if(!client.restartOrigin)for(const c of cases)assert.equal(!!ssoReturn(env,origin,client.accountApp,c.value),c.valid,origin+' '+c.value);
  }

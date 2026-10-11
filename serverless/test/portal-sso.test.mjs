@@ -146,11 +146,11 @@ test('login branding follows the live portal ticket; revoked registrations canno
 test('every registered product keeps its brand, host-only session and original destination',async()=>{
  const defaults=JSON.parse(readFileSync(new URL('../../shared/portal-clients.json',import.meta.url),'utf8'));
  const f=fixture(true);try{
-  f.env.PORTAL_CLIENTS_JSON=undefined;f.env.PORTAL_AUTH_ORIGINS=Object.keys(defaults).join(',');f.env.PORTAL_SSO_APP_SLUG='code-collective';f.sql.exec("UPDATE websites SET slug='code-collective'");
+  f.env.PORTAL_CLIENTS_JSON=undefined;f.env.PORTAL_AUTH_ORIGINS=Object.keys(defaults).join(',');f.env.PORTAL_SSO_APP_SLUG='orgportal';f.sql.exec("UPDATE websites SET slug='orgportal'");
   const token=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
   for(const [origin,client] of Object.entries(defaults).filter(([,c])=>!c.restartOrigin)){
    const host=new URL(origin).host,started=await start(f,host),authorize=new URL(started.authorize);
-   const login=await f.request('id.example','/app/login?'+new URLSearchParams({app:'code-collective',next:authorize.href}));assert.match(await login.text(),new RegExp('Sign in to '+client.name));
+   const login=await f.request('id.example','/app/login?'+new URLSearchParams({app:'orgportal',next:authorize.href}));assert.match(await login.text(),new RegExp('Sign in to '+client.name));
    const approved=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+token});assert.equal(approved.status,303);
    const complete=new URL(approved.headers.get('location'));assert.equal(complete.origin,origin);assert.equal(complete.searchParams.has('token'),false);
    const finished=await f.request(host,complete.pathname.replace('/pidp','')+complete.search,{cookie:started.browser});assert.equal(finished.status,303);assert.equal(finished.headers.get('location'),origin+'/auth/callback?next=%2Fpeople');

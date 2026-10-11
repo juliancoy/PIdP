@@ -106,12 +106,12 @@ class SsoTests(unittest.TestCase):
     def test_every_registered_product_keeps_its_destination_and_namespace(self):
         from portal_clients import DEFAULTS
         with patch.multiple(sso.settings,portal_clients_json='',portal_auth_origins=','.join(DEFAULTS)):
-            self.db.query(Website).one().slug='code-collective'
+            self.db.query(Website).one().slug='orgportal'
             self.db.commit()
             for origin, client in DEFAULTS.items():
                 if client.get('restartOrigin'):
                     continue
-                started=self.client.get(origin+'/auth/sso/start',params={'app':'code-collective','next':origin+'/auth/callback?next=%2Fpeople'})
+                started=self.client.get(origin+'/auth/sso/start',params={'app':'orgportal','next':origin+'/auth/callback?next=%2Fpeople'})
                 self.assertEqual(started.status_code,303)
                 authorized=self.client.get(started.headers['location'])
                 self.assertEqual(authorized.status_code,303)
