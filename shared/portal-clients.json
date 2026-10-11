@@ -1,9 +1,60 @@
 {
-  "https://orgportal.cc": {"name":"OrgPortal","accountApp":"orgportal","callbacks":["/auth/callback"]},
-  "https://lifetech.fyi": {"name":"LifeTech","accountApp":"orgportal","callbacks":["/auth/callback"]},
-  "https://medtech.social": {"name":"MedTech","accountApp":"orgportal","callbacks":["/auth/callback"]},
-  "https://timebank.codecollective.us": {"name":"Timebank","accountApp":"orgportal","callbacks":["/auth/callback"]},
-  "https://bmoretimebank.codecollective.us": {"name":"Baltimore Timebank","accountApp":"orgportal","callbacks":["/auth/callback"]},
-  "https://codecollective.us": {"name":"OrgPortal","accountApp":"orgportal","callbacks":["/auth/callback","/p/auth/callback"],"restartOrigin":"https://orgportal.cc"},
-  "https://www.codecollective.us": {"name":"OrgPortal","accountApp":"orgportal","callbacks":["/auth/callback","/p/auth/callback"],"restartOrigin":"https://orgportal.cc"}
+  "https://orgportal.cc": {
+    "name": "OrgPortal",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ]
+  },
+  "https://lifetech.fyi": {
+    "name": "LifeTech",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ]
+  },
+  "https://medtech.social": {
+    "name": "MedTech",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ]
+  },
+  "https://timebank.codecollective.us": {
+    "name": "Timebank",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ]
+  },
+  "https://bmoretimebank.codecollective.us": {
+    "name": "Baltimore Timebank",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ]
+  },
+  "https://codecollective.us": {
+    "name": "OrgPortal",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ],
+    "restartOrigin": "https://orgportal.cc"
+  },
+  "https://www.codecollective.us": {
+    "name": "OrgPortal",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ],
+    "restartOrigin": "https://orgportal.cc"
+  },
+  "https://portal.deism.church": {
+    "name": "Deism",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ]
+  }
 }
