@@ -298,6 +298,26 @@ class OAuthTests(unittest.TestCase):
             self.assertFalse(self.introspect(tokens['access_token'])['active'])
             self.assertEqual(self.post('token', dict(grant_type='refresh_token', client_id='native', refresh_token=tokens['refresh_token'])).status_code, 400)
 
+    def test_multiple_connections_keep_accounts_and_revocation_independent(self):
+        alice = self.exchange(self.code()).json()
+        other_alice = self.exchange(self.code()).json()
+        with patch.object(oauth, 'session', AsyncMock(return_value=dict(subject='owner:bob', display='bob', hash='bob-session'))):
+            bob = self.exchange(self.code()).json()
+        for tokens, subject in ((alice, 'owner:alice'), (other_alice, 'owner:alice'), (bob, 'owner:bob')):
+            status = self.introspect(tokens['access_token'])
+            self.assertTrue(status['active'])
+            self.assertEqual(status['sub'], subject)
+        renewed = self.post('token', dict(grant_type='refresh_token', client_id='native', refresh_token=bob['refresh_token']))
+        self.assertEqual(renewed.status_code, 200)
+        renewed_bob = renewed.json()
+        self.assertEqual(self.introspect(renewed_bob['access_token'])['sub'], 'owner:bob')
+        self.assertEqual(self.post('revoke', dict(client_id='native', token=alice['refresh_token'])).status_code, 200)
+        self.assertFalse(self.introspect(alice['access_token'])['active'])
+        self.assertTrue(self.introspect(other_alice['access_token'])['active'])
+        self.assertTrue(self.introspect(renewed_bob['access_token'])['active'])
+        for tokens in (other_alice, renewed_bob):
+            self.assertEqual(self.post('token', dict(grant_type='refresh_token', client_id='native', refresh_token=tokens['refresh_token'])).status_code, 200)
+
     def test_account_connections_csrf_and_subject_binding(self):
         tokens = self.exchange(self.code()).json()
         page = self.client.get('/oauth/mcp/connections')

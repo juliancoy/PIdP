@@ -1,3 +1,4 @@
+import { identityPath } from './identityUrls';
 import defaults from '../../shared/portal-clients.json';
 import type { Env } from './types';
 export type PortalClient = { name: string; accountApp: string; callbacks: string[]; restartOrigin?: string };
@@ -42,7 +43,8 @@ export async function loginPortal(env:Env,app:string,next:string,requestOrigin?:
   const target=new URL(next,env.PUBLIC_BASE_URL);
   const issuer=new URL(env.PUBLIC_BASE_URL!).origin;
   if(target.origin!==issuer || target.username || target.password)return null;
-  const ticketParam=target.pathname==='/auth/sso/authorize'?'request':['/auth/account-links/finish','/auth/account-links/connect'].includes(target.pathname)?'sso':null;
+  const path=identityPath(env,target.pathname);
+  const ticketParam=path==='/auth/sso/authorize'?'request':['/auth/account-links/finish','/auth/account-links/connect'].includes(path)?'sso':null;
   if(ticketParam && target.searchParams.getAll(ticketParam).length===1 && env.DB){
    const row=await env.DB.prepare('SELECT origin,app,next FROM portal_sso_requests WHERE id=? AND expires_at>=? AND code_hash IS NULL').bind(target.searchParams.get(ticketParam),Math.floor(Date.now()/1000)).first<{origin:string;app:string;next:string}>();
    if(row?.app===app && ssoReturn(env,row.origin,row.app,row.next))return portalClient(env,row.origin);
@@ -62,4 +64,9 @@ export function browserReturn(env:Env,value:string,extraOrigins:string[]=[]):str
   if(configured.includes(target.origin)||extraOrigins.includes(target.origin)||portalClient(env,target.origin))return value;
  }catch{ /* Invalid or unregistered destinations fail closed. */ }
  return null;
+}
+
+// The legacy application slug is an authorization alias, never a credential store.
+export function sharedIdentity(env: Env, app: string): boolean {
+ return env.PORTAL_SHARED_IDENTITY === 'true' && app === env.PORTAL_SSO_APP_SLUG;
 }

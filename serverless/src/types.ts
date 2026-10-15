@@ -22,6 +22,7 @@ export interface Env {
   PORTAL_AUTH_ORIGINS?: string;
   PORTAL_CLIENTS_JSON?: string;
   PORTAL_SSO_APP_SLUG?: string;
+  PORTAL_SHARED_IDENTITY?: string;
   ALLOWED_ORIGINS?: string;
   ADMIN_EMAILS?: string;
   ADMIN_USER_IDS?: string;

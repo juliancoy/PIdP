@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     portal_auth_origins: str = ""
     portal_clients_json: str = ""
     portal_sso_app_slug: str = ""
+    portal_shared_identity: bool = False
     allow_cross_lane_redirect: bool = False
     allowed_native_redirect_schemes: str = "org.arkavo.portal"
     minio_endpoint: str | None = None

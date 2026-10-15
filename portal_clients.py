@@ -66,7 +66,11 @@ async def login_portal(app, next_url, session, request_origin=None):
         if target.scheme+'://'+target.netloc != issuer.scheme+'://'+issuer.netloc or target.username or target.password:
             return None
         params = parse_qs(target.query)
-        ticket_param = 'request' if target.path == '/auth/sso/authorize' else 'sso' if target.path in ('/auth/account-links/finish','/auth/account-links/connect') else None
+        path = target.path
+        prefix = issuer.path.rstrip('/')
+        if prefix and path.startswith(prefix+'/'):
+            path = path[len(prefix):]
+        ticket_param = 'request' if path == '/auth/sso/authorize' else 'sso' if path in ('/auth/account-links/finish','/auth/account-links/connect') else None
         if ticket_param and len(params.get(ticket_param,[])) == 1:
             row = (await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == params[ticket_param][0],
                 PortalSsoRequest.expires_at >= int(time.time()),PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
@@ -95,3 +99,7 @@ def browser_return(value, issuer, extra_origins=()):
     except (ValueError,TypeError):
         pass
     return None
+
+
+def shared_identity(app):
+    return settings.portal_shared_identity and (not app or app == settings.portal_sso_app_slug)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from portal_clients import login_portal, browser_return
+from portal_clients import login_portal, browser_return, shared_identity
 
 import json
 import asyncio
@@ -125,6 +125,28 @@ SYSTEM_SCHEMA_FIELDS = {
 
 
 app = FastAPI(title=settings.app_name)
+@app.middleware('http')
+async def mounted_identity(request: Request, call_next):
+    # The trusted frontend strips /pidp before forwarding and supplies the mount.
+    # Keep root-relative generated forms and identity redirects on that mount.
+    from identity_urls import mounted_identity_path, rewrite_identity_html
+    configured = urlparse(settings.public_base_url or '')
+    prefix = configured.path.rstrip('/')
+    canonical = str(request.url).startswith(f'{configured.scheme}://{configured.netloc}/')
+    if prefix and canonical and not request.headers.get('x-forwarded-host'):
+        response = await call_next(request)
+        location = response.headers.get('location')
+        if location:
+            response.headers['location'] = mounted_identity_path(location, prefix)
+        if 'text/html' in response.headers.get('content-type', ''):
+            body = b''.join([chunk async for chunk in response.body_iterator]).decode('utf-8')
+            mounted = HTMLResponse(rewrite_identity_html(body, prefix), status_code=response.status_code)
+            mounted.raw_headers = [(key,value) for key,value in response.raw_headers if key not in (b'content-length',b'cache-control')] + [(b'cache-control',b'no-store')]
+            return mounted
+        return response
+    return await call_next(request)
+
+
 app.include_router(mcp_oauth_router)
 from portal_sso import router as portal_sso_router
 app.include_router(portal_sso_router)
@@ -1471,6 +1493,8 @@ async def frontend_app_login(
     force_owner_login = _truthy(request.query_params.get("owner"))
     auto_login = _truthy(request.query_params.get("auto"))
     app_slug = (request.query_params.get("app") or "").strip()
+    if shared_identity(app_slug):
+        force_owner_login = True
     if force_owner_login:
         app_slug = ""
     raw_next = (request.query_params.get("next") or "").strip() or None
@@ -1486,7 +1510,7 @@ async def frontend_app_login(
     if portal:
         branding = {'hero_title': 'Sign in to '+portal['name']}
     elif force_owner_login:
-        branding = {'hero_title': 'Sign in to PIdP'}
+        branding = {'hero_title': 'Sign in to OrgPortal' if settings.portal_shared_identity else 'Sign in to PIdP'}
     if app_slug and not website:
         return _render_template(
             request,
@@ -1582,6 +1606,8 @@ async def frontend_login(
     next_url = str(form.get("next") or "").strip()
     requested_app = str(form.get("app") or "").strip()
     force_owner_login = _truthy(form.get("owner"))
+    if shared_identity(requested_app):
+        force_owner_login = True
     if force_owner_login:
         requested_app = ""
     app_website = await _resolve_login_website(session, requested_app)
@@ -1649,6 +1675,8 @@ async def frontend_register(
     next_url = str(form.get("next") or "").strip()
     requested_app = str(form.get("app") or "").strip()
     force_owner_login = _truthy(form.get("owner"))
+    if shared_identity(requested_app):
+        force_owner_login = True
     if force_owner_login:
         requested_app = ""
     app_website = await _resolve_login_website(session, requested_app)
@@ -2378,6 +2406,21 @@ async def exchange_access_token_for_session_cookie(
     return response
 
 
+@app.get('/auth/session')
+async def session_status(request: Request, session: AsyncSession = Depends(get_session)):
+    token = _request_token(request)
+    if not token:
+        raise HTTPException(401, 'No active session')
+    claims = safe_decode_token(token)
+    if not claims:
+        raise HTTPException(401, 'Invalid session')
+    if claims.get('actor_type') == 'website_user':
+        await _get_current_website_user(token, session)
+    else:
+        await _get_current_owner(token, session)
+    return JSONResponse({'authenticated': True}, headers={'Cache-Control': 'private, no-store'})
+
+
 @app.get("/auth/session-token", response_model=Token)
 async def auth_session_token(
     request: Request,
@@ -3084,6 +3127,8 @@ async def social_login(
     next_url = request.query_params.get("next")
     force_owner_login = _truthy(request.query_params.get("owner"))
     app_slug = (request.query_params.get("app") or "").strip()
+    if shared_identity(app_slug):
+        force_owner_login = True
     if force_owner_login:
         app_slug = ""
     website: Website | None = None

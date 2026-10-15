@@ -16,7 +16,7 @@ from db import get_session
 from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
 from security import safe_decode_token, create_access_token
 from login_hints import google_login_hint
-from portal_clients import portal_client, sso_return
+from portal_clients import portal_client, sso_return, shared_identity
 
 router = APIRouter()
 BROWSER = '__Host-pidp_sso_browser'
@@ -131,7 +131,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         raise HTTPException(400, 'invalid_prompt')
     if prompt == 'select_account':
         resume = issuer(request) + '/auth/sso/authorize?' + urlencode({'request': row.id})
-        login = issuer(request) + '/app/login?' + urlencode({'app': row.app, 'next': resume})
+        login = issuer(request) + '/app/login?' + urlencode({**({} if shared_identity(row.app) else {'app':row.app}), 'next':resume})
         claims = safe_decode_token(request.cookies.get('pidp_token','')) or {}
         selected = None
         if claims.get('sub'):
@@ -143,6 +143,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         return HTMLResponse(identity_document('Choose an account', f'<h1>Choose an account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p>{current}<p><a href="{escape(login)}">Use another portal account</a></p><p><a href="{escape(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>'),headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     payload = {} if prompt == 'login' else safe_decode_token(request.cookies.get('pidp_token','')) or {}
     user = None
+    account = None
     if payload.get('actor_type') == 'website_user' and str(payload.get('website_id')) == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(payload['sub'])),
             WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
@@ -155,6 +156,9 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
                 AccountIdentityLink.canonical_user_id == owner.id,
                 AccountIdentityLink.website_id == UUID(row.website_id),
                 WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
+            if not user and shared_identity(row.app):
+                user = owner
+                account = f'owner:{owner.id}'
             if not user:
                 link = issuer(request)+'/auth/account-links/connect?'+urlencode({'app':row.app,'sso':row.id})
                 resume = issuer(request)+'/auth/sso/authorize?'+urlencode({'request':row.id})
@@ -168,14 +172,15 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         resume = issuer(request)+'/auth/sso/authorize?'+urlencode({'request':row.id})
         path = f'/auth/{provider}/login' if provider else '/app/login'
         params = {'next':resume}
-        params['app'] = row.app
+        if not shared_identity(row.app):
+            params['app'] = row.app
         if hint:
             params['login_hint'] = hint
         return redirect(issuer(request)+path+'?'+urlencode(params))
     code = secrets.token_urlsafe(40)
     claimed = (await session.execute(update(PortalSsoRequest).where(PortalSsoRequest.id == row.id,
         PortalSsoRequest.code_hash.is_(None), PortalSsoRequest.expires_at >= int(time.time()))
-        .values(subject=f'website:{row.website_id}:{user.id}',code_hash=digest(code),expires_at=int(time.time())+120).returning(PortalSsoRequest.id))).scalar_one_or_none()
+        .values(subject=account or f'website:{row.website_id}:{user.id}',code_hash=digest(code),expires_at=int(time.time())+120).returning(PortalSsoRequest.id))).scalar_one_or_none()
     await session.commit()
     if not claimed:
         raise HTTPException(400, 'expired_request')
@@ -198,6 +203,9 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(parts[2]),
             WebsiteUser.website_id == UUID(parts[1]),WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
         claims = {'actor_type':'website_user','website_id':parts[1]}
+    elif len(parts) == 2 and parts[0] == 'owner' and shared_identity(row.app):
+        user = (await session.execute(select(User).where(User.id == UUID(parts[1]),User.is_active.is_(True)))).scalar_one_or_none()
+        claims = {'actor_type':'owner'}
     else:
         raise HTTPException(401, 'invalid_account')
     if not user:

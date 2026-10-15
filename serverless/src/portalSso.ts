@@ -1,3 +1,4 @@
+import { identityUrl } from './identityUrls';
 import {identityDocument} from './identityPage';
 import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -5,7 +6,7 @@ import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import { websiteBySlug, websiteUserById, userById } from './db';
 import type { Env } from './types';
 import { googleLoginHint } from './loginHints';
-import { portalClient, ssoReturn } from './portalClients';
+import { portalClient, ssoReturn, sharedIdentity } from './portalClients';
 
 const escapeHtml=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const browserCookie = '__Host-pidp_sso_browser';
@@ -51,7 +52,7 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   await c.env.DB.prepare('INSERT INTO portal_sso_requests (id,browser_hash,origin,next,website_id,app,expires_at) VALUES (?,?,?,?,?,?,?)')
    .bind(id,await sha256Hex(browser),destination,target.toString(),website.id,appSlug,now()+600).run();
   setCookie(c,browserCookie,browser,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:600});
-  const authorize=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);
+  const authorize=identityUrl(c.env,'/auth/sso/authorize');
   authorize.searchParams.set('request',id);
   if(provider)authorize.searchParams.set('provider',provider);if(prompt)authorize.searchParams.set('prompt',prompt);
   const hint=googleLoginHint(provider,c.req.query('login_hint'));
@@ -65,8 +66,8 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   if(!row.website_id)return c.json({error:'application_not_registered'},503);
   const prompt=c.req.query('prompt');if(prompt && !['select_account','login'].includes(prompt))return c.json({error:'invalid_prompt'},400);
   if(prompt==='select_account'){
-   const resume=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);resume.searchParams.set('request',row.id);
-   const login=new URL('/app/login',c.env.PUBLIC_BASE_URL);login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
+   const resume=identityUrl(c.env,'/auth/sso/authorize');resume.searchParams.set('request',row.id);
+   const login=identityUrl(c.env,'/app/login');if(!sharedIdentity(c.env,row.app))login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
    let email='';try{const claims=await verifyJwt(c.env,getCookie(c,'pidp_session')||'');const user=claims.actor_type==='website_user'?await websiteUserById(c.env.DB,claims.website_id!,claims.sub):await userById(c.env.DB,claims.sub);if(user?.is_active && (claims.actor_type!=='website_user'||claims.website_id===row.website_id))email=user.email}catch{}
    c.header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
    return c.html(identityDocument(`Choose an account`,`<h1>Choose an account</h1><p>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)} at ${escapeHtml(new URL(row.origin).host)}.</p>${email?`<p><a href="${escapeHtml(resume.toString())}">Continue as ${escapeHtml(email)}</a></p>`:''}<p><a href="${escapeHtml(login.toString())}">Use another portal account</a></p><p><a href="${escapeHtml(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>`));
@@ -83,15 +84,15 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
       JOIN account_identity_links link ON link.website_user_id=member.id
       WHERE link.canonical_user_id=? AND link.website_id=? AND member.website_id=? AND member.is_active=1`)
       .bind(owner.id,row.website_id,row.website_id).first<{id:string}>();
-     if(!linked){
-      const link=new URL('/auth/account-links/connect',c.env.PUBLIC_BASE_URL);link.searchParams.set('app',row.app);link.searchParams.set('sso',row.id);
-      const resume=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);resume.searchParams.set('request',row.id);
-      const login=new URL('/app/login',c.env.PUBLIC_BASE_URL);login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
+     if(!linked && !sharedIdentity(c.env,row.app)){
+      const link=identityUrl(c.env,'/auth/account-links/connect');link.searchParams.set('app',row.app);link.searchParams.set('sso',row.id);
+      const resume=identityUrl(c.env,'/auth/sso/authorize');resume.searchParams.set('request',row.id);
+      const login=identityUrl(c.env,'/app/login');if(!sharedIdentity(c.env,row.app))login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
       c.header('Referrer-Policy','same-origin');
       c.header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
       return c.html(identityDocument(`Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)}`,`<h1>Connect your ${escapeHtml(portalClient(c.env,row.origin)!.name)} account</h1><p>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)} at ${escapeHtml(new URL(row.origin).host)}.</p><p>Signed in to PIdP as ${escapeHtml(owner.email)}. Connect your portal account to continue with the same identity.</p><p><a href="${link.toString().replaceAll('&','&amp;')}">Link my portal account</a></p><p><a href="${login.toString().replaceAll('&','&amp;')}">Sign in to the portal separately</a></p><form method="post" action="/auth/account-links/switch?${escapeHtml(new URLSearchParams({app:row.app,sso:row.id,account:"primary"}).toString())}"><button>Use another PIdP account</button></form><p><a href="${escapeHtml(row.origin)}">Cancel and return to ${escapeHtml(portalClient(c.env,row.origin)!.name)}</a></p><p>Authentication provided by PIdP. Linking requires signing in to both accounts and confirming the connection.</p>`));
      }
-     account=`website:${row.website_id}:${linked.id}`;
+     account=linked ? `website:${row.website_id}:${linked.id}` : `owner:${owner.id}`;
     }
    }
   } catch { /* Sign in in the requesting application namespace. */ }
@@ -99,9 +100,9 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   if(!account || hint){
    const provider=c.req.query('provider');
    if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
-   const login=new URL(provider?`/auth/${provider}/login`:'/app/login',c.env.PUBLIC_BASE_URL);
-   const resume=new URL('/auth/sso/authorize',c.env.PUBLIC_BASE_URL);resume.searchParams.set('request',row.id);
-   login.searchParams.set('app',row.app);
+   const login=identityUrl(c.env,provider?`/auth/${provider}/login`:'/app/login');
+   const resume=identityUrl(c.env,'/auth/sso/authorize');resume.searchParams.set('request',row.id);
+   if(!sharedIdentity(c.env,row.app))login.searchParams.set('app',row.app);
    login.searchParams.set('next',resume.toString());
    if(hint)login.searchParams.set('login_hint',hint);
    return c.redirect(login.toString(),303);
@@ -116,7 +117,7 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   const browser=getCookie(c,browserCookie);if(!browser)return c.json({error:'invalid_browser'},400);
   const row=await c.env.DB.prepare('DELETE FROM portal_sso_requests WHERE id=? AND code_hash=? AND browser_hash=? AND origin=? AND expires_at>=? RETURNING *')
    .bind(c.req.query('request') || '',await sha256Hex(c.req.query('code') || ''),await sha256Hex(browser),origin(c),now()).first<Ticket>();
-  if(!row?.website_id || !row.subject?.startsWith(`website:${row.website_id}:`) || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'invalid_handoff'},400);
+  if(!row?.website_id || !row.subject || !(row.subject?.startsWith(`website:${row.website_id}:`) || (sharedIdentity(c.env,row.app) && /^owner:[^:]+$/.test(row.subject || ''))) || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'invalid_handoff'},400);
   let token;try{token=await issue(c.env,row.subject);}catch{return c.json({error:'inactive_account'},401);}
   setCookie(c,'pidp_session',token,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || '525600')*60});
   setCookie(c,browserCookie,'',{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:0});

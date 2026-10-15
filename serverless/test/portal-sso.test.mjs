@@ -172,3 +172,50 @@ test('account chooser and fresh login preserve portal context without silent ses
   assert.equal((await f.request('one.example','/auth/sso/start?prompt=unknown')).status,400);
  }finally{f.sql.close()}
 });
+
+test('shared identity accepts primary accounts without another portal login and preserves linked member subjects',async()=>{
+ const f=fixture();try{
+ f.env.PORTAL_SHARED_IDENTITY='true';
+ const token=await signJwt(f.env,{sub:'owner',actor_type:'owner'});
+ for(const linked of [false,true]){
+  if(linked)f.sql.exec("INSERT INTO account_identity_links VALUES('website:site:member','owner','site','member','2026-10-09')");
+  const started=await start(f);const url=new URL(started.authorize);
+  const result=await f.request('id.example',url.pathname+url.search,{cookie:'pidp_session='+token});
+  assert.equal(result.status,303);
+  const complete=new URL(result.headers.get('location'));
+  const finished=await f.request('one.example',complete.pathname.replace('/pidp','')+complete.search,{cookie:started.browser});
+  assert.equal(finished.status,303);
+  assert.match(finished.headers.get('set-cookie'),linked?/session-for-website%3Asite%3Amember/:/session-for-owner%3Aowner/);
+ }
+ const started=await start(f);const u=new URL(started.authorize);
+ const login=await f.request('id.example',u.pathname+u.search);
+ const target=new URL(login.headers.get('location'));
+ assert.equal(target.pathname,'/app/login');assert.equal(target.searchParams.has('app'),false);
+ }finally{f.sql.close()}
+});
+
+test('path-mounted central identity preserves the browser-bound tenant handoff',async()=>{
+ const f=fixture(true);
+ f.env.PUBLIC_BASE_URL='https://orgportal.cc/pidp';
+ f.env.PORTAL_AUTH_ORIGINS+=',https://orgportal.cc';
+ try {
+  const s=await start(f);
+  const authorize=new URL(s.authorize);
+  assert.equal(authorize.origin+authorize.pathname,'https://orgportal.cc/pidp/auth/sso/authorize');
+  const login=await f.request('orgportal.cc',authorize.pathname.replace('/pidp','')+authorize.search);
+  const target=new URL(login.headers.get('location'));
+  assert.equal(target.pathname,'/pidp/app/login');
+  assert.equal(new URL(target.searchParams.get('next')).pathname,'/pidp/auth/sso/authorize');
+  const page=await f.request('orgportal.cc','/app/login?app=members&next='+encodeURIComponent(target.searchParams.get('next')));
+  assert.match(await page.text(),/action="\/pidp\/app\/login"/);
+  const session=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const completed=await f.request('orgportal.cc',authorize.pathname.replace('/pidp','')+authorize.search,{cookie:'pidp_session='+session});
+  const complete=new URL(completed.headers.get('location'));
+  const result=await f.request('one.example',complete.pathname.replace('/pidp','')+complete.search,{cookie:s.browser});
+  assert.equal(result.status,303);
+  assert.equal(new URL(result.headers.get('location')).origin,'https://one.example');
+  assert.equal((await f.request('orgportal.cc','/auth/session',{cookie:'pidp_session='+session})).status,200);
+  assert.equal((await f.request('orgportal.cc','/auth/session',{cookie:'pidp_session=forged'})).status,401);
+  assert.equal((await f.request('orgportal.cc',authorize.pathname.replace('/pidp','')+authorize.search,{'x-forwarded-host':'one.example'})).status,400);
+ }finally{f.sql.close()}
+});

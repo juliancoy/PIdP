@@ -10,32 +10,49 @@
   },
   "compatibility_date": "2026-06-03",
   "workers_dev": true,
-  "limits": { "cpu_ms": 1000 },
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "routes": [
+    {
+      "pattern": "id.orgportal.cc",
+      "custom_domain": true
+    },
+    {
+      "pattern": "id.codecollective.us",
+      "custom_domain": true
+    }
+  ],
+  "limits": {
+    "cpu_ms": 1000
+  },
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
   "observability": {
     "redact_query_string": true,
     "enabled": true
   },
   "vars": {
-    "APP_NAME": "PIdP",
+    "APP_NAME": "OrgPortal",
     "MCP_OAUTH_RESOURCE_CONFIG_JSON": "{\"https://orgportal.cc/api/org/mcp\": {\"secretHash\": \"cf5146c0d9d32987d59204ddd8c4082c1ae7605c3e9b5d0b89d53ab0ab15e2bd\", \"portal\": {\"name\": \"OrgPortal\", \"loginUrl\": \"https://orgportal.cc/users/mcp-connect\"}}}",
-    "ENV": "dev",
-    "ACCESS_TOKEN_EXPIRE_MINUTES": "525600",
-    "ALLOWED_ORIGINS": "",
-    "PORTAL_AUTH_ORIGINS": "https://medtech.social,https://lifetech.fyi,https://codecollective.us,https://www.codecollective.us,https://timebank.codecollective.us,https://bmoretimebank.codecollective.us,https://orgportal.cc",
+    "ENV": "production",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
+    "ALLOWED_ORIGINS": "https://codecollective.us,https://www.codecollective.us",
+    "PORTAL_AUTH_ORIGINS": "https://portal.deism.church,https://medtech.social,https://lifetech.fyi,https://codecollective.us,https://www.codecollective.us,https://timebank.codecollective.us,https://bmoretimebank.codecollective.us,https://orgportal.cc",
     "PORTAL_SSO_APP_SLUG": "orgportal",
+    "PORTAL_SHARED_IDENTITY": "false",
     "ADMIN_EMAILS": "",
-    "ADMIN_USER_IDS": "46d3aec0-d4f4-46fc-860e-3fb7a82702ba",
-    "SESSION_COOKIE_DOMAIN": "codecollective.us",
+    "ADMIN_USER_IDS": "",
+    "SESSION_COOKIE_DOMAIN": "",
     "PUBLIC_R2_BASE_URL": "",
-    "PUBLIC_BASE_URL": "https://id.codecollective.us",
-    "FRONTEND_REDIRECT_URL": "",
+    "PUBLIC_BASE_URL": "https://orgportal.cc/pidp",
+    "FRONTEND_REDIRECT_URL": "https://orgportal.cc/",
     "NATIVE_REDIRECT_SCHEMES": "org.arkavo.portal,codecollective",
-    "GOOGLE_REDIRECT_URI": "",
+    "GOOGLE_REDIRECT_URI": "https://id.codecollective.us/auth/google/callback",
     "GOOGLE_CALENDAR_REDIRECT_URI": "",
     "MICROSOFT_REDIRECT_URI": "",
     "MICROSOFT_CALENDAR_REDIRECT_URI": "",
-    "GITHUB_REDIRECT_URI": ""
+    "GITHUB_REDIRECT_URI": "https://id.codecollective.us/auth/github/callback"
   },
   "d1_databases": [
     {
@@ -49,8 +66,5 @@
       "binding": "AVATARS",
       "bucket_name": "pidp-avatars"
     }
-  ],
-  "limits": {
-    "cpu_ms": 1000
-  }
+  ]
 }

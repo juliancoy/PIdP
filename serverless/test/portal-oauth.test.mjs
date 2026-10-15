@@ -45,7 +45,7 @@ function fixture() {
     const authorize = new URL(response.headers.get('location'));
     return { state: authorize.searchParams.get('state'), cookie: response.headers.getSetCookie()[0].split(';')[0], authorize };
   }
-  return { request, start };
+  return { request, start, env };
 }
 
 test('only numeric Google account hints reach the provider authorization URL', async () => {
@@ -99,4 +99,18 @@ test('unknown hosts cannot select a portal and tampered state cannot redirect', 
   const response = await request(`https://id.codecollective.us/auth/google/callback?code=test&state=${encodeURIComponent(bad)}`);
   assert.equal(response.status, 400);
   assert.equal(response.headers.has('location'), false);
+});
+
+
+test('legacy registered provider callback returns to the new central browser before exchanging the code',async()=>{
+ const {request,env}=fixture();env.PORTAL_SHARED_IDENTITY='true';env.PUBLIC_BASE_URL='https://id.orgportal.cc';
+ const started=await request('https://id.orgportal.cc/auth/google/login?next=%2Fprofile');
+ const authorize=new URL(started.headers.get('location')), state=authorize.searchParams.get('state');
+ assert.equal(authorize.searchParams.get('redirect_uri'),'https://id.codecollective.us/auth/google/callback');
+ const callback='/auth/google/callback?'+new URLSearchParams({code:'fixture-provider-code',state});
+ const relayed=await request('https://id.codecollective.us'+callback);
+ assert.equal(relayed.status,303);assert.equal(relayed.headers.get('location'),'https://id.orgportal.cc'+callback);
+ assert.equal(relayed.headers.get('set-cookie'),null);
+ const missingBrowser=await request('https://id.orgportal.cc'+callback);
+ assert.equal(missingBrowser.status,400);assert.match(await missingBrowser.text(),/browser where it started/);
 });

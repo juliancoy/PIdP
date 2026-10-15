@@ -1,4 +1,5 @@
-import {browserReturn} from './portalClients';
+import { identityUrl } from './identityUrls';
+import {browserReturn, sharedIdentity} from './portalClients';
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { googleLoginHint } from './loginHints';
 import type { Context } from "hono";
@@ -338,12 +339,14 @@ async function fetchSocialProfile(provider: Provider, accessToken: string): Prom
 export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Response> {
   const cfg = providerConfig(c.env, String(c.req.param("provider") || ""));
   const url = new URL(c.req.url);
-  const appSlug = truthy(url.searchParams.get("owner") || undefined) ? "" : (url.searchParams.get("app") || "").trim();
+  const requestedApp = (url.searchParams.get("app") || "").trim();
+  const shared = sharedIdentity(c.env, requestedApp);
+  const appSlug = truthy(url.searchParams.get("owner") || undefined) || shared ? "" : requestedApp;
   const state: OAuthState = {
     provider: cfg.provider,
     nonce: crypto.randomUUID(),
     app_slug: appSlug || undefined,
-    force_owner: truthy(url.searchParams.get("owner") || undefined),
+    force_owner: truthy(url.searchParams.get("owner") || undefined) || shared || (c.env.PORTAL_SHARED_IDENTITY === "true" && !requestedApp),
     next: url.searchParams.get("next") || undefined,
     portal_origin: portalRequestOrigin(c),
     exp: Math.floor(Date.now() / 1000) + 20 * 60,
@@ -377,6 +380,14 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   if (!code || !returnedState) fail(400, `${provider} sign-in session expired. Please try again.`);
   const state = await decodeState(c.env, returnedState);
   if (state.provider !== provider) fail(400, `${provider} sign-in session expired. Please try again.`);
+  if (!state.portal_origin && c.env.PORTAL_SHARED_IDENTITY === 'true' && c.env.PUBLIC_BASE_URL
+      && url.origin !== new URL(c.env.PUBLIC_BASE_URL).origin) {
+    const callback = identityUrl(c.env, url.pathname + url.search);
+    c.header('cache-control', 'no-store'); c.header('referrer-policy', 'no-referrer');
+    return c.redirect(callback.toString(), 303);
+  }
+  if (!state.portal_origin && c.env.PORTAL_SHARED_IDENTITY === 'true' && !cookieState)
+    fail(400, "Sign-in must finish in the browser where it started. Please try again.");
   // Return the provider's one-use code to the portal that began sign-in, before
   // exchanging it. Its original state cookie binds the login to that browser.
   if (state.portal_origin) {

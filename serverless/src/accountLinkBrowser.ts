@@ -1,3 +1,4 @@
+import { identityUrl as publicIdentityUrl } from './identityUrls';
 import {identityDocument} from './identityPage';
 import {Hono,type Context} from 'hono';
 import {getCookie,setCookie,deleteCookie} from 'hono/cookie';
@@ -10,6 +11,7 @@ const cookie='__Host-pidp_identity_link';
 const esc=(s:unknown)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 function page(title:string,body:string){return identityDocument(title,`<h1>${esc(title)}</h1>${body}`)}
 type LinkRequest={id:string;canonical_user_id:string;website_id:string;expires_at:number;subject:string|null};
+function identityUrl(c:Context<{Bindings:Env}>,path:string) {return publicIdentityUrl(c.env,path,c.req.url)}
 export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promise<UserRow>,getMember:(env:Env,token:string)=>Promise<WebsiteUserRow>){
  const app=new Hono<{Bindings:Env}>();
  app.use('*',async(c,next)=>{const params=new URL(c.req.url).searchParams;for(const key of params.keys())if(params.getAll(key).length!==1)fail(400,'Ambiguous request');c.header('Cache-Control','no-store');c.header('Referrer-Policy','same-origin');c.header('Content-Security-Policy',`default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${(c.env.PORTAL_AUTH_ORIGINS||'').split(',').map(s=>s.trim()).filter(s=>portalClient(c.env,s)).join(' ')}; frame-ancestors 'none'; base-uri 'none'`);await next()});
@@ -24,10 +26,10 @@ export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promis
  app.get('/connect',async c=>{
   const website=await websiteBySlug(c.env.DB,c.req.query('app')||'');if(!website)fail(404,'Application not found');
   const resume=await continuation(c,website.id);
-  const portal=await loginPortal(c.env,website.slug,new URL('/auth/sso/authorize?'+new URLSearchParams({request:c.req.query('sso')||''}),c.req.url).toString());
+  const portal=await loginPortal(c.env,website.slug,identityUrl(c,'/auth/sso/authorize?'+new URLSearchParams({request:c.req.query('sso')||''})).toString());
   const token=getCookie(c,'pidp_session');let owner:UserRow|null=null;
   if(token)try{owner=await getOwner(c.env,token)}catch{owner=null}
-  if(!owner?.is_active){const login=new URL('/app/login',c.req.url);login.searchParams.set('owner','true');login.searchParams.set('next',c.req.url);return c.html(page('Link your portal sign-in',`<p>First sign in to your primary PIdP account.</p><a href="${esc(login)}">Sign in to PIdP</a>`))}
+  if(!owner?.is_active){const login=identityUrl(c,'/app/login');login.searchParams.set('owner','true');login.searchParams.set('next',c.req.url);return c.html(page('Link your portal sign-in',`<p>First sign in to your primary PIdP account.</p><a href="${esc(login)}">Sign in to PIdP</a>`))}
   return c.html(page('Link your portal sign-in',`<p>Primary account: ${esc(owner.full_name||owner.email)} (${esc(owner.email)})</p><p>Next, authenticate your ${esc(portal?.name||website.name)} member account. Linking will give both sign-ins one personal profile and portal identity.</p><form method="post" action="/auth/account-links/connect?app=${esc(encodeURIComponent(website.slug))}${resume?'&amp;'+esc(resume.slice(1)):''}"><button>Authenticate the portal account</button></form>${switchForm(website.slug,resume,"primary","Use another PIdP account")}`));
  });
  app.post('/switch',async c=>{
@@ -46,9 +48,9 @@ export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promis
    if(nonce)await c.env.DB.prepare('DELETE FROM account_identity_link_requests WHERE browser_hash=? AND used_at IS NULL').bind(await sha256Hex(nonce)).run();
    deleteCookie(c,cookie,{path:'/',secure:true});
   }
-  const target=new URL('/app/login',c.req.url);
+  const target=identityUrl(c,'/app/login');
   target.searchParams.set(account==='primary'?'owner':'app',account==='primary'?'true':website.slug);
-  target.searchParams.set('next',new URL(account==='primary'?'/auth/account-links/connect?'+new URLSearchParams({app:website.slug}).toString()+(resume?'&'+resume.slice(1):''):'/auth/account-links/finish'+resume,c.req.url).toString());
+  target.searchParams.set('next',identityUrl(c,account==='primary'?'/auth/account-links/connect?'+new URLSearchParams({app:website.slug}).toString()+(resume?'&'+resume.slice(1):''):'/auth/account-links/finish'+resume).toString());
   target.searchParams.set('prompt','select_account');return c.redirect(target.toString(),303);
  });
  app.post('/connect',async c=>{
@@ -63,7 +65,7 @@ export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promis
    c.env.DB.prepare('INSERT INTO account_identity_link_requests(id,canonical_user_id,website_id,browser_hash,primary_proof_hash,expires_at) VALUES(?,?,?,?,?,?)').bind(id,owner.id,website.id,await sha256Hex(nonce),await sha256Hex(token),expires),
   ]);
   setCookie(c,cookie,nonce,{path:'/',secure:true,httpOnly:true,sameSite:'Lax',maxAge:600});
-  const login=new URL('/app/login',c.req.url);login.searchParams.set('app',website.slug);login.searchParams.set('next',new URL('/auth/account-links/finish'+resume,c.req.url).toString());
+  const login=identityUrl(c,'/app/login');login.searchParams.set('app',website.slug);login.searchParams.set('next',identityUrl(c,'/auth/account-links/finish'+resume).toString());
   return c.redirect(login.toString(),303);
  });
  async function context(c:Context<{Bindings:Env}>,switching=false){
@@ -88,7 +90,7 @@ export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promis
    if(!pending)fail(409,'Account-link request expired or already used');
    await continuation(c,pending.website_id);
    const website=await c.env.DB.prepare('SELECT slug FROM websites WHERE id=?').bind(pending.website_id).first<{slug:string}>();if(!website)fail(404,'Application not found');
-   const login=new URL('/app/login',c.req.url);login.searchParams.set('app',website.slug);login.searchParams.set('next',c.req.url);return c.redirect(login.toString(),303);
+   const login=identityUrl(c,'/app/login');login.searchParams.set('app',website.slug);login.searchParams.set('next',c.req.url);return c.redirect(login.toString(),303);
   }}
 
   const {row,owner,member,subject,resume,conflict}=await context(c,true);
@@ -112,7 +114,7 @@ export function accountLinkBrowserRoutes(getOwner:(env:Env,token:string)=>Promis
   ]);
   if(!results[1].meta.changes)fail(409,'Account-link request changed or already used');
   deleteCookie(c,cookie,{path:'/',secure:true});
-  if(resume){const target=new URL('/auth/sso/authorize',c.req.url);target.searchParams.set('request',new URLSearchParams(resume.slice(1)).get('sso')!);return c.redirect(target.toString(),303);}
+  if(resume){const target=identityUrl(c,'/auth/sso/authorize');target.searchParams.set('request',new URLSearchParams(resume.slice(1)).get('sso')!);return c.redirect(target.toString(),303);}
   return c.html(page('Accounts linked','<p>Your sign-ins now share one identity and personal profile.</p><p>Return to your portal to continue.</p>'));
  });
  return app;

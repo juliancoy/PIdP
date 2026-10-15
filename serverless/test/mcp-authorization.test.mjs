@@ -205,6 +205,36 @@ test('consent denial, client revocation, account deactivation and protected intr
   } finally { f.sql.close(); }
 });
 
+test('multiple connections for one client keep account identities and revocation independent', async () => {
+  const f = await fixture(); try {
+    const alice = await (await f.exchange(await f.code())).json();
+    const otherAlice = await (await f.exchange(await f.code())).json();
+    const consent = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(f.params), { headers: { cookie: f.bobCookie } });
+    assert.equal(consent.status, 200);
+    const nonce = (await consent.text()).match(/name="request" value="([^"]+)"/)[1];
+    const approved = await f.post('/oauth/mcp/authorize', { request: nonce, decision: 'allow' }, { cookie: f.bobCookie, origin: f.issuer });
+    assert.equal(approved.status, 303);
+    const exchanged = await f.exchange(new URL(approved.headers.get('location')).searchParams.get('code'));
+    assert.equal(exchanged.status, 200);
+    const bob = await exchanged.json();
+    for (const [tokens, subject] of [[alice, 'owner:alice'], [otherAlice, 'owner:alice'], [bob, 'owner:bob']]) {
+      const status = await (await f.introspect(tokens.access_token)).json();
+      assert.equal(status.active, true);
+      assert.equal(status.sub, subject);
+    }
+    const renewed = await f.refresh(bob.refresh_token);
+    assert.equal(renewed.status, 200);
+    const renewedBob = await renewed.json();
+    assert.equal((await (await f.introspect(renewedBob.access_token)).json()).sub, 'owner:bob');
+    assert.equal((await f.post('/oauth/mcp/revoke', { token: alice.refresh_token, client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars' })).status, 200);
+    assert.equal((await (await f.introspect(alice.access_token)).json()).active, false);
+    assert.equal((await (await f.introspect(otherAlice.access_token)).json()).active, true);
+    assert.equal((await (await f.introspect(renewedBob.access_token)).json()).active, true);
+    assert.equal((await f.refresh(otherAlice.refresh_token)).status, 200);
+    assert.equal((await f.refresh(renewedBob.refresh_token)).status, 200);
+  } finally { f.sql.close(); }
+});
+
 test('user revocation is session scoped and forged requests cannot revoke connections', async () => {
   const f = await fixture(); try {
     const tokens = await (await f.exchange(await f.code())).json();

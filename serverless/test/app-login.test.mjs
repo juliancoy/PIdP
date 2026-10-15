@@ -58,3 +58,23 @@ test('social login remains available after a password validation error', async (
   assert.equal(response.status, 422);
   assert.equal(googleLink(await response.text()).searchParams.get('app'), 'medtech');
 });
+
+test('shared login uses OrgPortal branding and one primary credential namespace',async()=>{
+ const shared={...env,APP_NAME:'OrgPortal',PORTAL_SHARED_IDENTITY:'true',PORTAL_SSO_APP_SLUG:'code-collective'};
+ const login=await app.request('https://id.example/app/login?app=code-collective&next=%2Fprofile',{},shared);
+ const html=await login.text();assert.match(html,/Sign in to OrgPortal/);assert.doesNotMatch(html,/name="app"/);assert.match(html,/Create an account/);
+ const provider=googleLink(html);assert.equal(provider.searchParams.has('app'),false);
+ const registration=await app.request('https://id.example/app/login?register=1&next=%2Fprofile',{},shared);
+ assert.match(await registration.text(),/action="\/app\/register"/);
+});
+
+
+test('retired CodeCollective login redirects to the shared hostname while old MCP consent remains compatible',async()=>{
+ const shared={...env,PORTAL_SHARED_IDENTITY:'true',PUBLIC_BASE_URL:'https://id.orgportal.cc',APP_NAME:'OrgPortal'};
+ for(const path of ['/','/profile','/app/login','/auth/google/login']){
+  const r=await app.request('https://id.codecollective.us'+path,{},shared);assert.equal(r.status,303);assert.equal(new URL(r.headers.get('location')).origin,'https://id.orgportal.cc');
+ }
+ const r=await app.request('https://id.codecollective.us/app/login?next=%2Foauth%2Fmcp%2Fauthorize',{},shared);assert.equal(r.status,200);
+ const relayed=await app.request('https://id.codecollective.us/app/login?next=%2Fauth%2Fsso%2Fauthorize%3Frequest%3Dfixture',{},shared);
+ assert.equal(new URL(new URL(relayed.headers.get('location')).searchParams.get('next')).origin,'https://id.orgportal.cc');
+});

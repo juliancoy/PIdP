@@ -1,3 +1,5 @@
+import { identityUrl, mountedIdentityPath } from './identityUrls';
+import { sharedIdentity } from './portalClients';
 import {loginPortal,browserReturn} from './portalClients';
 import { runRetention } from './retention';
 import { Hono, type Context } from "hono";
@@ -40,6 +42,42 @@ import {
 } from "./microsoftCalendar";
 
 const app = new Hono<{ Bindings: Env }>();
+// Retire old user-facing identity entry points; existing OAuth clients and
+// registered provider callbacks continue to use their original endpoints.
+app.use('*',async(c,next)=>{
+  const url=new URL(c.req.url);
+  if(c.env.PUBLIC_BASE_URL
+    && ['id.codecollective.us','id.orgportal.cc'].includes(url.hostname) && !c.req.header('x-forwarded-host')
+    && ['GET','HEAD'].includes(c.req.method)
+    && ['/','/profile','/app/login','/app/login/','/auth/google/login','/auth/github/login','/auth/sso/authorize'].includes(url.pathname)) {
+    const destination=url.searchParams.get('next');
+    let returnUrl:URL|null=null;
+    try{returnUrl=destination ? new URL(destination,url.origin) : null;}catch{return c.json({error:'invalid_return'},400);}
+    if(returnUrl?.origin === url.origin && returnUrl.pathname.startsWith('/oauth/mcp/')) return next();
+    const central=new URL(c.env.PUBLIC_BASE_URL);
+    if(central.origin !== url.origin){
+      if(returnUrl?.origin === url.origin){returnUrl.host=central.host;returnUrl.protocol=central.protocol;returnUrl.pathname=mountedIdentityPath(returnUrl.pathname,central.pathname.replace(/\/+$/,''));url.searchParams.set('next',returnUrl.toString());}
+      url.host=central.host;url.protocol=central.protocol;url.pathname=central.pathname.replace(/\/+$/,'')+url.pathname;
+      c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');
+      return c.redirect(url.toString(),303);
+    }
+  }
+  await next();
+});
+app.use('*', async (c,next) => {
+  await next();
+  if(!c.env.PUBLIC_BASE_URL) return;
+  const base=new URL(c.env.PUBLIC_BASE_URL), prefix=base.pathname.replace(/\/+$/,'');
+  if(!prefix || new URL(c.req.url).origin!==base.origin || c.req.header('x-forwarded-host')) return;
+  const location=c.res.headers.get('location');
+  if(location?.startsWith('/') && !location.startsWith('//')) c.res.headers.set('location',mountedIdentityPath(location,prefix));
+  if((c.res.headers.get('content-type') || '').includes('text/html')) {
+    const html=await c.res.text();
+    const headers=new Headers(c.res.headers);headers.delete('content-length');headers.set('cache-control','no-store');
+    const body=html.replace(/((?:href|src|action)=["'])(\/[^"']*)(["'])/g,(_all,attribute,path,quote)=>attribute+mountedIdentityPath(path,prefix)+quote);
+    c.res=new Response(body,{status:c.res.status,headers});
+  }
+});
 app.route('/', mcpAuthorization);
 app.route('/auth/account-links',accountLinkBrowserRoutes(currentOwner,currentWebsiteUser));
 app.route('/auth/account-links',accountIdentityRoutes(currentOwner,currentWebsiteUser));
@@ -261,7 +299,7 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
     ["google", "Google", c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET],
     ["github", "GitHub", c.env.GITHUB_CLIENT_ID && c.env.GITHUB_CLIENT_SECRET],
   ] as const).filter(([, , enabled]) => enabled).map(([provider, label]) => {
-    const url = new URL(portalOrigin ? `/pidp/auth/${provider}/login` : `/auth/${provider}/login`, portalOrigin || canonicalBase(c));
+    const url = portalOrigin ? new URL(`/pidp/auth/${provider}/login`, portalOrigin) : identityUrl(c.env, `/auth/${provider}/login`);
     url.searchParams.set("next", next);
     if (ownerMode) url.searchParams.set("owner", "1");
     else if (appSlug) url.searchParams.set("app", appSlug);
@@ -269,11 +307,11 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
   });
 }
 
-function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string }) {
+function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; registration?: boolean; shared?: boolean }) {
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
-  const title = params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to PIdP`;
+  const title = params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.appName}` : params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -297,14 +335,15 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
     ${params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
     ${error}
     ${params.socialLinks.map(link => `<a class="social-login" href="${escapeHtml(link.href)}">Continue with ${escapeHtml(link.label)}</a>`).join("\n")}
-    <form method="post" action="/app/login">
+    <form method="post" action="${params.registration ? "/app/register" : "/app/login"}">
       ${appField}
       ${ownerField}
       <input type="hidden" name="next" value="${escapeHtml(params.next)}">
       <label>Email <input name="email" type="email" autocomplete="email" required></label>
-      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit">Log in</button>
+      <label>Password <input name="password" type="password" autocomplete="${params.registration ? "new-password" : "current-password"}" ${params.registration ? 'minlength="8"' : ""} required></label>
+      <button type="submit">${params.registration ? "Create account" : "Sign in"}</button>
     </form>
+    ${params.shared ? `<p><a href="/app/login?${escapeHtml(new URLSearchParams({next:params.next,...(params.registration ? {} : {register:"1"})}).toString())}">${params.registration ? "Already have an account? Sign in" : "Create an account"}</a></p><p>One OrgPortal account for all communities.</p>` : ""}
   </main>
 </body>
 </html>`;
@@ -595,7 +634,7 @@ app.post("/auth/token", async (c) => {
 // The issuer home is an owner entry point, matching the Python console.
 app.get("/", (c) => {
   const next = new URL(c.req.url).searchParams.get("next") || "/profile";
-  const query = new URLSearchParams({ owner: "1", next });
+  const query = new URLSearchParams({ ...(new URL(c.env.PUBLIC_BASE_URL || c.req.url).pathname.replace(/\/+$/,'') === '/pidp' ? {app:c.env.PORTAL_SSO_APP_SLUG || 'orgportal'} : c.env.PORTAL_SHARED_IDENTITY === "true" ? {} : { owner: "1" }), next });
   return c.redirect(`/app/login?${query}`, 303);
 });
 
@@ -609,8 +648,9 @@ app.get("/profile", async (c) => {
 
 app.get("/app/login", async (c) => {
   const url = new URL(c.req.url);
-  const appParam = url.searchParams.get("app") || "";
-  const appSlug = appParam ? normalizeSlug(appParam) : "";
+  const appParam = url.searchParams.get("app") || (!url.searchParams.has("owner") && new URL(c.env.PUBLIC_BASE_URL || c.req.url).pathname.replace(/\/+$/, "") === "/pidp" ? c.env.PORTAL_SSO_APP_SLUG || "orgportal" : "");
+  const requestedApp = appParam ? normalizeSlug(appParam) : "";
+  const appSlug = sharedIdentity(c.env, requestedApp) ? "" : requestedApp;
   const appName = c.env.APP_NAME || "PIdP";
   const ownerMode = Boolean(url.searchParams.get("owner"));
   const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
@@ -620,13 +660,13 @@ app.get("/app/login", async (c) => {
     const portalOrigin = portalRequestOrigin(c);
     const redirect = portalOrigin
       ? new URL(`/pidp/auth/${provider}/login`, portalOrigin)
-      : new URL(`/auth/${provider}/login`, canonicalBase(c));
+      : identityUrl(c.env, `/auth/${provider}/login`);
     redirect.searchParams.set("next", next);
     if (ownerMode) redirect.searchParams.set("owner", "1");
     else if (appSlug) redirect.searchParams.set("app", appSlug);
     return c.redirect(redirect.toString(), 303);
   }
-  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
+  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
 });
 
 app.get("/app/login/", (c) => {
@@ -640,13 +680,14 @@ app.post("/app/login", async (c) => {
   const email = String(form.email || "").trim().toLowerCase();
   const password = String(form.password || "");
   const appParam = String(form.app || "");
-  const appSlug = appParam ? normalizeSlug(appParam) : "";
+  const requestedApp = appParam ? normalizeSlug(appParam) : "";
+  const appSlug = sharedIdentity(c.env, requestedApp) ? "" : requestedApp;
   const appName = c.env.APP_NAME || "PIdP";
   const ownerMode = Boolean(form.owner);
   const next = String(form.next || c.env.FRONTEND_REDIRECT_URL || "/");
   const portalName=ownerMode?undefined:(await loginPortal(c.env,appSlug,next,portalRequestOrigin(c)))?.name;
   if (!email || !password) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
   }
 
   if (!ownerMode && appSlug) {
@@ -655,10 +696,10 @@ app.post("/app/login", async (c) => {
     if (website) {
       const websiteUser = await websiteUserByEmail(c.env.DB, website.id, email);
       if (!websiteUser || !(await verifyPassword(password, websiteUser.hashed_password))) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
       }
       if (!websiteUser.is_active) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
@@ -668,13 +709,34 @@ app.post("/app/login", async (c) => {
   }
 
   const user = await userByEmail(c.env.DB, email);
-  if (!user || !(await verifyPassword(password, user.hashed_password))) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
+  if (!user?.is_active || !(await verifyPassword(password, user.hashed_password))) {
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
   setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
   return redirectWithSession(c.env, next, token, headers);
+});
+
+app.post("/app/register", async c => {
+  if(c.env.PORTAL_SHARED_IDENTITY !== 'true') fail(404,'Not found');
+  const origin=c.req.header('origin');
+  if(!origin || (origin !== new URL(c.env.PUBLIC_BASE_URL || c.req.url).origin && !portalAuthOrigins(c.env).includes(origin))) fail(403,'Untrusted registration origin');
+  const form=await c.req.parseBody();
+  const email=String(form.email || '').trim().toLowerCase(), password=String(form.password || '');
+  const next=String(form.next || '/profile');
+  const page=(error:string,status:400|409) => c.html(renderAppLoginPage({appName:c.env.APP_NAME || 'OrgPortal',appSlug:'',next,ownerMode:false,shared:true,registration:true,error,socialLinks:socialLoginLinks(c,'',next,false)}),status);
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length<8 || password.length>1024) return page('Enter a valid email and a password of at least 8 characters.',400);
+  // Validate the return before creating a credential or setting a session.
+  if(!browserReturn(c.env,next)) fail(400,'Invalid return destination');
+  if(await userByEmail(c.env.DB,email)) return page('Account already exists. Sign in to continue.',409);
+  const id=crypto.randomUUID();
+  await c.env.DB.prepare("INSERT INTO users(id,email,hashed_password,identity_data,is_active,created_at) VALUES(?,?,?,'{}',1,?)")
+    .bind(id,email,await hashPassword(password),nowIso()).run();
+  const user=(await userById(c.env.DB,id))!;
+  const token=await createOwnerToken(c.env,user),headers=new Headers();
+  setSessionCookie(headers,c.env,token,sessionMaxAgeSeconds(c.env));
+  return redirectWithSession(c.env,next,token,headers);
 });
 
 app.get("/auth/me", async (c) => {
@@ -913,6 +975,16 @@ app.post("/auth/session/logout", (c) => {
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
   clearSessionCookie(headers, c.env);
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+});
+
+// Read-only session validation for server-side page access. Never returns a token.
+app.get('/auth/session', async c => {
+  const token=sessionOrBearerToken(c);
+  const claims=await verifyJwt(c.env,token);
+  if(claims.actor_type==='website_user') await currentWebsiteUser(c.env,token);
+  else await currentOwner(c.env,token);
+  c.header('Cache-Control','private, no-store');
+  return c.json({authenticated:true});
 });
 
 app.get("/auth/session-token", async (c) => {

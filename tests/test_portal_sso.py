@@ -71,6 +71,17 @@ class SsoTests(unittest.TestCase):
             self.assertEqual(result.headers['location'],f'https://{host}/auth/callback?next=%2Fpeople')
             self.assertIn('HttpOnly',result.headers['set-cookie']);self.assertNotIn('Domain=',result.headers['set-cookie'])
             self.assertEqual(self.client.get(complete).status_code,400)
+    def test_shared_primary_account_requires_no_second_login(self):
+        self.decode_mock.return_value = {'sub':str(self.user_id),'actor_type':'owner'}
+        with patch.multiple(sso.settings,portal_shared_identity=True,portal_sso_app_slug='members'):
+            started=self.client.get('/auth/sso/start')
+            authorized=self.client.get(started.headers['location'])
+            self.assertEqual(authorized.status_code,303)
+            completed=self.client.get(authorized.headers['location'].replace('/pidp/auth','/auth'))
+            self.assertEqual(completed.status_code,303)
+            self.assertEqual(self.issue_mock.call_args.kwargs['subject'],str(self.user_id))
+            self.assertEqual(self.issue_mock.call_args.kwargs['extra_claims']['actor_type'],'owner')
+
     def test_owner_session_requires_explicit_member_link(self):
         self.decode_mock.return_value = {'sub': str(self.user_id), 'actor_type': 'owner'}
         started = self.client.get('/auth/sso/start', params={'app': 'members'})
@@ -153,4 +164,14 @@ class SsoTests(unittest.TestCase):
         for provider, hint in [('github', '123456789'), ('google', 'invalid@example.test')]:
             started = self.client.get('/auth/sso/start', params={'app':'members', 'provider':provider, 'login_hint':hint})
             self.assertNotIn('login_hint', parse_qs(urlsplit(started.headers['location']).query))
+
+    def test_path_mounted_central_handoff_keeps_prefix(self):
+        with patch.object(sso.settings,'public_base_url','https://id.example/pidp'):
+            started=self.client.get('/auth/sso/start')
+            self.assertTrue(started.headers['location'].startswith('https://id.example/pidp/auth/sso/authorize?'))
+            authorize=started.headers['location'].replace('/pidp/auth','/auth')
+            result=self.client.get(authorize,params={'prompt':'login','request':parse_qs(urlsplit(authorize).query)['request'][0]})
+            self.assertEqual(result.status_code,303)
+            self.assertTrue(result.headers['location'].startswith('https://id.example/pidp/app/login?'))
+
 if __name__=='__main__':unittest.main()
