@@ -46,7 +46,7 @@
     "SESSION_COOKIE_DOMAIN": "",
     "PUBLIC_R2_BASE_URL": "",
     "PUBLIC_BASE_URL": "https://orgportal.cc/pidp",
-    "FRONTEND_REDIRECT_URL": "https://orgportal.cc/",
+    "FRONTEND_REDIRECT_URL": "https://orgportal.cc/communities",
     "NATIVE_REDIRECT_SCHEMES": "org.arkavo.portal,codecollective",
     "GOOGLE_REDIRECT_URI": "https://id.codecollective.us/auth/google/callback",
     "GOOGLE_CALENDAR_REDIRECT_URI": "",

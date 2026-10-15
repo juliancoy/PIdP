@@ -131,8 +131,9 @@ function json<T>(value: T): string {
   return JSON.stringify(value);
 }
 
-function absoluteUrl(c: { req: { url: string } }, path: string): string {
-  return new URL(path, c.req.url).toString();
+function absoluteUrl(c: { env: Env; req: { url: string } }, path: string): string {
+  if(c.env.PUBLIC_BASE_URL && new URL(c.req.url).origin === new URL(c.env.PUBLIC_BASE_URL).origin) return identityUrl(c.env,path).toString();
+  return new URL(path,c.req.url).toString();
 }
 
 function canonicalBase(c: { env: Env; req: { url: string } }): string {
@@ -575,7 +576,7 @@ app.get("/version", (c) => {
 app.get("/configuration", (c) => {
   const url = new URL(c.req.url);
   return c.json({
-    base_addr: `${url.protocol}//${url.host}/`,
+    base_addr: `${canonicalBase(c)}/`,
     google_client_id: c.env.GOOGLE_CLIENT_ID || null,
     google_redirect_uri: c.env.GOOGLE_REDIRECT_URI || `${url.protocol}//${url.host}/auth/google/callback`,
     github_client_id: c.env.GITHUB_CLIENT_ID || null,
