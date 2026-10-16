@@ -1,3 +1,4 @@
+import { providerEnabled } from './oauthProviders';
 import { identityUrl, mountedIdentityPath } from './identityUrls';
 import { sharedIdentity } from './portalClients';
 import {loginPortal,browserReturn} from './portalClients';
@@ -297,8 +298,8 @@ function redirectWithSession(env: Env, next: string, token: string, headers = ne
 function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: string, ownerMode: boolean) {
   const portalOrigin = portalRequestOrigin(c);
   return ([
-    ["google", "Google", c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET],
-    ["github", "GitHub", c.env.GITHUB_CLIENT_ID && c.env.GITHUB_CLIENT_SECRET],
+    ["google", "Google", providerEnabled(c.env,"google")],
+    ["github", "GitHub", providerEnabled(c.env,"github")],
   ] as const).filter(([, , enabled]) => enabled).map(([provider, label]) => {
     const url = portalOrigin ? new URL(`/pidp/auth/${provider}/login`, portalOrigin) : identityUrl(c.env, `/auth/${provider}/login`);
     url.searchParams.set("next", next);
@@ -344,6 +345,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
       <label>Password <input name="password" type="password" autocomplete="${params.registration ? "new-password" : "current-password"}" ${params.registration ? 'minlength="8"' : ""} required></label>
       <button type="submit">${params.registration ? "Create account" : "Sign in"}</button>
     </form>
+    ${params.appSlug && !params.ownerMode && !params.shared ? `<p>Use your portal member credentials here. A primary PIdP account can be linked after signing in.</p><p><a href="/app/login?${escapeHtml(new URLSearchParams({owner:"1",next:params.next}).toString())}">Sign in with a PIdP account</a></p>` : ""}
     ${params.shared ? `<p><a href="/app/login?${escapeHtml(new URLSearchParams({next:params.next,...(params.registration ? {} : {register:"1"})}).toString())}">${params.registration ? "Already have an account? Sign in" : "Create an account"}</a></p><p>One OrgPortal account for all communities.</p>` : ""}
   </main>
 </body>
@@ -656,8 +658,8 @@ app.get("/app/login", async (c) => {
   const ownerMode = Boolean(url.searchParams.get("owner"));
   const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
   const portalName=ownerMode?undefined:(await loginPortal(c.env,appSlug,next,portalRequestOrigin(c)))?.name;
-  if (url.searchParams.get("auto") && (c.env.GOOGLE_CLIENT_ID || c.env.GITHUB_CLIENT_ID)) {
-    const provider = c.env.GOOGLE_CLIENT_ID ? "google" : "github";
+  if (url.searchParams.get("auto") && (providerEnabled(c.env,"google") || providerEnabled(c.env,"github"))) {
+    const provider = providerEnabled(c.env,"google") ? "google" : "github";
     const portalOrigin = portalRequestOrigin(c);
     const redirect = portalOrigin
       ? new URL(`/pidp/auth/${provider}/login`, portalOrigin)

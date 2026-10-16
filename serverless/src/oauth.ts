@@ -1,3 +1,4 @@
+import { providerEnabled } from './oauthProviders';
 import { identityUrl } from './identityUrls';
 import {browserReturn, sharedIdentity} from './portalClients';
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -88,11 +89,11 @@ function truthy(value: string | undefined): boolean {
 
 function providerConfig(env: Env, provider: string) {
   if (provider === "google") {
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) fail(400, "Provider not enabled");
+    if (!providerEnabled(env,"google")) fail(400, "Provider not enabled");
     return {
       provider: "google" as const,
-      clientId: env.GOOGLE_CLIENT_ID,
-      clientSecret: env.GOOGLE_CLIENT_SECRET,
+      clientId: env.GOOGLE_CLIENT_ID!,
+      clientSecret: env.GOOGLE_CLIENT_SECRET!,
       redirectUri: env.GOOGLE_REDIRECT_URI,
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
@@ -100,11 +101,11 @@ function providerConfig(env: Env, provider: string) {
     };
   }
   if (provider === "github") {
-    if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) fail(400, "Provider not enabled");
+    if (!providerEnabled(env,"github")) fail(400, "Provider not enabled");
     return {
       provider: "github" as const,
-      clientId: env.GITHUB_CLIENT_ID,
-      clientSecret: env.GITHUB_CLIENT_SECRET,
+      clientId: env.GITHUB_CLIENT_ID!,
+      clientSecret: env.GITHUB_CLIENT_SECRET!,
       redirectUri: env.GITHUB_REDIRECT_URI,
       authorizeUrl: "https://github.com/login/oauth/authorize",
       tokenUrl: "https://github.com/login/oauth/access_token",
@@ -337,7 +338,16 @@ async function fetchSocialProfile(provider: Provider, accessToken: string): Prom
 }
 
 export async function oauthLogin(c: Context<{ Bindings: Env }>): Promise<Response> {
-  const cfg = providerConfig(c.env, String(c.req.param("provider") || ""));
+  const provider=String(c.req.param("provider") || "");
+  if((provider==='google'||provider==='github') && !providerEnabled(c.env,provider)){
+    const label=provider==='google'?'Google':'GitHub';
+    const login=identityUrl(c.env,'/app/login');
+    for(const key of ['app','next','owner']){const value=c.req.query(key);if(value)login.searchParams.set(key,value)}
+    const href=login.toString().replaceAll('&','&amp;').replaceAll('"','&quot;');
+    c.header('Cache-Control','no-store');
+    return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><title>${label} sign-in is not configured</title><main><h1>${label} sign-in is not configured</h1><p>This deployment has no configured ${label} sign-in client. Use email sign-in or contact the deployment administrator.</p><p><a href="${href}">Continue with email</a></p></main></html>`,503);
+  }
+  const cfg = providerConfig(c.env, provider);
   const url = new URL(c.req.url);
   const requestedApp = (url.searchParams.get("app") || "").trim();
   const shared = sharedIdentity(c.env, requestedApp);

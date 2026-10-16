@@ -117,6 +117,10 @@
             </div>
         {% endif %}
 
+        {% if login_app_slug and not login_force_owner %}
+        <p class="muted">Use your portal member credentials here. A primary PIdP account can be linked after signing in.</p>
+        <p><a href="{{ ui_base }}/app/login?owner=1&amp;next={{ login_next | urlencode }}">Sign in with a PIdP account</a></p>
+        {% endif %}
         <div class="login-support stack">
             <div class="muted">Forgot password? Contact your organization administrator.</div>
             <details class="login-register-details">

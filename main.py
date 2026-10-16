@@ -1,4 +1,6 @@
 from __future__ import annotations
+from html import escape
+from browser_pages import identity_document
 
 from portal_clients import login_portal, browser_return, shared_identity
 
@@ -1565,7 +1567,9 @@ async def frontend_app_login(
             else:
                 try:
                     await _get_current_owner(request_token, session)
-                    can_bypass = True
+                    # A primary session is not a portal member credential. Let the
+                    # separate-member recovery form collect that account's proof.
+                    can_bypass = website is None or force_owner_login
                 except HTTPException:
                     can_bypass = False
 
@@ -3116,6 +3120,12 @@ async def social_login(
     if lane_redirect:
         return RedirectResponse(url=lane_redirect, status_code=status.HTTP_303_SEE_OTHER)
 
+    if provider in ("google", "github") and not settings.social_enabled(provider):
+        label = "Google" if provider == "google" else "GitHub"
+        login = _frontend_login_path(app_slug=request.query_params.get("app"), next_url=request.query_params.get("next"))
+        return HTMLResponse(identity_document(f"{label} sign-in is not configured",
+            f'<h1>{label} sign-in is not configured</h1><p>This deployment has no configured {label} sign-in client. Use email sign-in or contact the deployment administrator.</p><p><a href="{escape(login)}">Continue with email</a></p>'),
+            status_code=503, headers={"Cache-Control":"no-store"})
     client = oauth.create_client(provider)
     if client is None:
         raise HTTPException(status_code=400, detail="Provider not enabled")

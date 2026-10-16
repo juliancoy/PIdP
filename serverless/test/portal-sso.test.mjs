@@ -219,3 +219,29 @@ test('path-mounted central identity preserves the browser-bound tenant handoff',
   assert.equal((await f.request('orgportal.cc',authorize.pathname.replace('/pidp','')+authorize.search,{'x-forwarded-host':'one.example'})).status,400);
  }finally{f.sql.close()}
 });
+test('member login offers explicit primary sign-in without reusing a primary cookie as member proof',async()=>{
+ const f=fixture(true);
+ try{
+  const s=await start(f);
+  const owner=await signJwt(f.env,{sub:'owner'});
+  const response=await f.request('id.example','/app/login?app=members&next='+encodeURIComponent(s.authorize),{cookie:'pidp_session='+owner});
+  assert.equal(response.status,200);
+  const html=await response.text();
+  assert.match(html,/Sign in with a PIdP account/);
+  assert.match(html,/owner=1&amp;next=/);
+  assert.match(html,/name="app" value="members"/);
+  assert.match(html,/name="password"/);
+  assert.equal(f.sql.prepare('SELECT count(*) AS n FROM account_identity_links').get().n,0);
+ }finally{f.sql.close()}
+});
+test('example Google credentials never redirect a user to a nonfunctional OAuth client',async()=>{
+ const f=fixture(true);
+ try{
+  f.env.GOOGLE_CLIENT_ID='google-client-id';f.env.GOOGLE_CLIENT_SECRET='google-client-secret';
+  const response=await f.request('id.example','/auth/google/login?app=members&next=%2Fprofile');
+  assert.equal(response.status,503);assert.equal(response.headers.get('location'),null);
+  assert.match(await response.text(),/Google sign-in is not configured/);
+  const login=await f.request('id.example','/app/login?app=members&next=%2Fprofile');
+  assert.doesNotMatch(await login.text(),/Continue with Google/);
+ }finally{f.sql.close()}
+});

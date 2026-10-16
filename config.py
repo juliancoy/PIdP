@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings
+from provider_config import provider_enabled
 
 
 class Settings(BaseSettings):
@@ -88,9 +89,9 @@ class Settings(BaseSettings):
 
     def social_enabled(self, provider: str) -> bool:
         if provider == "google":
-            return bool(self.google_client_id and self.google_client_secret)
+            return provider_enabled(provider, self.google_client_id, self.google_client_secret)
         if provider == "github":
-            return bool(self.github_client_id and self.github_client_secret)
+            return provider_enabled(provider, self.github_client_id, self.github_client_secret)
         return False
 
     @property
