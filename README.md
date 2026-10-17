@@ -316,7 +316,7 @@ This repository includes a stdio MCP server at `mcp_server.py` for safe PiDP adm
 
 ### Environment variables
 
-- `PIDP_BASE_URL` (optional, default `https://id.codecollective.us`)
+- `PIDP_BASE_URL` (optional, default `https://orgportal.cc/pidp`)
 - `PIDP_PAT` (required; service token, e.g. `pidp_pat_...`)
 
 ### Run
