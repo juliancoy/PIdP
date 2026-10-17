@@ -35,3 +35,12 @@ change is needed. `/auth/session` is read-only and returns only an authenticatio
 boolean; the frontend Worker uses it to protect research pages before serving HTML.
 Production verification is unauthenticated and read-only. Authenticated browser
 checks must use the isolated local Docker deployment.
+
+## MCP browser flow
+
+Authorization uses this browser’s login by default and goes directly to portal SSO,
+then the account and permissions consent page. The cross-browser pairing screen
+is omitted from this normal path. Choose **Use another browser** on consent to
+start an explicit paired handoff; clients may also request `browser=other` on
+the authorization URL. Pairing still requires the matching code and the original
+browser cookie. Consent remains explicit and permissions remain resource-bound.

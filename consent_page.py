@@ -5,7 +5,7 @@ import html
 import json
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
 PAGE = json.loads((Path(__file__).parent / 'shared/mcp-consent.json').read_text())
 
@@ -21,6 +21,10 @@ def render_consent_page(*, client, account, resource, callback, request, change_
         brandName=brand['name'] if brand else (portal['name'] if portal else 'OrgPortal'),
         tagline=brand['tagline'] if brand else 'ACCOUNT AUTHORIZATION', portalUrl=origin, portalHost=url.netloc,
         resource=resource, callback=callback, request=request, changeAccount=change_account).items()}
+    other_url = urlsplit(change_account)
+    other_params = dict(parse_qsl(other_url.query)); other_params['browser'] = 'other'
+    other_browser = urlunsplit(('', '', other_url.path, urlencode(other_params), ''))
+    values['otherBrowser'] = f'<p><a href="{html.escape(other_browser)}">Use another browser</a></p>' if portal and not system_admin_login else ''
     values['accountMode'] = '<input type="hidden" name="account" value="system_admin">' if system_admin_login else ''
     values['css'] = css
     values['logo'] = f'<img src="{html.escape(brand["logo"])}" alt="{html.escape(brand["name"])} logo" width="52" height="52">' if brand else ''

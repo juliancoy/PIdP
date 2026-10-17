@@ -6,6 +6,8 @@ export async function renderConsentPage(input: {
   client: string; account: string; resource: string; callback: string; request: string;
   changeAccount: string; requested: string[]; dynamic: boolean; systemAdminLogin?: boolean; portal?: { name: string; loginUrl: string };
 }) {
+  const otherBrowser = new URL(input.changeAccount, 'https://identity.invalid');
+  otherBrowser.searchParams.set('browser', 'other');
   const portalUrl = new URL(input.portal?.loginUrl || input.resource).origin;
   const portalHost = new URL(portalUrl).host;
   const brand = page.brands[portalHost as keyof typeof page.brands];
@@ -16,6 +18,7 @@ export async function renderConsentPage(input: {
     brandName: escape(brand?.name || input.portal?.name || 'OrgPortal'), tagline: escape(brand?.tagline || 'ACCOUNT AUTHORIZATION'),
     portalUrl: escape(portalUrl), portalHost: escape(portalHost), resource: escape(input.resource), callback: escape(input.callback),
     accountMode: input.systemAdminLogin ? '<input type="hidden" name="account" value="system_admin">' : '',
+    otherBrowser: input.portal && !input.systemAdminLogin ? `<p><a href="${escape(otherBrowser.pathname + otherBrowser.search)}">Use another browser</a></p>` : '',
     request: escape(input.request), changeAccount: escape(input.changeAccount), css,
     logo: brand ? `<img src="${escape(brand.logo)}" alt="${escape(brand.name)} logo" width="52" height="52">` : '',
     permissions: input.requested.map(scope => {

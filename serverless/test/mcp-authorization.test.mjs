@@ -31,7 +31,7 @@ async function fixture() {
   const bobCookie = `pidp_session=${await signJwt(env, { sub: 'bob' })}`;
   const verifier = 'v'.repeat(43);
   const challenge = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))).toString('base64url');
-  const params = { response_type: 'code', client_id: 'chatgpt', redirect_uri: 'https://chatgpt.example/callback',
+  const params = { browser: 'other', response_type: 'code', client_id: 'chatgpt', redirect_uri: 'https://chatgpt.example/callback',
     resource, scope: 'org:events.read org:events.write org:portal.read org:portal.write', code_challenge: challenge, code_challenge_method: 'S256', state: 'original-state' };
   const request = (path, init = {}) => app.request(issuer + path, init, env);
   const post = (path, body, headers = {}) => request(path, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body) });
@@ -547,4 +547,24 @@ test('explicit system-admin consent preserves primary identity and introspects l
     const status=await(await f.introspect(tokens.access_token)).json();assert.equal(status.active,true);assert.equal(status.sub,'owner:alice');assert.equal(status.is_sysadmin,true);
     f.env.ADMIN_USER_IDS='';assert.equal((await(await f.introspect(tokens.access_token)).json()).is_sysadmin,false);
   }finally{f.sql.close()}
+});
+
+test('default login skips the browser chooser and uses the current browser portal session', async () => {
+  const f = await fixture(); try {
+    f.env.MCP_OAUTH_PORTALS_JSON = JSON.stringify({ [f.resource]: {name:'Portal',loginUrl:'https://portal.example/users/mcp-connect'} });
+    f.env.PORTAL_SSO_APP_SLUG = 'orgportal';
+    const params = {...f.params}; delete params.browser;
+    const response = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(params));
+    assert.equal(response.status,303);
+    const login = new URL(response.headers.get('location'));
+    assert.equal(login.origin,'https://portal.example');
+    assert.equal(login.pathname,'/pidp/auth/sso/start');
+    assert.equal(login.searchParams.get('app'),'orgportal');
+    const callback = new URL(login.searchParams.get('next'));
+    assert.equal(callback.pathname,'/auth/callback');
+    const handoff = new URL(callback.searchParams.get('next'),callback);
+    assert.equal(handoff.pathname,'/users/mcp-connect');
+    assert.match(handoff.searchParams.get('request'),/^login_/);
+    assert.match(response.headers.get('set-cookie'),/HttpOnly/);
+  } finally { f.sql.close(); }
 });

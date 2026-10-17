@@ -175,7 +175,16 @@ async function startLogin(c: Context<{ Bindings: Env }>, cfg: Config, resource: 
   if (changeAccount) {
     deleteCookie(c, sessionCookie, { secure: true, httpOnly: true, sameSite: 'Lax', path: '/' });
   }
-  return c.redirect(`${cfg.issuer}/oauth/mcp/browser?${new URLSearchParams({ request: id })}`, 303);
+  if (c.req.query('browser') === 'other') {
+    return c.redirect(`${cfg.issuer}/oauth/mcp/browser?${new URLSearchParams({ request: id })}`, 303);
+  }
+  const origin = new URL(portal.loginUrl).origin;
+  const callback = new URL('/auth/callback', origin);
+  callback.searchParams.set('next', new URL(portal.loginUrl).pathname + '?' + new URLSearchParams({ request: id }));
+  const login = new URL('/pidp/auth/sso/start', origin);
+  login.searchParams.set('app', c.env.PORTAL_SSO_APP_SLUG || '');
+  login.searchParams.set('next', callback.toString());
+  return c.redirect(login.toString(), 303);
 }
 async function authenticateClient(c: Context<{ Bindings: Env }>, p: URLSearchParams, config: Config) {
   let id = p.get('client_id') || '', secret = p.get('client_secret') || '';
@@ -341,6 +350,7 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const actor = changeAccountRequested ? null : adminLogin ? await systemAdminSession(c) : await session(c, resource);
   if (!actor) {
     p.delete('prompt');
+    p.delete('browser');
     if (!adminLogin && cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search, changeAccountRequested);
     return c.redirect(`${cfg.issuer}/app/login?${adminLogin ? "owner=1&" : ""}next=${encodeURIComponent(u.pathname + u.search)}`, 303);
   }
@@ -393,7 +403,7 @@ mcpAuthorization.get('/oauth/mcp/browser', async c => {
   const callback = new URL('/auth/callback', other.origin); callback.searchParams.set('next', new URL(portal.loginUrl).pathname + '?' + new URLSearchParams({ request }));
   same.searchParams.set('app', c.env.PORTAL_SSO_APP_SLUG || ''); same.searchParams.set('next', callback.toString());
   const code = row.subject ? '' : row.display || '';
-  return bridgePage(c, 'Connect using another Chrome profile', `<p>Keep this page open in your ChatGPT browser. Open the sign-in link in the Chrome profile where you use ${escape(portal.name)}.</p><label>Sign-in link<input id="link" readonly value="${escape(other.toString())}"></label><button id="copy" type="button">Copy sign-in link</button><p>Enter this matching code in the other browser:</p><p><code>${code.slice(0, 4)}-${code.slice(4)}</code></p><p>This request expires 10 minutes after it was started. Only use it to connect your own account.</p><p id="status" role="status">Waiting for account confirmation…</p><form method="post" action="/oauth/mcp/browser/finish" hidden id="finish"><input type="hidden" name="request" value="${escape(request)}"><p id="account"></p><button>Continue to permissions</button></form><p><a href="${escape(same.toString())}">Use this browser’s account instead</a></p><form method="post" action="/oauth/mcp/browser/cancel"><input type="hidden" name="request" value="${escape(request)}"><button>Cancel connection</button></form>`, `const request=${JSON.stringify(request)};document.getElementById('copy').onclick=async()=>{const input=document.getElementById('link');input.select();try{await navigator.clipboard.writeText(input.value);document.getElementById('copy').textContent='Link copied'}catch{document.getElementById('status').textContent='Copy the selected link.'}};let busy=false;const timer=setInterval(async()=>{if(busy||document.hidden)return;busy=true;try{const response=await fetch('/oauth/mcp/browser/status?'+new URLSearchParams({request}),{credentials:'same-origin',cache:'no-store'});if(!response.ok){clearInterval(timer);document.getElementById('status').textContent='This request has expired or was already completed. Start again from ChatGPT.';return}const data=await response.json();if(data.ready){clearInterval(timer);document.getElementById('account').textContent='Continue as '+data.account;document.getElementById('finish').hidden=false;document.getElementById('status').textContent='Account confirmed. Check the account below before continuing.'}}catch{}finally{busy=false}},5000);`);
+  return bridgePage(c, 'Connect your account', `<p><a href="${escape(same.toString())}">Use this browser’s login</a></p><h2>Use another browser</h2><p>Keep this page open in your ChatGPT browser. Open the sign-in link in the Chrome profile where you use ${escape(portal.name)}.</p><label>Sign-in link<input id="link" readonly value="${escape(other.toString())}"></label><button id="copy" type="button">Copy sign-in link</button><p>Enter this matching code in the other browser:</p><p><code>${code.slice(0, 4)}-${code.slice(4)}</code></p><p>This request expires 10 minutes after it was started. Only use it to connect your own account.</p><p id="status" role="status">Waiting for account confirmation…</p><form method="post" action="/oauth/mcp/browser/finish" hidden id="finish"><input type="hidden" name="request" value="${escape(request)}"><p id="account"></p><button>Continue to permissions</button></form><form method="post" action="/oauth/mcp/browser/cancel"><input type="hidden" name="request" value="${escape(request)}"><button>Cancel connection</button></form>`, `const request=${JSON.stringify(request)};document.getElementById('copy').onclick=async()=>{const input=document.getElementById('link');input.select();try{await navigator.clipboard.writeText(input.value);document.getElementById('copy').textContent='Link copied'}catch{document.getElementById('status').textContent='Copy the selected link.'}};let busy=false;const timer=setInterval(async()=>{if(busy||document.hidden)return;busy=true;try{const response=await fetch('/oauth/mcp/browser/status?'+new URLSearchParams({request}),{credentials:'same-origin',cache:'no-store'});if(!response.ok){clearInterval(timer);document.getElementById('status').textContent='This request has expired or was already completed. Start again from ChatGPT.';return}const data=await response.json();if(data.ready){clearInterval(timer);document.getElementById('account').textContent='Continue as '+data.account;document.getElementById('finish').hidden=false;document.getElementById('status').textContent='Account confirmed. Check the account below before continuing.'}}catch{}finally{busy=false}},5000);`);
 });
 mcpAuthorization.get('/oauth/mcp/browser/status', async c => {
   const row = await bridgeRow(c, c.req.query('request') || '', true);

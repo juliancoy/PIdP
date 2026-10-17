@@ -70,7 +70,7 @@ class OAuthTests(unittest.TestCase):
             yield self.db
         app.dependency_overrides[oauth.get_session] = get_db
         self.client = TestClient(app, base_url=self.issuer)
-        self.params = dict(response_type='code', client_id='native', redirect_uri='http://127.0.0.1:49152/callback', resource=self.resource,
+        self.params = dict(browser='other', response_type='code', client_id='native', redirect_uri='http://127.0.0.1:49152/callback', resource=self.resource,
             scope='org:events.read org:events.write', code_challenge_method='S256', state='state',
             code_challenge=base64.urlsafe_b64encode(hashlib.sha256(b'v' * 43).digest()).decode().rstrip('='))
 
@@ -86,6 +86,24 @@ class OAuthTests(unittest.TestCase):
         with patch.object(oauth.settings, 'mcp_oauth_resource_config_json', json.dumps({self.resource: addition[resource]})):
             with self.assertRaises(oauth.OAuthError):
                 oauth.configuration()
+
+    def test_default_login_skips_browser_chooser(self):
+        with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
+                'name': 'Portal', 'loginUrl': 'https://portal.example/users/mcp-connect'}})), \
+                patch.object(oauth.settings, 'portal_sso_app_slug', 'portal-app'):
+            params = dict(self.params)
+            params.pop('browser')
+            params['prompt'] = 'login'
+            response = self.client.get('/oauth/mcp/authorize', params=params, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            login = urlsplit(response.headers['location'])
+            self.assertEqual(login.netloc, 'portal.example')
+            self.assertEqual(login.path, '/pidp/auth/sso/start')
+            self.assertEqual(parse_qs(login.query)['app'], ['portal-app'])
+            callback = urlsplit(parse_qs(login.query)['next'][0])
+            handoff = urlsplit(parse_qs(callback.query)['next'][0])
+            self.assertEqual(handoff.path, '/users/mcp-connect')
+            self.assertTrue(parse_qs(handoff.query)['request'][0].startswith('login_'))
 
     def test_change_account_starts_fresh_portal_sign_in(self):
         with patch.object(oauth.settings, 'mcp_oauth_portals_json', json.dumps({self.resource: {
