@@ -17,6 +17,7 @@ from db import SessionLocal, engine
 from models import User, Website, WebsiteUser
 from security import create_access_token
 from sqlalchemy import select
+from local_admin import provision_local_admin
 
 
 async def main():
@@ -27,21 +28,8 @@ async def main():
     try:
         async with SessionLocal() as session:
             if '--admin' in sys.argv:
-                owner_id = uuid5(NAMESPACE_URL, 'orgportal:local-developer-admin')
-                if str(owner_id) not in settings.admin_user_ids_list:
-                    raise RuntimeError('The synthetic local administrator must be explicitly allowlisted.')
-                email = 'administrator@local.orgportal.example.com'
-                owner = await session.get(User, owner_id)
-                collision = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
-                if collision is not None and collision.id != owner_id:
-                    raise RuntimeError('The reserved local administrator identity is already in use.')
-                if owner is None:
-                    owner = User(id=owner_id, email=email, full_name='Local Administrator',
-                                 identity_data={'local_developer': True}, is_active=True)
-                    session.add(owner)
-                    await session.commit()
-                if owner.email != email or not owner.is_active:
-                    raise RuntimeError('The reserved local administrator account is disabled or conflicts.')
+                owner = await provision_local_admin(session)
+                email = owner.email
                 settings.access_token_expire_minutes = min(settings.access_token_expire_minutes, 480)
                 token = create_access_token(str(owner.id), owner.email, {'is_sysadmin': True})
                 print(json.dumps({'token': token, 'member_id': str(owner.id), 'email': email,

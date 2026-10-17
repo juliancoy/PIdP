@@ -1,4 +1,4 @@
-"""Register the configured portal in local PIdP without granting account access."""
+"""Register the configured portal in local PIdP and its synthetic administrator."""
 import asyncio
 import sys
 from pathlib import Path
@@ -10,6 +10,7 @@ from config import settings
 from db import SessionLocal, engine
 from models import User, Website
 from sqlalchemy import select, text
+from local_admin import provision_local_admin
 
 
 async def register():
@@ -46,6 +47,8 @@ async def register():
             print(f'Registered local portal application: {slug}')
         else:
             print(f'Local portal application already registered: {slug}')
+        admin = await provision_local_admin(session)
+        print(f'Local administrator provisioned: {admin.email}')
 
 
 async def main():
