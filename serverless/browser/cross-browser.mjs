@@ -46,10 +46,10 @@ test('isolated Chrome profiles pair an account and keep OAuth in the original pr
   const primary=await browser.newContext({ignoreHTTPSErrors:true}),secondary=await browser.newContext({ignoreHTTPSErrors:true});
   await secondary.addCookies([{name:'pidp_session',value:await signJwt(env,{sub:'bob',email:'work@example.test'}),url:portal,httpOnly:true,secure:true,sameSite:'Lax'}]);
   const original=await primary.newPage(),other=await secondary.newPage();original.setDefaultTimeout(10000);other.setDefaultTimeout(10000);
-  const params=new URLSearchParams({response_type:'code',client_id:'client',redirect_uri:'https://chatgpt.example/callback',resource,scope:'org:events.read org:portal.read',code_challenge_method:'S256',code_challenge:Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('v'.repeat(43)))).toString('base64url'),state:'preserved-chatgpt-state'});
+  const params=new URLSearchParams({browser:'other',response_type:'code',client_id:'client',redirect_uri:'https://chatgpt.example/callback',resource,scope:'org:events.read org:portal.read',code_challenge_method:'S256',code_challenge:Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('v'.repeat(43)))).toString('base64url'),state:'preserved-chatgpt-state'});
   await original.bringToFront();
   await original.goto(issuer+'/oauth/mcp/authorize?'+params,{waitUntil:'domcontentloaded'});
-  await original.getByRole('heading',{name:'Connect using another Chrome profile'}).waitFor();
+  await original.getByRole('heading',{name:'Connect your account'}).waitFor();
   const link=await original.locator('#link').inputValue(),code=await original.locator('code').textContent();
   await original.getByRole('button',{name:'Copy sign-in link',exact:true}).click();
   assert.equal(await original.locator('#link').evaluate(input=>input.selectionEnd-input.selectionStart),link.length);

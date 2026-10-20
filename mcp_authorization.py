@@ -242,7 +242,14 @@ async def start_login(request, db, cfg, resource, return_path, change_account=Fa
         id=digest(login_id), browser=digest(browser), resource=resource, return_path=return_path, expires=now + 600, pairing=secrets.token_hex(4).upper())
     if not rows:
         raise OAuthError('too_many_requests', 429)
-    result = RedirectResponse(cfg['issuer'] + '/oauth/mcp/browser?' + urlencode({'request': login_id}), status_code=303, headers=HEADERS)
+    if request.query_params.get('browser') == 'other':
+        destination = cfg['issuer'] + '/oauth/mcp/browser?' + urlencode({'request': login_id})
+    else:
+        portal_url = urlsplit(portal['loginUrl'])
+        origin = portal_url.scheme + '://' + portal_url.netloc
+        callback = origin + '/auth/callback?' + urlencode({'next': portal_url.path + '?' + urlencode({'request': login_id})})
+        destination = origin + '/pidp/auth/sso/start?' + urlencode({'app': settings.portal_sso_app_slug, 'next': callback})
+    result = RedirectResponse(destination, status_code=303, headers=HEADERS)
     if change_account:
         result.delete_cookie(SESSION_COOKIE, path='/', secure=True, httponly=True, samesite='lax')
     result.set_cookie(BROWSER_COOKIE, browser, max_age=600, httponly=True, secure=True, samesite='lax', path='/')
@@ -534,6 +541,7 @@ async def handle(request, endpoint, db):
         if request.method == 'GET' and not actor:
             params = dict(request.query_params)
             params.pop('prompt', None)
+            params.pop('browser', None)
             return_path = request.url.path + ('?' + urlencode(params) if params else '')
             if not admin_login and resource in cfg['portals']:
                 return await start_login(request, db, cfg, resource, return_path, p.get('prompt') == 'login')
