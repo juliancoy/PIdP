@@ -24,20 +24,23 @@ def _load_main_module():
     os.environ["SECRET_KEY"] = "test-secret-key"
     os.environ["DATABASE_URL"] = "postgresql+asyncpg://user:pass@localhost:5432/testdb"
     os.environ["AUTO_CREATE_TABLES"] = "false"
-    os.environ["GOOGLE_CLIENT_ID"] = "google-client-id"
-    os.environ["GOOGLE_CLIENT_SECRET"] = "google-client-secret"
+    os.environ["GOOGLE_CLIENT_ID"] = "fixture-google-client"
+    os.environ["GOOGLE_CLIENT_SECRET"] = "fixture-google-secret"
     os.environ["GOOGLE_REDIRECT_URI"] = "https://id.codecollective.us/auth/google/callback"
-    os.environ["GITHUB_CLIENT_ID"] = "github-client-id"
-    os.environ["GITHUB_CLIENT_SECRET"] = "github-client-secret"
+    os.environ["GITHUB_CLIENT_ID"] = "fixture-github-client"
+    os.environ["GITHUB_CLIENT_SECRET"] = "fixture-github-secret"
     os.environ["GITHUB_REDIRECT_URI"] = "https://id.codecollective.us/auth/github/callback"
     os.environ["FRONTEND_REDIRECT_URL"] = "https://id.codecollective.us/auth/callback"
     os.environ["MINIO_ENDPOINT"] = "http://minio:9000"
     os.environ["MINIO_BUCKET"] = "pidp-avatars"
     os.environ["MINIO_PUBLIC_BASE_URL"] = "https://id.codecollective.us/s3"
 
-    for module_name in ("config", "db", "encrypted_json", "main", "models"):
-        if module_name in sys.modules:
-            del sys.modules[module_name]
+    # Keep one settings/model graph: routers and policy modules retain references
+    # to these objects, so deleting only config/main splits fixture configuration.
+    from config import Settings, settings
+    fixture = Settings(_env_file=None)
+    for field in type(settings).model_fields:
+        setattr(settings, field, getattr(fixture, field))
 
     return importlib.import_module("main")
 

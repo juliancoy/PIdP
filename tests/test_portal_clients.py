@@ -14,7 +14,7 @@ class PortalClientsTests(unittest.TestCase):
         with patch.multiple(policy.settings,portal_auth_origins=','.join(defaults),portal_clients_json=''):
             for origin, client in defaults.items():
                 self.assertEqual(policy.portal_client(origin)['name'],client['name'])
-                self.assertEqual(policy.portal_client(origin)['accountApp'],'code-collective')
+                self.assertEqual(policy.portal_client(origin)['accountApp'],'orgportal')
                 self.assertIsNone(policy.sso_return(origin,'wrong','/auth/callback'))
                 if not client.get('restartOrigin'):
                     for case in cases:
