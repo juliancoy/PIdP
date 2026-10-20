@@ -644,7 +644,7 @@ async def handle(request, endpoint, db):
         if not re.fullmatch('[A-Za-z0-9._~-]{43,128}', verifier):
             raise OAuthError('invalid_grant')
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-        rows = await query(db, 'DELETE FROM mcp_oauth_codes WHERE hash = :hash AND client_id = :client_id AND redirect_uri = :redirect_uri AND (:resource IS NULL OR resource = :resource) AND challenge = :challenge AND expires_at >= :now RETURNING *',
+        rows = await query(db, 'DELETE FROM mcp_oauth_codes WHERE hash = :hash AND client_id = :client_id AND redirect_uri = :redirect_uri AND (CAST(:resource AS TEXT) IS NULL OR resource = :resource) AND challenge = :challenge AND expires_at >= :now RETURNING *',
             hash=digest(p.get('code', '')), client_id=client_id, redirect_uri=p.get('redirect_uri', ''),
             resource=p.get('resource'), challenge=challenge, now=now)
         if not rows:

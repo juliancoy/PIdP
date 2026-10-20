@@ -52,11 +52,13 @@ class PostgresOAuthTests(unittest.IsolatedAsyncioTestCase):
                     redirectUris=['http://127.0.0.1/callback'], resources=[resource], scopes=oauth.SCOPES)}),
                 mcp_oauth_resources_json=json.dumps({resource: {'secretHash': oauth.digest('resource-secret-at-least-32-characters')}})), \
                 patch.object(oauth, 'identity_session', AsyncMock(return_value=dict(subject='owner:alice', display='Alice', hash='session-hash'))), \
-                patch.object(oauth, 'active_subject', AsyncMock(return_value=True)):
+                patch.object(oauth, 'active_subject', AsyncMock(return_value=True)), \
+                patch.object(oauth, 'resolve_account_identity', AsyncMock(return_value=dict(
+                    canonical_user_id='alice', account_id='alice', account_subject='owner:alice'))):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url=issuer) as client:
                     registration = await client.post('/oauth/mcp/register', json=dict(client_name='Postgres test', token_endpoint_auth_method='none', redirect_uris=['http://127.0.0.1/callback']))
                     self.assertEqual(registration.status_code, 201, registration.text)
-                    params = dict(response_type='code', client_id='native', redirect_uri='http://127.0.0.1:49152/callback',
+                    params = dict(browser='other', response_type='code', client_id='native', redirect_uri='http://127.0.0.1:49152/callback',
                         resource=resource, scope='org:events.read org:events.write', state='state', code_challenge_method='S256',
                         code_challenge=base64.urlsafe_b64encode(hashlib.sha256(b'v' * 43).digest()).decode().rstrip('='))
                     params['client_id'] = registration.json()['client_id']
@@ -77,7 +79,10 @@ class PostgresOAuthTests(unittest.IsolatedAsyncioTestCase):
                     code = parse_qs(urlsplit(allowed.headers['location']).query)['code'][0]
                     exchange = dict(grant_type='authorization_code', client_id=params['client_id'], code=code,
                         redirect_uri=params['redirect_uri'], resource=resource, code_verifier='v' * 43)
-                    results = await asyncio.gather(*(client.post('/oauth/mcp/token', data=exchange) for _ in range(2)))
+                    wrong_resource = await client.post('/oauth/mcp/token', data={**exchange, 'resource': 'https://wrong.example/mcp'})
+                    self.assertEqual(wrong_resource.status_code, 400)
+                    without_resource = {key: value for key, value in exchange.items() if key != 'resource'}
+                    results = await asyncio.gather(*(client.post('/oauth/mcp/token', data=data) for data in (exchange, without_resource)))
                     self.assertEqual(sorted(r.status_code for r in results), [200, 400], [r.text for r in results])
                     tokens = next(r.json() for r in results if r.status_code == 200)
                     refresh = dict(grant_type='refresh_token', client_id=params['client_id'], refresh_token=tokens['refresh_token'])
