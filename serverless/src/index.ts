@@ -341,11 +341,11 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
       ${appField}
       ${ownerField}
       <input type="hidden" name="next" value="${escapeHtml(params.next)}">
-      <label>Email <input name="email" type="email" autocomplete="email" required></label>
+      <label>Email <input name="email" type="email" autocomplete="email" autocapitalize="none" spellcheck="false" required></label>
       <label>Password <input name="password" type="password" autocomplete="${params.registration ? "new-password" : "current-password"}" ${params.registration ? 'minlength="8"' : ""} required></label>
       <button type="submit">${params.registration ? "Create account" : "Sign in"}</button>
     </form>
-    ${params.appSlug && !params.ownerMode && !params.shared ? `<p>Use your portal member credentials here. A primary PIdP account can be linked after signing in.</p><p><a href="/app/login?${escapeHtml(new URLSearchParams({owner:"1",next:params.next}).toString())}">Sign in with a PIdP account</a></p>` : ""}
+    ${params.appSlug && !params.ownerMode && !params.shared ? `<details><summary>Other sign-in options</summary><p>Have a separate PIdP account? Sign in to link it to your portal account.</p><p><a href="/app/login?${escapeHtml(new URLSearchParams({owner:"1",next:params.next}).toString())}">Sign in with a PIdP account</a></p></details>` : ""}
     ${params.shared ? `<p><a href="/app/login?${escapeHtml(new URLSearchParams({next:params.next,...(params.registration ? {} : {register:"1"})}).toString())}">${params.registration ? "Already have an account? Sign in" : "Create an account"}</a></p><p>One OrgPortal account for all communities.</p>` : ""}
   </main>
 </body>
