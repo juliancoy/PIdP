@@ -1,3 +1,4 @@
+import { portalLoginBrand } from './identityPage';
 import { providerEnabled } from './oauthProviders';
 import { identityUrl, mountedIdentityPath } from './identityUrls';
 import { sharedIdentity } from './portalClients';
@@ -313,7 +314,8 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
-  const title = params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.appName}` : params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
+  const brand = portalLoginBrand(params.portalName);
+  const title = params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.portalName || params.appName}` : params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -326,13 +328,14 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
     h1 { font-size: 1.4rem; margin: 0 0 16px; }
     label { display: grid; gap: 6px; font-size: 0.92rem; margin: 12px 0; }
     input { font: inherit; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; }
-    button { width: 100%; margin-top: 12px; padding: 10px 12px; border: 0; border-radius: 6px; background: #111827; color: #fff; font: inherit; cursor: pointer; }
+    button { width: 100%; margin-top: 12px; padding: 10px 12px; border: 0; border-radius: 6px; background: ${brand?.accent_color || "#111827"}; color: #fff; font: inherit; cursor: pointer; }
     .social-login { display: block; margin: 12px 0; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; text-align: center; text-decoration: none; color: #111827; }
     .error { color: #b42318; background: #fff1f0; border: 1px solid #ffccc7; padding: 10px 12px; border-radius: 6px; }
   </style>
 </head>
 <body>
   <main>
+    ${brand ? `<img src="${escapeHtml(brand.logo_url)}" alt="${escapeHtml(params.portalName!)} logo" width="64" height="64"><p>${escapeHtml(brand.hero_eyebrow)}</p>` : ""}
     <h1>${escapeHtml(title)}</h1>
     ${params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
     ${error}
@@ -657,7 +660,7 @@ app.get("/app/login", async (c) => {
   const appName = c.env.APP_NAME || "PIdP";
   const ownerMode = Boolean(url.searchParams.get("owner"));
   const next = url.searchParams.get("next") || c.env.FRONTEND_REDIRECT_URL || "/";
-  const portalName=ownerMode?undefined:(await loginPortal(c.env,appSlug,next,portalRequestOrigin(c)))?.name;
+  const portalName=ownerMode?undefined:(await loginPortal(c.env,requestedApp,next,portalRequestOrigin(c)))?.name;
   if (url.searchParams.get("auto") && (providerEnabled(c.env,"google") || providerEnabled(c.env,"github"))) {
     const provider = providerEnabled(c.env,"google") ? "google" : "github";
     const portalOrigin = portalRequestOrigin(c);
@@ -669,7 +672,7 @@ app.get("/app/login", async (c) => {
     else if (appSlug) redirect.searchParams.set("app", appSlug);
     return c.redirect(redirect.toString(), 303);
   }
-  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
+  return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode) }));
 });
 
 app.get("/app/login/", (c) => {
@@ -688,9 +691,9 @@ app.post("/app/login", async (c) => {
   const appName = c.env.APP_NAME || "PIdP";
   const ownerMode = Boolean(form.owner);
   const next = String(form.next || c.env.FRONTEND_REDIRECT_URL || "/");
-  const portalName=ownerMode?undefined:(await loginPortal(c.env,appSlug,next,portalRequestOrigin(c)))?.name;
+  const portalName=ownerMode?undefined:(await loginPortal(c.env,requestedApp,next,portalRequestOrigin(c)))?.name;
   if (!email || !password) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
+    return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "Email and password are required." }), 422);
   }
 
   if (!ownerMode && appSlug) {
@@ -699,10 +702,10 @@ app.post("/app/login", async (c) => {
     if (website) {
       const websiteUser = await websiteUserByEmail(c.env.DB, website.id, email);
       if (!websiteUser || !(await verifyPassword(password, websiteUser.hashed_password))) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
+        return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "Invalid credentials." }), 401);
       }
       if (!websiteUser.is_active) {
-        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
+        return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "This account is inactive." }), 403);
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
@@ -713,7 +716,7 @@ app.post("/app/login", async (c) => {
 
   const user = await userByEmail(c.env.DB, email);
   if (!user?.is_active || !(await verifyPassword(password, user.hashed_password))) {
-    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
+    return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "Invalid credentials." }), 401);
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();

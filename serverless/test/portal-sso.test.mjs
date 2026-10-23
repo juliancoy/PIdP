@@ -190,7 +190,7 @@ test('shared identity accepts primary accounts without another portal login and 
  const started=await start(f);const u=new URL(started.authorize);
  const login=await f.request('id.example',u.pathname+u.search);
  const target=new URL(login.headers.get('location'));
- assert.equal(target.pathname,'/app/login');assert.equal(target.searchParams.has('app'),false);
+ assert.equal(target.pathname,'/app/login');assert.equal(target.searchParams.get('app'),'members');
  }finally{f.sql.close()}
 });
 
@@ -244,4 +244,37 @@ test('example Google credentials never redirect a user to a nonfunctional OAuth 
   const login=await f.request('id.example','/app/login?app=members&next=%2Fprofile');
   assert.doesNotMatch(await login.text(),/Continue with Google/);
  }finally{f.sql.close()}
+});
+
+test('LifeTech account switching keeps branding and fresh sign-in with a surviving central session', async () => {
+ const f=fixture(true);
+ try {
+  const clients=JSON.parse(f.env.PORTAL_CLIENTS_JSON);
+  clients['https://one.example'].name='LifeTech';f.env.PORTAL_CLIENTS_JSON=JSON.stringify(clients);
+  const session=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  for (const shared of ['false','true']) {
+   f.env.PORTAL_SHARED_IDENTITY=shared;
+   const started=await f.request('one.example','/auth/sso/start?prompt=select_account&next='+encodeURIComponent('https://one.example/auth/callback?next=%2Forgs%2Flifetech'));
+   const chooser=await f.request('id.example',new URL(started.headers.get('location')).pathname+new URL(started.headers.get('location')).search,{cookie:'pidp_session='+session});
+   assert.equal(chooser.status,200);
+   const html=await chooser.text();
+   assert.match(html,/Continue as member@example.test/);
+   assert.match(html,/LifeTech logo/);
+   const href=html.match(/href="([^"]+)">Use another portal account/)[1].replaceAll('&amp;','&');
+   const login=new URL(href);
+   assert.equal(login.searchParams.get('prompt'),'login');
+   assert.equal(login.searchParams.get('app'),'members');
+   const form=await f.request('id.example',login.pathname+login.search,{cookie:'pidp_session='+session});
+   assert.equal(form.status,200);
+   const body=await form.text();
+   assert.match(body,/<h1>Sign in to LifeTech<\/h1>/);
+   assert.match(body,/lifetech-logo-v2.png/);
+   assert.match(body,/name="app" value="members"/);
+   assert.match(body,/Authentication provided by PIdP/);
+   assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_sso_requests WHERE code_hash IS NOT NULL').get().n,0);
+   // Validation errors must keep the same tenant and return ticket.
+   const error=await fullApp.request('https://id.example/app/login',{method:'POST',body:new URLSearchParams({app:'members',next:login.searchParams.get('next')})},f.env);
+   assert.equal(error.status,422);assert.match(await error.text(),/Sign in to LifeTech/);
+  }
+ } finally { f.sql.close() }
 });

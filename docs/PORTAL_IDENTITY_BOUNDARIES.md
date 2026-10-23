@@ -106,3 +106,18 @@ URLs. Explicit native app deep links retain their existing token handoff.
 PIdP Worker release: `5a44fb80-3cb6-4cb9-b04e-4572cad47aea`. The Python backend implementation is tested in source; production continues to use the single Worker issuer. No account namespace or membership migration was performed.
 
 Account selection, link recovery, and the isolated Docker clickthrough are documented in [the identity audit](testing/IDENTITY_CLICKTHROUGH_AUDIT.md).
+
+
+## Account selection and tenant branding
+
+Explicit OrgPortal browser sign-in requests `prompt=select_account`. The PIdP
+chooser offers the active central account and a fresh sign-in for another
+account. Tenant logout clears that tenant’s session; a remaining central session
+must not silently choose the account on the next explicit sign-in. Provider
+sign-in requests fresh authentication through PIdP.
+
+The fresh form retains the registered account application and validated return
+ticket. Shared identity may use the same credentials across communities while
+retaining the requesting tenant’s name and imagery. The operator-owned
+`shared/portal-login-branding.json` supplies the logo, tagline and accent for
+registered products; URL parameters cannot supply branding or grant access.

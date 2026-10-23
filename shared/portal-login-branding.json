@@ -1,0 +1,17 @@
+{
+  "LifeTech": {
+    "logo_url": "https://lifetech.fyi/assets/images/lifetech-logo-v2.png",
+    "hero_eyebrow": "Health × Medicine × Biotech",
+    "accent_color": "#0b8492"
+  },
+  "MedTech": {
+    "logo_url": "https://medtech.social/assets/images/baltimore-medtech-logo-square.jpg",
+    "hero_eyebrow": "Health × Medicine × Biotech",
+    "accent_color": "#0f6f8f"
+  },
+  "OrgPortal": {
+    "logo_url": "https://orgportal.cc/orgportal.svg",
+    "hero_eyebrow": "Organizations × Events × Communities",
+    "accent_color": "#155e59"
+  }
+}

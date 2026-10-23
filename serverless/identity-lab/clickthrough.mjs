@@ -83,3 +83,39 @@ test('isolated LifeTech account-link clickthrough: account changes, confirmation
  }catch(error){await page.screenshot({path:'/tmp/pidp-identity-lab-failure.png',fullPage:true});console.error('Failed at',page.url(),await page.locator('body').innerText());throw error}
  finally{await context.close();await browser.close()}
 });
+
+test('tenant logout then login can switch the surviving central account and keeps LifeTech branding',async()=>{
+ const browser=await chromium.launch({headless:true,args:['--host-resolver-rules=MAP *.identity.test 127.0.0.1, MAP * ~NOTFOUND'],executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||'/usr/bin/google-chrome'});
+ const context=await browser.newContext({ignoreHTTPSErrors:true});
+ await context.route('**/*',route=>['pidp.identity.test','lifetech.identity.test'].includes(new URL(route.request().url()).hostname)?route.continue():route.abort());
+ const page=await context.newPage();
+ const start=portal+'/pidp/auth/sso/start?prompt=select_account&next='+encodeURIComponent(portal+'/auth/callback?next=%2Forgs%2Flifetech');
+ async function passwordLogin(email){
+  await expect(page.getByRole('heading',{name:'Sign in to LifeTech',exact:true})).toBeVisible();
+  await expect(page.getByAltText('LifeTech logo')).toHaveAttribute('src','https://lifetech.fyi/assets/images/lifetech-logo-v2.png');
+  await page.getByLabel('Email',{exact:true}).fill(email);
+  await page.getByLabel('Password',{exact:true}).fill(password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Returned to LifeTech',exact:true})).toBeVisible();
+  assert.equal(new URL(page.url()).searchParams.get('next'),'/orgs/lifetech');
+ }
+ async function subject(){return page.evaluate(async()=>{const response=await fetch('/pidp/auth/session-token');if(!response.ok)throw new Error('No tenant session');const data=await response.json();return JSON.parse(atob(data.access_token.split('.')[1].replaceAll('-','+').replaceAll('_','/'))).sub})}
+ try{
+  await page.goto(start);
+  await page.getByRole('link',{name:'Use another portal account',exact:true}).click();
+  await passwordLogin('member@example.test');
+  const firstSubject=await subject();
+  const central=(await context.cookies(issuer)).find(cookie=>cookie.name==='pidp_session');assert.ok(central);
+  assert.equal(await page.evaluate(async()=>(await fetch('/pidp/auth/session/logout',{method:'POST'})).status),200);
+  assert.equal(await page.evaluate(async()=>(await fetch('/pidp/auth/session-token')).status),401);
+  assert.equal((await context.cookies(issuer)).find(cookie=>cookie.name==='pidp_session').value,central.value);
+  await page.goto(start);
+  await expect(page.getByRole('link',{name:'Continue as member@example.test',exact:true})).toBeVisible();
+  await expect(page.getByAltText('LifeTech logo')).toBeVisible();
+  await page.getByRole('link',{name:'Use another portal account',exact:true}).click();
+  assert.equal(new URL(page.url()).searchParams.get('prompt'),'login');
+  await passwordLogin('alternate@example.test');
+  assert.notEqual(await subject(),firstSubject);
+  console.log('PASS: tenant logout clears tenant session; surviving central session offers a choice; alternate account signs in with LifeTech branding and original return context');
+ }finally{await context.close();await browser.close()}
+});

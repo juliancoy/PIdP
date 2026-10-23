@@ -1,6 +1,6 @@
 from __future__ import annotations
 from html import escape
-from browser_pages import identity_document
+from browser_pages import identity_document, PORTAL_BRANDS
 
 from portal_clients import login_portal, browser_return, shared_identity
 
@@ -1495,6 +1495,8 @@ async def frontend_app_login(
     force_owner_login = _truthy(request.query_params.get("owner"))
     auto_login = _truthy(request.query_params.get("auto"))
     app_slug = (request.query_params.get("app") or "").strip()
+    branding_app = app_slug
+    explicit_owner = force_owner_login
     if shared_identity(app_slug):
         force_owner_login = True
     if force_owner_login:
@@ -1507,10 +1509,10 @@ async def frontend_app_login(
     if raw_next and not resolved_next:
         LOG.info("Rejected app login redirect target for app=%s next=%s", app_slug or "none", raw_next)
     branding = _website_branding(website)
-    portal = None if force_owner_login else await login_portal(app_slug, raw_next or '/', session,
+    portal = None if explicit_owner else await login_portal(branding_app, raw_next or '/', session,
         request.headers.get('x-forwarded-proto','https')+'://'+request.headers['x-forwarded-host'] if request.headers.get('x-forwarded-host') else str(request.base_url).rstrip('/'))
     if portal:
-        branding = {'hero_title': 'Sign in to '+portal['name']}
+        branding = _normalize_website_branding({**PORTAL_BRANDS.get(portal['name'], {}), 'hero_title': 'Sign in to '+portal['name']})
     elif force_owner_login:
         branding = {'hero_title': 'Sign in to OrgPortal' if settings.portal_shared_identity else 'Sign in to PIdP'}
     if app_slug and not website:
@@ -1551,7 +1553,7 @@ async def frontend_app_login(
             return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
 
     request_token = _request_token(request)
-    if request_token:
+    if request_token and not request.query_params.get("error") and request.query_params.get("prompt") not in ("login", "select_account"):
         payload = safe_decode_token(request_token)
         if payload and payload.get("sub"):
             actor_type = str(payload.get("actor_type") or "owner")
@@ -1585,8 +1587,8 @@ async def frontend_app_login(
             "page_title": "Sign in to "+portal["name"] if portal else f"Sign in to {website.name}" if website else "PIdP Console",
             "active_page": "home",
             "login_next": resolved_next or "",
-            "login_app_slug": website.slug if website else "",
-            "login_force_owner": force_owner_login,
+            "login_app_slug": website.slug if website else branding_app if portal else "",
+            "login_force_owner": explicit_owner,
             "login_app_name": portal["name"] if portal else website.name if website else "",
             "login_app_description": website.description if website else "",
             "login_branding": branding,
@@ -1609,6 +1611,7 @@ async def frontend_login(
     password = str(form.get("password") or "")
     next_url = str(form.get("next") or "").strip()
     requested_app = str(form.get("app") or "").strip()
+    branding_app = requested_app
     force_owner_login = _truthy(form.get("owner"))
     if shared_identity(requested_app):
         force_owner_login = True
@@ -1625,7 +1628,7 @@ async def frontend_login(
         LOG.info("Rejected login redirect target for app=%s next=%s", app_slug or "none", next_url)
         return RedirectResponse(
             url=_frontend_login_path(
-                app_slug=app_slug or requested_app or None,
+                app_slug=app_slug or branding_app or None,
                 error="Redirect URL is not allowed for this application",
             ),
             status_code=status.HTTP_303_SEE_OTHER,
@@ -1641,7 +1644,7 @@ async def frontend_login(
         LOG.info("Login failed for email=%s app=%s", email, app_slug or requested_app or "none")
         return RedirectResponse(
             url=_frontend_login_path(
-                app_slug=app_slug or requested_app or None,
+                app_slug=app_slug or branding_app or None,
                 next_url=next_url or None,
                 error="Invalid credentials",
             ),
@@ -1651,7 +1654,7 @@ async def frontend_login(
         LOG.info("Login blocked for unverified email=%s app=%s", email, app_slug or requested_app or "none")
         return RedirectResponse(
             url=_frontend_login_path(
-                app_slug=app_slug or requested_app or None,
+                app_slug=app_slug or branding_app or None,
                 next_url=next_url or None,
                 error="Verify your email before signing in.",
             ),

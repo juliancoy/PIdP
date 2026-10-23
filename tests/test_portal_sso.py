@@ -51,12 +51,15 @@ class SsoTests(unittest.TestCase):
         chooser=self.client.get(started.headers['location'])
         self.assertEqual(chooser.status_code,200)
         self.assertIn('Choose an account',chooser.text)
+        self.assertIn('prompt=login',chooser.text)
+        self.assertIn('app=members',chooser.text)
         self.assertIsNone(self.db.query(PortalSsoRequest).one().code_hash)
         from urllib.parse import urlsplit,parse_qs
         ticket=parse_qs(urlsplit(started.headers['location']).query)['request'][0]
         fresh=self.client.get('https://id.example/auth/sso/authorize',params={'request':ticket,'prompt':'login'})
         self.assertEqual(fresh.status_code,303)
         self.assertIn('/app/login',fresh.headers['location'])
+        self.assertIn('prompt=login',fresh.headers['location'])
         self.assertEqual(self.client.get('/auth/sso/start',params={'prompt':'unsupported'}).status_code,400)
 
     def test_member_handoff_is_bound_to_browser_origin_and_one_use(self):

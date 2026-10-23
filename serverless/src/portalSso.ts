@@ -1,5 +1,5 @@
 import { identityUrl } from './identityUrls';
-import {identityDocument} from './identityPage';
+import {identityDocument, portalLoginBrand} from './identityPage';
 import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
@@ -67,10 +67,11 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   const prompt=c.req.query('prompt');if(prompt && !['select_account','login'].includes(prompt))return c.json({error:'invalid_prompt'},400);
   if(prompt==='select_account'){
    const resume=identityUrl(c.env,'/auth/sso/authorize');resume.searchParams.set('request',row.id);
-   const login=identityUrl(c.env,'/app/login');if(!sharedIdentity(c.env,row.app))login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
+   const login=identityUrl(c.env,'/app/login');login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());login.searchParams.set('prompt','login');
    let email='';try{const claims=await verifyJwt(c.env,getCookie(c,'pidp_session')||'');const user=claims.actor_type==='website_user'?await websiteUserById(c.env.DB,claims.website_id!,claims.sub):await userById(c.env.DB,claims.sub);if(user?.is_active && (claims.actor_type!=='website_user'||claims.website_id===row.website_id))email=user.email}catch{}
-   c.header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
-   return c.html(identityDocument(`Choose an account`,`<h1>Choose an account</h1><p>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)} at ${escapeHtml(new URL(row.origin).host)}.</p>${email?`<p><a href="${escapeHtml(resume.toString())}">Continue as ${escapeHtml(email)}</a></p>`:''}<p><a href="${escapeHtml(login.toString())}">Use another portal account</a></p><p><a href="${escapeHtml(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>`));
+   const brand = portalLoginBrand(portalClient(c.env,row.origin)!.name);
+   c.header('Content-Security-Policy',`default-src 'none'; style-src 'unsafe-inline'; img-src ${brand ? new URL(brand.logo_url).origin : "'none'"}; frame-ancestors 'none'; base-uri 'none'`);
+   return c.html(identityDocument(`Sign in to ${escapeHtml(portalClient(c.env,row.origin)!.name)}`,`<h1>Choose an account</h1><p>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)} at ${escapeHtml(new URL(row.origin).host)}.</p>${email?`<p><a href="${escapeHtml(resume.toString())}">Continue as ${escapeHtml(email)}</a></p>`:''}<p><a href="${escapeHtml(login.toString())}">Use another portal account</a></p><p><a href="${escapeHtml(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>`,portalClient(c.env,row.origin)!.name));
   }
   let account;
   try { if(prompt==='login')throw new Error('Fresh sign-in required');const payload=await verifyJwt(c.env,getCookie(c,'pidp_session') || '');
@@ -87,7 +88,7 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
      if(!linked && !sharedIdentity(c.env,row.app)){
       const link=identityUrl(c.env,'/auth/account-links/connect');link.searchParams.set('app',row.app);link.searchParams.set('sso',row.id);
       const resume=identityUrl(c.env,'/auth/sso/authorize');resume.searchParams.set('request',row.id);
-      const login=identityUrl(c.env,'/app/login');if(!sharedIdentity(c.env,row.app))login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
+      const login=identityUrl(c.env,'/app/login');login.searchParams.set('app',row.app);login.searchParams.set('next',resume.toString());
       c.header('Referrer-Policy','same-origin');
       c.header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
       return c.html(identityDocument(`Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)}`,`<h1>Connect your ${escapeHtml(portalClient(c.env,row.origin)!.name)} account</h1><p>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)} at ${escapeHtml(new URL(row.origin).host)}.</p><p>Signed in to PIdP as ${escapeHtml(owner.email)}. Connect your portal account to continue with the same identity.</p><p><a href="${link.toString().replaceAll('&','&amp;')}">Link my portal account</a></p><p><a href="${login.toString().replaceAll('&','&amp;')}">Sign in to the portal separately</a></p><form method="post" action="/auth/account-links/switch?${escapeHtml(new URLSearchParams({app:row.app,sso:row.id,account:"primary"}).toString())}"><button>Use another PIdP account</button></form><p><a href="${escapeHtml(row.origin)}">Cancel and return to ${escapeHtml(portalClient(c.env,row.origin)!.name)}</a></p><p>Authentication provided by PIdP. Linking requires signing in to both accounts and confirming the connection.</p>`));
@@ -102,8 +103,9 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
    if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
    const login=identityUrl(c.env,provider?`/auth/${provider}/login`:'/app/login');
    const resume=identityUrl(c.env,'/auth/sso/authorize');resume.searchParams.set('request',row.id);
-   if(!sharedIdentity(c.env,row.app))login.searchParams.set('app',row.app);
+   login.searchParams.set('app',row.app);
    login.searchParams.set('next',resume.toString());
+   if(prompt==='login' && !provider)login.searchParams.set('prompt','login');
    if(hint)login.searchParams.set('login_hint',hint);
    return c.redirect(login.toString(),303);
   }

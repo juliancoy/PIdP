@@ -131,7 +131,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
         raise HTTPException(400, 'invalid_prompt')
     if prompt == 'select_account':
         resume = issuer(request) + '/auth/sso/authorize?' + urlencode({'request': row.id})
-        login = issuer(request) + '/app/login?' + urlencode({**({} if shared_identity(row.app) else {'app':row.app}), 'next':resume})
+        login = issuer(request) + '/app/login?' + urlencode({'app':row.app, 'next':resume, 'prompt':'login'})
         claims = safe_decode_token(request.cookies.get('pidp_token','')) or {}
         selected = None
         if claims.get('sub'):
@@ -140,7 +140,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
             elif claims.get('actor_type','owner') == 'owner':
                 selected = (await session.execute(select(User).where(User.id == UUID(str(claims['sub'])),User.is_active.is_(True)))).scalar_one_or_none()
         current = f'<p><a href="{escape(resume)}">Continue as {escape(selected.email)}</a></p>' if selected else ''
-        return HTMLResponse(identity_document('Choose an account', f'<h1>Choose an account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p>{current}<p><a href="{escape(login)}">Use another portal account</a></p><p><a href="{escape(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>'),headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
+        return HTMLResponse(identity_document('Sign in to '+portal_client(row.origin)['name'], f'<h1>Choose an account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p>{current}<p><a href="{escape(login)}">Use another portal account</a></p><p><a href="{escape(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>', portal_client(row.origin)['name']),headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     payload = {} if prompt == 'login' else safe_decode_token(request.cookies.get('pidp_token','')) or {}
     user = None
     account = None
@@ -171,9 +171,9 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
             raise HTTPException(400, 'invalid_provider')
         resume = issuer(request)+'/auth/sso/authorize?'+urlencode({'request':row.id})
         path = f'/auth/{provider}/login' if provider else '/app/login'
-        params = {'next':resume}
-        if not shared_identity(row.app):
-            params['app'] = row.app
+        params = {'next':resume, 'app':row.app}
+        if prompt == 'login' and not provider:
+            params['prompt'] = 'login'
         if hint:
             params['login_hint'] = hint
         return redirect(issuer(request)+path+'?'+urlencode(params))

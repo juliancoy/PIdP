@@ -63,6 +63,26 @@ class ProfileSelfServiceTests(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
+    def test_fresh_sign_in_does_not_reuse_cookie_and_preserves_shared_tenant_brand(self):
+        import time, json
+        from models import PortalSsoRequest
+        ticket = 'fresh-lifetech-login'
+        self.db.add(PortalSsoRequest(id=ticket,browser_hash='local-browser',origin='https://lifetech.fyi',
+            next='https://lifetech.fyi/auth/callback?next=%2Forgs%2Flifetech',website_id=str(self.site_id),app='site',expires_at=int(time.time())+600))
+        self.db.commit()
+        self.client.cookies.set('pidp_token','local-session')
+        clients=json.dumps({'https://lifetech.fyi':{'name':'LifeTech','accountApp':'site','callbacks':['/auth/callback']}})
+        for shared in [False,True]:
+            with patch.multiple(self.main.settings, public_base_url='https://id.example',portal_auth_origins='https://lifetech.fyi',portal_clients_json=clients,portal_sso_app_slug='site',portal_shared_identity=shared):
+                for prompt in ['login','select_account','']:
+                    response=self.client.get('/app/login',params={'app':'site','next':'https://id.example/auth/sso/authorize?request='+ticket,'prompt':prompt,**({'error':'Invalid credentials'} if not prompt else {})},follow_redirects=False)
+                    self.assertEqual(response.status_code,200,response.text)
+                    self.assertIn('Sign in to LifeTech',response.text)
+                    self.assertIn('lifetech-logo-v2.png',response.text)
+                    self.assertIn('name="email"',response.text)
+                    self.assertIn('name="app" value="site"',response.text)
+                    self.assertIn('Powered by PIdP',response.text)
+
     def test_verified_provider_shares_canonical_user_identity_only(self):
         owner = self.db.get(self.User, self.member_id)
         member = self.db.get(self.WebsiteUser, self.member_id)
