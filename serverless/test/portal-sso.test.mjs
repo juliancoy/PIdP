@@ -9,13 +9,14 @@ function fixture(real = false) {
  const sql=new DatabaseSync(':memory:');
  sql.exec('CREATE TABLE account_identity_links(subject TEXT,canonical_user_id TEXT,website_id TEXT,website_user_id TEXT,linked_at TEXT)');
  sql.exec(readFileSync(new URL('../migrations/0009_portal_sso.sql',import.meta.url),'utf8'));
- sql.exec(`CREATE TABLE websites(id TEXT,slug TEXT);INSERT INTO websites VALUES('site','members');
- CREATE TABLE users(id TEXT,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
- CREATE TABLE website_users(id TEXT,website_id TEXT,is_active INTEGER,email TEXT,identity_data TEXT,profile_data TEXT);INSERT INTO website_users VALUES('member','site',1,'member@example.test','{}','{}');`);
+ sql.exec(`CREATE TABLE websites(id TEXT PRIMARY KEY,slug TEXT);INSERT INTO websites VALUES('site','members');
+ CREATE TABLE users(id TEXT PRIMARY KEY,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
+ CREATE TABLE website_users(id TEXT PRIMARY KEY,website_id TEXT,is_active INTEGER,email TEXT,identity_data TEXT,profile_data TEXT);INSERT INTO website_users VALUES('member','site',1,'member@example.test','{}','{}');`);
+ sql.exec(readFileSync(new URL('../migrations/0013_browser_sessions.sql',import.meta.url),'utf8'));
  const DB={prepare(query){const statement=sql.prepare(query);return{bind(...args){return{async run(){return statement.run(...args)},async first(){return statement.get(...args) || null}}}}}};
  const clients=Object.fromEntries(['https://one.example','https://two.example','https://orgportal.cc'].map(origin=>[origin,{name:'Test Portal',accountApp:'members',callbacks:['/auth/callback','/p/auth/callback']} ]));clients['https://codecollective.us']={name:'Test Portal',accountApp:'members',callbacks:['/auth/callback','/p/auth/callback'],restartOrigin:'https://orgportal.cc'};
  const env={PORTAL_CLIENTS_JSON:JSON.stringify(clients),DB,SECRET_KEY:'test-key',PUBLIC_BASE_URL:'https://id.example',PORTAL_AUTH_ORIGINS:'https://one.example,https://two.example',PORTAL_SSO_APP_SLUG:'members'};
- const app=real ? fullApp : portalSso(async (_env,subject)=>'session-for-'+subject);
+ const app=real ? fullApp : portalSso(async (env,subject)=>{const parts=subject.split(':');return signJwt(env,{sub:parts.at(-1),actor_type:parts[0]==='website'?'website_user':'owner',...(parts[0]==='website'?{website_id:parts[1]}:{})})});
  const request=(host,path,headers={})=>app.request('https://'+host+path,{headers},env);
  return {env,sql,request};
 }
@@ -207,7 +208,7 @@ test('shared identity accepts primary accounts without another portal login and 
   const complete=new URL(result.headers.get('location'));
   const finished=await f.request('one.example',complete.pathname.replace('/pidp','')+complete.search,{cookie:started.browser});
   assert.equal(finished.status,303);
-  assert.match(finished.headers.get('set-cookie'),linked?/session-for-website%3Asite%3Amember/:/session-for-owner%3Aowner/);
+  const cookie=finished.headers.getSetCookie().find(c=>c.startsWith('pidp_session='));const claims=await verifyJwt(f.env,decodeURIComponent(cookie.split(';')[0].slice('pidp_session='.length)));assert.equal(claims.sub,linked?'member':'owner');
  }
  const started=await start(f);const u=new URL(started.authorize);
  const login=await f.request('id.example',u.pathname+u.search);
@@ -291,8 +292,9 @@ test('LifeTech account switching keeps branding and fresh sign-in with a survivi
    const body=await form.text();
    assert.match(body,/<h1>Sign in to LifeTech<\/h1>/);
    assert.match(body,/lifetech-logo-v2.png/);
-   assert.match(body,/name="app" value="members"/);
-   assert.match(body,/Authentication provided by PIdP/);
+   if(shared === "true") assert.doesNotMatch(body,/name="app"/);
+   else assert.match(body,/name="app" value="members"/);
+   assert.match(body,/<p>lifetech.fyi<\/p>/);
    assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_sso_requests WHERE code_hash IS NOT NULL').get().n,0);
    // Validation errors must keep the same tenant and return ticket.
    const error=await fullApp.request('https://id.example/app/login',{method:'POST',body:new URLSearchParams({app:'members',next:login.searchParams.get('next')})},f.env);
@@ -311,6 +313,59 @@ test('central registered portal uses the requesting tenant ticket for branded lo
   const response=await f.request('orgportal.cc',authorize.pathname.replace('/pidp','')+authorize.search);
   const target=new URL(response.headers.get('location'));
   const form=await f.request('orgportal.cc',target.pathname.replace('/pidp','')+target.search);
-  assert.equal(form.status,200);assert.match(await form.text(),/<h1>Sign in to LifeTech<\/h1>/);
+  assert.equal(form.status,200);assert.match(await form.text(),/<h1>Sign in to LifeTech on OrgPortal<\/h1>/);
  }finally{f.sql.close()}
+});
+
+test('expired sign-in offers a safe HTML retry without reusing the ticket',async()=>{
+ const f=fixture();try{
+  const started=await start(f);const authorize=new URL(started.authorize);
+  f.sql.exec('UPDATE portal_sso_requests SET expires_at=0');
+  const expired=await f.request('id.example',authorize.pathname+authorize.search);
+  assert.equal(expired.status,400);assert.match(expired.headers.get('content-type'),/text\/html/);
+  assert.match(expired.headers.get('content-security-policy'),/form-action https:\/\/orgportal.cc https:\/\/id.example https:\/\/one.example/);
+  const html=await expired.text();assert.match(html,/<button type="submit">Try again<\/button>/);
+  assert.match(html,/action="https:\/\/one.example\/pidp\/auth\/sso\/start"/);
+  assert.match(html,/name="next" value="https:\/\/one.example\/auth\/callback\?next=%2Fpeople"/);
+  assert.ok(!html.includes(authorize.searchParams.get('request')));
+  const missing=await f.request('id.example','/auth/sso/authorize?request=missing&next=https://evil.example');
+  const fallback=await missing.text();assert.match(fallback,/action="https:\/\/orgportal.cc\/users\/login"/);assert.ok(!fallback.includes('evil.example'));
+ }finally{f.sql.close()}
+});
+
+test('tenant SSO preserves original authentication time rather than upgrading remembered login',async()=>{
+ const f=fixture(true);try{
+  const authTime=Math.floor(Date.now()/1000)-1800;
+  const issuerSession=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site',auth_time:authTime});
+  const started=await start(f),authorize=new URL(started.authorize);
+  const approved=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+issuerSession});
+  const complete=new URL(approved.headers.get('location'));
+  const result=await f.request('one.example',complete.pathname.replace('/pidp','')+complete.search,{cookie:started.browser});
+  assert.equal(result.status,303);
+  const cookie=result.headers.getSetCookie().find(c=>c.startsWith('pidp_session='));
+  const claims=await verifyJwt(f.env,decodeURIComponent(cookie.split(';')[0].slice('pidp_session='.length)));
+  assert.equal(claims.auth_time,authTime);
+ }finally{f.sql.close()}
+});
+
+test('LifeTech login identifies tenant and central host on form and validation errors', async () => {
+ const f=fixture(true);
+ try {
+  f.env.PORTAL_CLIENTS_JSON=JSON.stringify({'https://lifetech.fyi':{name:'LifeTech',accountApp:'members',callbacks:['/auth/callback']}});
+  f.env.PORTAL_AUTH_ORIGINS='https://lifetech.fyi';
+  const started=await start(f,'lifetech.fyi');
+  const query=new URLSearchParams({app:'members',next:started.authorize});
+  for(const [host,label,domain] of [['orgportal.cc','LifeTech on OrgPortal','orgportal.cc'],['lifetech.fyi','LifeTech','lifetech.fyi']]) {
+   for(const method of ['GET','POST']) {
+    const response=await fullApp.request('https://'+host+'/app/login'+(method==='GET'?'?'+query:''),{method,...(method==='POST'?{body:query}:{})},f.env);
+    assert.equal(response.status,method==='GET'?200:422);
+    const html=await response.text();
+    assert.ok(html.includes('<h1>Sign in to '+label+'</h1>'));
+    assert.ok(html.includes('<p>'+domain+'</p>'));
+    assert.doesNotMatch(html,/Authentication provided by PIdP/);
+    const visible=html.replace(/<style>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,'');
+    assert.equal(visible.split('orgportal.cc').length-1,host==='orgportal.cc'?1:0);
+   }
+  }
+ } finally {f.sql.close();}
 });

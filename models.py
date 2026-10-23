@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -96,6 +96,7 @@ class SystemSetting(Base):
 
 class PortalSsoRequest(Base):
     __tablename__ = "portal_sso_requests"
+    auth_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     browser_hash: Mapped[str] = mapped_column(String(64))
     origin: Mapped[str] = mapped_column(Text)
@@ -145,3 +146,14 @@ class AccountIdentityLinkRequest(Base):
     expires_at: Mapped[int] = mapped_column(Integer)
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     used_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+class BrowserSession(Base):
+    __tablename__ = 'browser_sessions'
+    __table_args__ = (CheckConstraint('(owner_id IS NOT NULL AND website_user_id IS NULL AND website_id IS NULL) OR (owner_id IS NULL AND website_user_id IS NOT NULL AND website_id IS NOT NULL)'),)
+    id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=True)
+    website_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey('website_users.id', ondelete='CASCADE'), nullable=True)
+    website_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey('websites.id', ondelete='CASCADE'), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[int] = mapped_column(Integer, index=True)
+    absolute_expires_at: Mapped[int] = mapped_column(Integer)

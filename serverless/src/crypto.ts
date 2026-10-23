@@ -31,9 +31,10 @@ export async function sha256Hex(value: string): Promise<string> {
 }
 
 export async function signJwt(env: Env, payload: Omit<JwtPayload, "exp"> & { exp?: number }): Promise<string> {
-  const ttlMinutes = Number(env.ACCESS_TOKEN_EXPIRE_MINUTES || "525600");
+  const ttlMinutes = Math.min(60, Math.max(1, Number(env.ACCESS_TOKEN_EXPIRE_MINUTES) || 60));
   const body: JwtPayload = {
     jti: crypto.randomUUID(),
+    auth_time: Math.floor(Date.now()/1000),
     ...payload,
     exp: payload.exp ?? Math.floor(Date.now() / 1000) + ttlMinutes * 60,
   };
@@ -60,8 +61,13 @@ export async function verifyJwt(env: Env, token: string): Promise<JwtPayload> {
   } catch {
     fail(401, "Invalid token");
   }
-  if (!payload.sub || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) {
+  if (!payload.sub || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) {
     fail(401, "Invalid token");
+  }
+  if(payload.sid){
+    const row=await env.DB.prepare('SELECT owner_id,website_user_id,website_id,expires_at,absolute_expires_at FROM browser_sessions WHERE id_hash=?').bind(await sha256Hex(payload.sid)).first<{owner_id:string|null;website_user_id:string|null;website_id:string|null;expires_at:number;absolute_expires_at:number}>();
+    const now=Math.floor(Date.now()/1000),member=payload.actor_type==='website_user';
+    if(!row || row.expires_at<=now || row.absolute_expires_at<=now || (member ? row.website_user_id!==payload.sub || row.website_id!==payload.website_id : row.owner_id!==payload.sub))fail(401,'Session expired or revoked');
   }
   return payload;
 }

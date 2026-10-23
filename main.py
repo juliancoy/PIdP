@@ -1,4 +1,5 @@
 from __future__ import annotations
+from browser_sessions import browser_session, validate_browser_session, revoke_browser_session
 from html import escape
 from browser_pages import identity_document, PORTAL_BRANDS
 
@@ -6,6 +7,7 @@ from portal_clients import login_portal, browser_return, shared_identity
 
 import json
 import asyncio
+import time
 from retention import retention_loop
 import logging
 import os
@@ -76,7 +78,7 @@ from security import (
     verify_password,
 )
 
-optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
+
 
 LOG = logging.getLogger(__name__)
 MAX_WEBSITES_PER_OWNER = 5
@@ -175,7 +177,18 @@ app.add_middleware(
 )
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+class AccessTokenBearer(OAuth2PasswordBearer):
+    async def __call__(self, request: Request):
+        token = await super().__call__(request)
+        if not token:
+            return token
+        claims = safe_decode_token(token)
+        if claims and claims.get('token_use') == 'browser_session':
+            raise HTTPException(401, 'Browser session cookies cannot be used as bearer tokens')
+        return token
+
+oauth2_scheme = AccessTokenBearer(tokenUrl="/auth/token")
+optional_oauth2_scheme = AccessTokenBearer(tokenUrl="/auth/token", auto_error=False)
 
 ALLOWED_API_TOKEN_SCOPES = {"service", "org_portal", "org_mcp", "org_admin"}
 TOKEN_SCOPE_GRANTS: dict[str, list[str]] = {
@@ -207,7 +220,8 @@ def _is_request_secure(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+async def _set_session_cookie(response: Response, token: str, session, previous=None) -> None:
+    token, max_age = await browser_session(session, token, previous)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -215,17 +229,17 @@ def _set_session_cookie(response: Response, token: str) -> None:
         secure=True,
         samesite="lax",
         path="/",
-        max_age=settings.access_token_expire_minutes * 60,
+        max_age=max_age,
     )
 
 
-def _session_redirect(request: Request, target: str | None, token: str) -> RedirectResponse:
+async def _session_redirect(request: Request, target: str | None, token: str, session) -> RedirectResponse:
     destination = target or _resolve_frontend_redirect_target(request, settings.frontend_redirect_url) or '/'
     if _is_native_redirect_target(destination):
         separator = '&' if '#' in destination else '#'
         return RedirectResponse(destination + separator + urlencode({'token':token,'token_type':'bearer'}),status_code=status.HTTP_303_SEE_OTHER)
     response = RedirectResponse(destination,status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response,token)
+    await _set_session_cookie(response,token,session)
     return response
 
 
@@ -716,7 +730,7 @@ async def _store_social_avatar(
 
 
 async def _get_current_owner(token: str, session: AsyncSession) -> User:
-    payload = safe_decode_token(token)
+    payload = await validate_browser_session(session, safe_decode_token(token))
     if not payload or not payload.get("sub"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     if payload.get("actor_type") == "website_user":
@@ -739,11 +753,14 @@ async def _get_current_owner_for_token_admin(token: str, session: AsyncSession) 
                 detail="PAT scope does not permit token administration",
             )
         return owner
+    claims = await validate_browser_session(session, safe_decode_token(token))
+    if claims and claims.get('sid') and (not claims.get('auth_time') or int(time.time()) - claims['auth_time'] > 900):
+        raise HTTPException(401, 'Sign in again before managing API credentials')
     return await _get_current_owner(token, session)
 
 
 async def _get_current_website_user(token: str, session: AsyncSession) -> WebsiteUser:
-    payload = safe_decode_token(token)
+    payload = await validate_browser_session(session, safe_decode_token(token))
     if not payload or not payload.get("sub"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid website user token")
     if payload.get("actor_type") != "website_user":
@@ -1512,7 +1529,11 @@ async def frontend_app_login(
     portal = None if explicit_owner else await login_portal(branding_app, raw_next or '/', session,
         request.headers.get('x-forwarded-proto','https')+'://'+request.headers['x-forwarded-host'] if request.headers.get('x-forwarded-host') else str(request.base_url).rstrip('/'))
     if portal:
-        branding = _normalize_website_branding({**PORTAL_BRANDS.get(portal['name'], {}), 'hero_title': 'Sign in to '+portal['name']})
+        login_label = portal['name']
+        if login_label == 'LifeTech':
+            login_host = (request.headers.get('x-forwarded-host') or request.url.hostname or '').split(':')[0].lower()
+            login_label = 'LifeTech on OrgPortal' if login_host == 'orgportal.cc' else 'LifeTech'
+        branding = _normalize_website_branding({**PORTAL_BRANDS.get(portal['name'], {}), 'hero_title': 'Sign in to '+login_label})
     elif force_owner_login:
         branding = {'hero_title': 'Sign in to OrgPortal' if settings.portal_shared_identity else 'Sign in to PIdP'}
     if app_slug and not website:
@@ -1577,18 +1598,19 @@ async def frontend_app_login(
 
             if can_bypass:
                 if resolved_next:
-                    return _session_redirect(request,resolved_next,request_token)
+                    return await _session_redirect(request,resolved_next,request_token,session)
                 return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
     return _render_template(
         request,
         "home.html",
         {
-            "page_title": "Sign in to "+portal["name"] if portal else f"Sign in to {website.name}" if website else "PIdP Console",
+            "page_title": branding["hero_title"] if portal else f"Sign in to {website.name}" if website else "PIdP Console",
             "active_page": "home",
             "login_next": resolved_next or "",
             "login_app_slug": website.slug if website else branding_app if portal else "",
             "login_force_owner": explicit_owner,
+            "login_lifetech_label": login_label if portal and portal["name"] == "LifeTech" else "",
             "login_app_name": portal["name"] if portal else website.name if website else "",
             "login_app_description": website.description if website else "",
             "login_branding": branding,
@@ -1666,7 +1688,7 @@ async def frontend_login(
     if redirect_target:
         request.session["frontend_redirect_url"] = redirect_target
     redirect_target = _resolve_frontend_redirect_for_website(request, request.session.pop("frontend_redirect_url", None), app_website)
-    return _session_redirect(request,redirect_target,token)
+    return await _session_redirect(request,redirect_target,token,session)
 
 
 @app.post("/session/register", include_in_schema=False)
@@ -2380,12 +2402,13 @@ async def login_for_session_cookie(
 
     token = _create_owner_access_token(user)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    _set_session_cookie(response, token)
+    await _set_session_cookie(response, token, session)
     return response
 
 
 @app.post("/auth/session/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout_session_cookie(request: Request) -> Response:
+async def logout_session_cookie(request: Request, session: AsyncSession = Depends(get_session)) -> Response:
+    await revoke_browser_session(session, request.cookies.get(SESSION_COOKIE_NAME,''))
     _require_trusted_browser_origin(request)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_session_cookie(response)
@@ -2408,8 +2431,10 @@ async def exchange_access_token_for_session_cookie(
     else:
         user = await _get_current_owner(token, session)
         rotated_token = _create_owner_access_token(user)
+    claims = safe_decode_token(rotated_token)
+    rotated_token = create_access_token(claims['sub'], extra_claims={**claims,'sid':payload.get('sid'),'auth_time':payload.get('auth_time',int(time.time()))})
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    _set_session_cookie(response, rotated_token)
+    await _set_session_cookie(response, rotated_token, session)
     return response
 
 
@@ -2429,21 +2454,23 @@ async def session_status(request: Request, session: AsyncSession = Depends(get_s
 
 
 @app.get("/auth/session-token", response_model=Token)
-async def auth_session_token(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> Token:
+async def auth_session_token(request: Request, response: Response, session: AsyncSession = Depends(get_session)) -> Token:
     token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    payload = safe_decode_token(token)
+    payload = await validate_browser_session(session, safe_decode_token(token or ''))
     if not payload:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    if payload.get("actor_type") == "website_user":
-        await _get_current_website_user(token, session)
+        raise HTTPException(401, 'No active session')
+    if payload.get('actor_type') == 'website_user':
+        user = await _get_current_website_user(token, session)
+        rotated = _create_website_user_access_token(user)
     else:
-        await _get_current_owner(token, session)
-    return Token(access_token=token)
+        user = await _get_current_owner(token, session)
+        rotated = _create_owner_access_token(user)
+    # Link issued access tokens to the revocable remembered session.
+    claims = safe_decode_token(rotated)
+    rotated = create_access_token(str(user.id), extra_claims={**claims, 'sid':payload.get('sid'), 'auth_time':payload.get('auth_time')})
+    await _set_session_cookie(response, rotated, session, token)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return Token(access_token=rotated)
 
 
 app.include_router(account_link_browser_routes(_get_current_owner, _get_current_website_user, get_session))
@@ -3293,7 +3320,7 @@ async def social_callback(
         await session.refresh(website_user)
         token = _create_website_user_access_token(website_user)
         redirect_target = _resolve_frontend_redirect_for_website(request, request.session.pop("frontend_redirect_url", None), login_website)
-        return _session_redirect(request,redirect_target,token)
+        return await _session_redirect(request,redirect_target,token,session)
 
     result = await session.execute(
         select(User).where(
@@ -3344,7 +3371,7 @@ async def social_callback(
 
     token = _create_owner_access_token(user)
     redirect_target = _resolve_frontend_redirect_target(request, request.session.pop("frontend_redirect_url", None))
-    return _session_redirect(request,redirect_target,token)
+    return await _session_redirect(request,redirect_target,token,session)
 
 
 @app.on_event("shutdown")

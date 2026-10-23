@@ -9,7 +9,7 @@ if [[ ! -f "$lab_state/key.pem" ]] || ! openssl x509 -in "$lab_state/cert.pem" -
 fi
 if ! docker network inspect pidp-identity-lab >/dev/null 2>&1; then docker network create --internal pidp-identity-lab >/dev/null; fi
 if docker container inspect pidp-identity-lab >/dev/null 2>&1; then docker rm -f pidp-identity-lab >/dev/null; fi
-docker run -d --name pidp-identity-lab --network pidp-identity-lab --read-only --tmpfs /tmp --volume "$lab_root/serverless/src:/workspace/serverless/src:ro" --volume "$lab_root/serverless/migrations:/workspace/serverless/migrations:ro" --volume "$lab_root/serverless/node_modules:/workspace/serverless/node_modules:ro" --volume "$lab_root/serverless/identity-lab:/workspace/serverless/identity-lab:ro" --volume "$lab_root/serverless/package.json:/workspace/serverless/package.json:ro" --volume "$lab_root/shared:/workspace/shared:ro" --volume "$lab_state:/certs:ro" --workdir /workspace/serverless node:24-alpine node --import tsx identity-lab/server.mjs
+docker run -d --env "LAB_HOST_SUFFIX=${LAB_HOST_SUFFIX:-identity.test}" --name pidp-identity-lab --network pidp-identity-lab --read-only --tmpfs /tmp --volume "$lab_root/serverless/src:/workspace/serverless/src:ro" --volume "$lab_root/serverless/migrations:/workspace/serverless/migrations:ro" --volume "$lab_root/serverless/node_modules:/workspace/serverless/node_modules:ro" --volume "$lab_root/serverless/identity-lab:/workspace/serverless/identity-lab:ro" --volume "$lab_root/serverless/package.json:/workspace/serverless/package.json:ro" --volume "$lab_root/shared:/workspace/shared:ro" --volume "$lab_state:/certs:ro" --workdir /workspace/serverless node:24-alpine node --import tsx identity-lab/server.mjs
 
 cat > "$lab_state/gateway.conf" <<'NGINX'
 events {}
@@ -22,7 +22,7 @@ docker start pidp-identity-lab-gateway >/dev/null
 
 for attempt in $(seq 1 30); do
  if docker exec pidp-identity-lab wget --no-check-certificate -qO- https://127.0.0.1:8443/health >/dev/null 2>&1; then
-  echo 'Identity lab: https://pidp.identity.test:8891 (local test accounts only)'
+  echo "Identity lab: https://pidp.${LAB_HOST_SUFFIX:-identity.test}:8891 (local test accounts only)"
   exit 0
  fi
  sleep 1

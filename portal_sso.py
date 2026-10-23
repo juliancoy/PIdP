@@ -1,3 +1,4 @@
+from browser_sessions import browser_session, browser_claims
 """Browser-bound, one-use PIdP session handoff; no session tokens in URLs."""
 import re
 import hashlib
@@ -120,10 +121,13 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
     parsed_issuer = urlparse(issuer(request))
     if origin(request) != f'{parsed_issuer.scheme}://{parsed_issuer.netloc}' or request.headers.get('x-forwarded-host'):
         raise HTTPException(400, 'issuer_required')
-    row = (await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == request.query_params.get('request'),
-        PortalSsoRequest.expires_at >= int(time.time()), PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
-    if not row or not sso_return(row.origin,row.app,row.next):
-        raise HTTPException(400, 'expired_request')
+    row = (await session.execute(select(PortalSsoRequest).where(PortalSsoRequest.id == request.query_params.get('request')))).scalar_one_or_none()
+    target = sso_return(row.origin,row.app,row.next) if row else None
+    if not row or not target or row.expires_at < int(time.time()) or row.code_hash:
+        action = row.origin + '/pidp/auth/sso/start' if row and target else 'https://orgportal.cc/users/login'
+        fields = {'app':row.app, 'next':row.next, 'prompt':'select_account'} if row and target else {}
+        inputs = ''.join(f'<input type="hidden" name="{escape(key)}" value="{escape(value)}">' for key,value in fields.items())
+        return HTMLResponse(identity_document('Expired request', f'<h1>Expired request</h1><p>This sign-in request has expired or already been used. Start again to continue.</p><form method="get" action="{escape(action)}">{inputs}<button type="submit">Try again</button></form>'), status_code=400, headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     if not row.website_id:
         raise HTTPException(503, 'application_not_registered')
     prompt = request.query_params.get('prompt')
@@ -132,7 +136,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
     if prompt == 'select_account':
         resume = issuer(request) + '/auth/sso/authorize?' + urlencode({'request': row.id})
         login = issuer(request) + '/app/login?' + urlencode({'app':row.app, 'next':resume, 'prompt':'login'})
-        claims = safe_decode_token(request.cookies.get('pidp_token','')) or {}
+        claims = await browser_claims(session, request.cookies.get('pidp_token',''))
         selected = None
         if claims.get('sub'):
             if claims.get('actor_type') == 'website_user' and str(claims.get('website_id')) == row.website_id:
@@ -143,7 +147,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
             return RedirectResponse(login, status_code=303, headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
         current = f'<p><a href="{escape(resume)}">Continue as {escape(selected.email)}</a></p>' if selected else ''
         return HTMLResponse(identity_document('Sign in to '+portal_client(row.origin)['name'], f'<h1>Choose an account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p>{current}<p><a href="{escape(login)}">Use another portal account</a></p><p><a href="{escape(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>', portal_client(row.origin)['name']),headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
-    payload = {} if prompt == 'login' else safe_decode_token(request.cookies.get('pidp_token','')) or {}
+    payload = {} if prompt == 'login' else await browser_claims(session, request.cookies.get('pidp_token',''))
     user = None
     account = None
     if payload.get('actor_type') == 'website_user' and str(payload.get('website_id')) == row.website_id:
@@ -182,7 +186,7 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
     code = secrets.token_urlsafe(40)
     claimed = (await session.execute(update(PortalSsoRequest).where(PortalSsoRequest.id == row.id,
         PortalSsoRequest.code_hash.is_(None), PortalSsoRequest.expires_at >= int(time.time()))
-        .values(subject=account or f'website:{row.website_id}:{user.id}',code_hash=digest(code),expires_at=int(time.time())+120).returning(PortalSsoRequest.id))).scalar_one_or_none()
+        .values(auth_time=payload.get('auth_time',int(time.time())),subject=account or f'website:{row.website_id}:{user.id}',code_hash=digest(code),expires_at=int(time.time())+120).returning(PortalSsoRequest.id))).scalar_one_or_none()
     await session.commit()
     if not claimed:
         raise HTTPException(400, 'expired_request')
@@ -212,8 +216,10 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
         raise HTTPException(401, 'invalid_account')
     if not user:
         raise HTTPException(401, 'inactive_account')
+    claims['auth_time'] = row.auth_time or int(time.time())
     token = create_access_token(subject=str(user.id),email=user.email,extra_claims=claims)
     response = redirect(row.next)
-    response.set_cookie('pidp_token',token,max_age=settings.access_token_expire_minutes*60,secure=True,httponly=True,samesite='lax',path='/')
+    remembered,max_age = await browser_session(session,token)
+    response.set_cookie('pidp_token',remembered,max_age=max_age,secure=True,httponly=True,samesite='lax',path='/')
     response.set_cookie(BROWSER,'',max_age=0,secure=True,httponly=True,samesite='lax',path='/')
     return response

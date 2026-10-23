@@ -95,6 +95,9 @@ export interface UserApiTokenRow {
 }
 
 export interface JwtPayload {
+  sid?: string;
+  auth_time?: number;
+  token_use?: string;
   jti?: string;
   sub: string;
   email?: string;

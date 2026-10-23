@@ -17,7 +17,7 @@ test('isolated LifeTech account-link clickthrough: account changes, confirmation
   }
   return ['pidp.identity.test','lifetech.identity.test','orgportal.identity.test','medtech.identity.test'].includes(new URL(route.request().url()).hostname)?route.continue():route.abort()});
  const page=await context.newPage();
- async function login(email){await page.getByLabel('Email',{exact:true}).fill(email);await page.getByLabel('Password',{exact:true}).fill(password);await page.getByRole('button',{name:'Log in',exact:true}).click()}
+ async function login(email){await page.getByLabel('Email',{exact:true}).fill(email);await page.getByLabel('Password',{exact:true}).fill(password);await page.getByRole('button',{name:'Sign in',exact:true}).click()}
  const start=portal+'/pidp/auth/sso/start?next='+encodeURIComponent(portal+'/auth/callback?next=%2Fpeople');
  try{
   await page.goto(issuer+'/app/login?owner=true&next='+encodeURIComponent(start));await login('owner@example.test');
@@ -52,12 +52,12 @@ test('isolated LifeTech account-link clickthrough: account changes, confirmation
   const fresh=await browser.newContext({ignoreHTTPSErrors:true});
   await fresh.route('**/*',route=>new URL(route.request().url()).hostname.endsWith('.identity.test')?route.continue():route.abort());
   const cancel=await fresh.newPage();await cancel.goto(issuer+'/app/login?owner=true&next='+encodeURIComponent(start));
-  await cancel.getByLabel('Email',{exact:true}).fill('other@example.test');await cancel.getByLabel('Password',{exact:true}).fill(password);await cancel.getByRole('button',{name:'Log in',exact:true}).click();
+  await cancel.getByLabel('Email',{exact:true}).fill('other@example.test');await cancel.getByLabel('Password',{exact:true}).fill(password);await cancel.getByRole('button',{name:'Sign in',exact:true}).click();
   await cancel.getByRole('link',{name:'Cancel and return to LifeTech'}).click();await expect(cancel).toHaveURL(portal+'/');assert.equal(new URL(cancel.url()).origin,portal);
   await cancel.goto(start);await cancel.getByRole('link',{name:'Link my portal account'}).click();await cancel.getByRole('button',{name:'Authenticate the portal account'}).click();
-  await cancel.getByLabel('Email',{exact:true}).fill('alternate@example.test');await cancel.getByLabel('Password',{exact:true}).fill(password);await cancel.getByRole('button',{name:'Log in',exact:true}).click();
+  await cancel.getByLabel('Email',{exact:true}).fill('alternate@example.test');await cancel.getByLabel('Password',{exact:true}).fill(password);await cancel.getByRole('button',{name:'Sign in',exact:true}).click();
   await expect(cancel.getByRole('heading',{name:'Choose a different account'})).toBeVisible();
-  await cancel.getByRole('button',{name:'Use another portal account'}).click();await cancel.getByLabel('Email',{exact:true}).fill('member@example.test');await cancel.getByLabel('Password',{exact:true}).fill(password);await cancel.getByRole('button',{name:'Log in',exact:true}).click();
+  await cancel.getByRole('button',{name:'Use another portal account'}).click();await cancel.getByLabel('Email',{exact:true}).fill('member@example.test');await cancel.getByLabel('Password',{exact:true}).fill(password);await cancel.getByRole('button',{name:'Sign in',exact:true}).click();
   await expect(cancel.getByRole('heading',{name:'Confirm account link'})).toBeVisible();await cancel.getByRole('button',{name:'Link these accounts'}).click();await expect(cancel.getByRole('heading',{name:'Returned to LifeTech'})).toBeVisible();
   await fresh.close();console.log('PASS: conflicting link recovers through explicit account switching');
   // Reuse the central member session across registered products and explicitly
@@ -102,7 +102,6 @@ test('tenant logout then login can switch the surviving central account and keep
  async function subject(){return page.evaluate(async()=>{const response=await fetch('/pidp/auth/session-token');if(!response.ok)throw new Error('No tenant session');const data=await response.json();return JSON.parse(atob(data.access_token.split('.')[1].replaceAll('-','+').replaceAll('_','/'))).sub})}
  try{
   await page.goto(start);
-  await page.getByRole('link',{name:'Use another portal account',exact:true}).click();
   await passwordLogin('member@example.test');
   const firstSubject=await subject();
   const central=(await context.cookies(issuer)).find(cookie=>cookie.name==='pidp_session');assert.ok(central);
@@ -136,5 +135,41 @@ test('signed-out browser reaches the LifeTech login form without an empty accoun
    await expect(page.getByRole('heading',{name:'Choose an account'})).toHaveCount(0);
    assert.equal(new URL(page.url()).pathname,'/app/login');
   }
+ }finally{await context.close();await browser.close()}
+});
+
+test('expired request retry button opens a fresh sign-in',async()=>{
+ const browser=await chromium.launch({headless:true,args:['--host-resolver-rules=MAP *.identity.test 127.0.0.1, MAP * ~NOTFOUND'],executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||'/usr/bin/google-chrome'});
+ const context=await browser.newContext({ignoreHTTPSErrors:true});
+ try{
+  const page=await context.newPage();
+  // Keep the production fallback entirely inside the isolated identity lab.
+  await page.route('https://orgportal.cc/users/login**',route=>route.fulfill({contentType:'text/html',body:'<h1>Fresh login</h1>'}));
+  await page.goto(issuer+'/auth/sso/authorize?request=expired');
+  await expect(page.getByRole('heading',{name:'Expired request',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Try again',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Fresh login',exact:true})).toBeVisible();
+ }finally{await context.close();await browser.close()}
+});
+
+test('mobile login succeeds once; repeated completion shows invalid_browser while session remains valid',async()=>{
+ const browser=await chromium.launch({headless:true,args:['--host-resolver-rules=MAP *.identity.test 127.0.0.1, MAP * ~NOTFOUND'],executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||'/usr/bin/google-chrome'});
+ const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+ await context.route('**/*',route=>['pidp.identity.test','lifetech.identity.test'].includes(new URL(route.request().url()).hostname)?route.continue():route.abort());
+ try{
+  const page=await context.newPage();let completion='';let completions=0;
+  page.on('response',response=>{if(new URL(response.url()).pathname==='/pidp/auth/sso/complete'){completion=response.url();completions++}});
+  await page.goto(portal+'/pidp/auth/sso/start?'+new URLSearchParams({prompt:'select_account',next:portal+'/auth/callback?next=%2Fpeople'}));
+  await page.getByLabel('Email',{exact:true}).fill('member@example.test');
+  await page.getByLabel('Password',{exact:true}).fill(password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Returned to LifeTech',exact:true})).toBeVisible();
+  assert.equal(completions,1,'Normal login must complete only once');assert.ok(completion);
+  const sessionBefore=await page.evaluate(async()=>(await fetch('/pidp/auth/session-token')).status);assert.equal(sessionBefore,200);
+  const replay=await page.goto(completion);assert.equal(replay.status(),400);
+  await expect(page.locator('body')).toContainText('invalid_browser');
+  assert.equal(await page.evaluate(async()=>(await fetch('/pidp/auth/session-token')).status),200,'Successful login session survives repeated completion');
+  await page.screenshot({path:'/tmp/pidp-mobile-repeated-callback.png',fullPage:true});
+  console.log('PASS: normal mobile login completes once; deliberate repeat returns invalid_browser; authenticated session remains valid');
  }finally{await context.close();await browser.close()}
 });

@@ -4,7 +4,7 @@ os.environ.setdefault('SECRET_KEY','sso-test-secret')
 os.environ.setdefault('DATABASE_URL','postgresql+asyncpg://test:test@localhost/test')
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from urllib.parse import urlsplit, parse_qs
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import portal_sso as sso
-from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
+from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink, BrowserSession
 @compiles(JSONB,'sqlite')
 def sqlite_json(type_,compiler,**kw): return 'JSON'
 class AsyncAdapter:
@@ -25,7 +25,7 @@ class AsyncAdapter:
 class SsoTests(unittest.TestCase):
     def setUp(self):
         self.engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
-        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalSsoLimit,AccountIdentityLink]:model.__table__.create(self.engine)
+        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalSsoLimit,AccountIdentityLink,BrowserSession]:model.__table__.create(self.engine)
         self.user_id=uuid.uuid4()
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO users(id,email,is_active,created_at,identity_data) VALUES (?,?,1,CURRENT_TIMESTAMP,'null')",(self.user_id.hex,'member@example.test'))
@@ -41,9 +41,10 @@ class SsoTests(unittest.TestCase):
         self.client=TestClient(app,base_url='https://one.example',follow_redirects=False)
         self.settings=patch.multiple(sso.settings,public_base_url='https://id.example',portal_auth_origins='https://one.example,https://two.example',portal_sso_app_slug='members',portal_clients_json=json.dumps({**{origin:{'name':'Test Portal','accountApp':'members','callbacks':['/auth/callback','/p/auth/callback']} for origin in ['https://one.example','https://two.example','https://orgportal.cc']},'https://codecollective.us':{'name':'Test Portal','accountApp':'members','callbacks':['/auth/callback','/p/auth/callback'],'restartOrigin':'https://orgportal.cc'}}));self.settings.start()
         self.decode=patch.object(sso,'safe_decode_token',return_value={'sub':str(self.member_id),'actor_type':'website_user','website_id':str(self.website_id)});self.decode_mock=self.decode.start()
-        self.issue=patch.object(sso,'create_access_token',return_value='local-session');self.issue_mock=self.issue.start()
+        self.browser_claims=patch.object(sso,'browser_claims',new=AsyncMock(side_effect=lambda *_:self.decode_mock.return_value));self.browser_claims.start()
+        self.issue=patch.object(sso,'create_access_token',wraps=sso.create_access_token);self.issue_mock=self.issue.start()
     def tearDown(self):
-        self.issue.stop();self.decode.stop();self.settings.stop();self.client.close();self.db.close();self.engine.dispose()
+        self.browser_claims.stop();self.issue.stop();self.decode.stop();self.settings.stop();self.client.close();self.db.close();self.engine.dispose()
     def test_prompt_select_account_and_fresh_login_preserve_context(self):
         started=self.client.get('/auth/sso/start',params={'prompt':'select_account'})
         self.assertEqual(started.status_code,303)
@@ -83,6 +84,21 @@ class SsoTests(unittest.TestCase):
                 row=self.db.query(PortalSsoRequest).one()
                 self.assertEqual(row.next,destination)
                 self.assertIsNone(row.code_hash)
+
+    def test_expired_request_has_safe_html_retry(self):
+        started=self.client.get('/auth/sso/start')
+        row=self.db.query(PortalSsoRequest).one()
+        row.expires_at=0
+        self.db.commit()
+        response=self.client.get(started.headers['location'])
+        self.assertEqual(response.status_code,400)
+        self.assertIn('text/html',response.headers['content-type'])
+        self.assertIn('<button type="submit">Try again</button>',response.text)
+        self.assertIn('action="https://one.example/pidp/auth/sso/start"',response.text)
+        self.assertNotIn(row.id,response.text)
+        fallback=self.client.get('https://id.example/auth/sso/authorize?request=missing&next=https://evil.example')
+        self.assertIn('action="https://orgportal.cc/users/login"',fallback.text)
+        self.assertNotIn('evil.example',fallback.text)
 
     def test_member_handoff_is_bound_to_browser_origin_and_one_use(self):
         for host in ['one.example','two.example']:
@@ -198,5 +214,19 @@ class SsoTests(unittest.TestCase):
             result=self.client.get(authorize,params={'prompt':'login','request':parse_qs(urlsplit(authorize).query)['request'][0]})
             self.assertEqual(result.status_code,303)
             self.assertTrue(result.headers['location'].startswith('https://id.example/pidp/app/login?'))
+
+    def test_tenant_handoff_keeps_original_authentication_time(self):
+        import time
+        auth_time=int(time.time())-1800
+        self.decode_mock.return_value={**self.decode_mock.return_value,'auth_time':auth_time}
+        started=self.client.get('/auth/sso/start')
+        authorized=self.client.get(started.headers['location'])
+        self.assertEqual(authorized.status_code,303)
+        self.assertEqual(self.db.query(PortalSsoRequest).one().auth_time,auth_time)
+        completed=self.client.get(authorized.headers['location'].replace('/pidp/auth','/auth'))
+        self.assertEqual(completed.status_code,303)
+        from security import safe_decode_token
+        claims=safe_decode_token(self.client.cookies.get('pidp_token'))
+        self.assertEqual(claims['auth_time'],auth_time)
 
 if __name__=='__main__':unittest.main()

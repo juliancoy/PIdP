@@ -2,6 +2,7 @@ export async function runRetention(db: D1Database, now = Date.now(), dryRun = fa
   if (!Number.isSafeInteger(now) || now <= 0) throw new Error('Invalid retention clock');
   const cutoff = Math.floor(now / 1000) - 23 * 3600;
   const rules: [string, string, number][] = [
+    ['browser_sessions', 'expires_at', Math.floor(now / 1000)],
     ['mcp_oauth_requests', 'expires_at', cutoff],
     ['mcp_oauth_codes', 'expires_at', cutoff],
     ['mcp_oauth_logins', 'expires_at', cutoff],

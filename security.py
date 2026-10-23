@@ -1,7 +1,7 @@
 from __future__ import annotations
 from uuid import uuid4
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt, jwk
 from jose.utils import base64url_encode
@@ -62,8 +62,8 @@ def hash_password(password: str) -> str:
 
 
 def create_access_token(subject: str, email: str | None = None, extra_claims: dict | None = None) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
-    payload = {"sub": subject, "exp": expire, "jti": str(uuid4())}
+    expire = datetime.utcnow() + timedelta(minutes=min(60, max(1, settings.access_token_expire_minutes)))
+    payload = {"sub": subject, "exp": expire, "jti": str(uuid4()), "auth_time": int(datetime.now(timezone.utc).timestamp())}
     if email:
         payload["email"] = email
     if extra_claims:

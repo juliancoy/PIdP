@@ -5,7 +5,7 @@ import unittest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 import mcp_authorization
-from models import Base
+from models import Base, BrowserSession
 from retention import run_retention
 
 class RetentionTest(unittest.IsolatedAsyncioTestCase):
@@ -20,6 +20,7 @@ class RetentionTest(unittest.IsolatedAsyncioTestCase):
                 'account_identity_link_requests', 'portal_sso_limits',
                 'mcp_oauth_registration_limits')]
             await connection.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
+            await connection.execute(text('CREATE TABLE browser_sessions(id_hash TEXT PRIMARY KEY, expires_at INTEGER)'))
         async with AsyncSession(engine) as session:
             now = 1800000000
             cutoff = now - 23*3600

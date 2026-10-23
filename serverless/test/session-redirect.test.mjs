@@ -22,9 +22,9 @@ test("sign-in replaces the host session and expires the legacy parent-domain coo
   const {default:app}=await import('../src/index.ts');
   const {hashPassword}=await import('../src/crypto.ts');
   const user={id:'owner',email:'owner@example.test',is_active:1,hashed_password:await hashPassword('fixture')};
-  const env={SECRET_KEY:'fixture',SESSION_COOKIE_DOMAIN:'example.test',DB:{prepare(){return{bind(){return{async first(){return user}}}}}}};
+  const env={SECRET_KEY:'fixture',SESSION_COOKIE_DOMAIN:'example.test',DB:{prepare(){return{bind(){return{async first(){return user},async run(){return {}}}}}}}};
   const result=await app.request('https://id.example.test/auth/session/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'username=owner%40example.test&password=fixture'},env);
-  assert.equal(result.status,200);
+  assert.equal(result.status,204);
   const cookies=result.headers.getSetCookie();
   assert.ok(cookies.some(cookie=>cookie.includes('Max-Age=0')&&cookie.includes('Domain=example.test')));
   const active=cookies.find(cookie=>!cookie.includes('Max-Age=0'));

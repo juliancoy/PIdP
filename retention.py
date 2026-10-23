@@ -15,7 +15,7 @@ async def run_retention(session, now=None, limit=500):
         'mcp_oauth_requests', 'mcp_oauth_codes', 'mcp_oauth_logins',
         'portal_sso_requests', 'account_identity_link_previews',
         'account_identity_link_requests')]
-    rules += [('portal_sso_limits', 'window_start', cutoff // 60),
+    rules += [('browser_sessions', 'expires_at', int(time.time() if now is None else now)), ('portal_sso_limits', 'window_start', cutoff // 60),
               ('mcp_oauth_registration_limits', 'window_start', cutoff // 3600)]
     counts = {}
     for name, column, value in rules:

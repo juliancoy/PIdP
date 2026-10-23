@@ -1,3 +1,4 @@
+import {browserSession} from './browserSessions';
 import { identityUrl } from './identityUrls';
 import {identityDocument, portalLoginBrand} from './identityPage';
 import { Hono, type Context } from 'hono';
@@ -10,13 +11,13 @@ import { portalClient, ssoReturn, sharedIdentity } from './portalClients';
 
 const escapeHtml=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const browserCookie = '__Host-pidp_sso_browser';
-type Ticket = { id: string; browser_hash: string; origin: string; next: string; website_id: string; app: string; subject: string | null; code_hash: string | null; expires_at: number };
+type Ticket = { id: string; browser_hash: string; origin: string; next: string; website_id: string; app: string; subject: string | null; code_hash: string | null; expires_at: number; auth_time: number | null };
 const now = () => Math.floor(Date.now()/1000);
 function origin(c: Context<{ Bindings: Env }>) {
  const host = c.req.header('x-forwarded-host');
  return host && c.req.header('x-forwarded-proto') === 'https' ? `https://${host}` : new URL(c.req.url).origin;
 }
-export function portalSso(issue: (env: Env, subject: string) => Promise<string>) {
+export function portalSso(issue: (env: Env, subject: string, authTime?: number) => Promise<string>) {
  const app = new Hono<{Bindings:Env}>();
  app.use('/auth/sso/*', async (c,next) => { c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');const params=new URL(c.req.url).searchParams;for(const key of params.keys())if(params.getAll(key).length!==1)return c.json({error:'invalid_request'},400);await next(); });
  app.get('/auth/sso/client',c=>{const client=portalClient(c.env,origin(c));return client?c.json({name:client.name,accountApp:client.accountApp,callbacks:client.callbacks,origin:client.restartOrigin||origin(c)}):c.json({error:'invalid_portal'},400)});
@@ -61,8 +62,14 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
  });
  app.get('/auth/sso/authorize', async c => {
   if(new URL(c.req.url).origin!==new URL(c.env.PUBLIC_BASE_URL || c.req.url).origin || c.req.header('x-forwarded-host'))return c.json({error:'issuer_required'},400);
-  const row=await c.env.DB.prepare('SELECT * FROM portal_sso_requests WHERE id=? AND expires_at>=? AND code_hash IS NULL').bind(c.req.query('request') || '',now()).first<Ticket>();
-  if(!row || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'expired_request'},400);
+  const row=await c.env.DB.prepare('SELECT * FROM portal_sso_requests WHERE id=?').bind(c.req.query('request') || '').first<Ticket>();
+  const target=row && ssoReturn(c.env,row.origin,row.app,row.next);
+  if(!row || !target || row.expires_at<now() || row.code_hash){
+   const restart=new URL('/users/login','https://orgportal.cc');
+   if(row && target){restart.href=new URL('/pidp/auth/sso/start',row.origin).toString();restart.search=new URLSearchParams({app:row.app,next:target.toString(),prompt:'select_account'}).toString()}
+   c.header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; form-action https://orgportal.cc "+new URL(identityUrl(c.env,'/app/login')).origin+' '+(row && target ? row.origin : '')+"; frame-ancestors 'none'; base-uri 'none'");
+   return c.html(identityDocument('Expired request',`<h1>Expired request</h1><p>This sign-in request has expired or already been used. Start again to continue.</p><form method="get" action="${escapeHtml(restart.origin+restart.pathname)}">${Array.from(restart.searchParams,([name,value])=>`<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`).join('')}<button type="submit">Try again</button></form>`),400);
+  }
   if(!row.website_id)return c.json({error:'application_not_registered'},503);
   const prompt=c.req.query('prompt');if(prompt && !['select_account','login'].includes(prompt))return c.json({error:'invalid_prompt'},400);
   if(prompt==='select_account'){
@@ -74,8 +81,8 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
    c.header('Content-Security-Policy',`default-src 'none'; style-src 'unsafe-inline'; img-src ${brand ? new URL(brand.logo_url).origin : "'none'"}; frame-ancestors 'none'; base-uri 'none'`);
    return c.html(identityDocument(`Sign in to ${escapeHtml(portalClient(c.env,row.origin)!.name)}`,`<h1>Choose an account</h1><p>Continue to ${escapeHtml(portalClient(c.env,row.origin)!.name)} at ${escapeHtml(new URL(row.origin).host)}.</p>${email?`<p><a href="${escapeHtml(resume.toString())}">Continue as ${escapeHtml(email)}</a></p>`:''}<p><a href="${escapeHtml(login.toString())}">Use another portal account</a></p><p><a href="${escapeHtml(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>`,portalClient(c.env,row.origin)!.name));
   }
-  let account;
-  try { if(prompt==='login')throw new Error('Fresh sign-in required');const payload=await verifyJwt(c.env,getCookie(c,'pidp_session') || '');
+  let account,authTime=now();
+  try { if(prompt==='login')throw new Error('Fresh sign-in required');const payload=await verifyJwt(c.env,getCookie(c,'pidp_session') || '');authTime=payload.auth_time||now();
    if(payload.actor_type==='website_user' && payload.website_id===row.website_id){
     const user=await websiteUserById(c.env.DB,row.website_id,payload.sub);
     if(user?.is_active)account=`website:${row.website_id}:${user.id}`;
@@ -111,7 +118,7 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
    return c.redirect(login.toString(),303);
   }
   const code=randomToken('');
-  const claimed=await c.env.DB.prepare('UPDATE portal_sso_requests SET subject=?, code_hash=?, expires_at=? WHERE id=? AND code_hash IS NULL AND expires_at>=? RETURNING id').bind(account,await sha256Hex(code),now()+120,row.id,now()).first();
+  const claimed=await c.env.DB.prepare('UPDATE portal_sso_requests SET subject=?, auth_time=?, code_hash=?, expires_at=? WHERE id=? AND code_hash IS NULL AND expires_at>=? RETURNING id').bind(account,authTime,await sha256Hex(code),now()+120,row.id,now()).first();
   if(!claimed)return c.json({error:'expired_request'},400);
   const complete=new URL('/pidp/auth/sso/complete',row.origin);complete.searchParams.set('request',row.id);complete.searchParams.set('code',code);
   return c.redirect(complete.toString(),303);
@@ -121,8 +128,9 @@ export function portalSso(issue: (env: Env, subject: string) => Promise<string>)
   const row=await c.env.DB.prepare('DELETE FROM portal_sso_requests WHERE id=? AND code_hash=? AND browser_hash=? AND origin=? AND expires_at>=? RETURNING *')
    .bind(c.req.query('request') || '',await sha256Hex(c.req.query('code') || ''),await sha256Hex(browser),origin(c),now()).first<Ticket>();
   if(!row?.website_id || !row.subject || !(row.subject?.startsWith(`website:${row.website_id}:`) || (sharedIdentity(c.env,row.app) && /^owner:[^:]+$/.test(row.subject || ''))) || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'invalid_handoff'},400);
-  let token;try{token=await issue(c.env,row.subject);}catch{return c.json({error:'inactive_account'},401);}
-  setCookie(c,'pidp_session',token,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || '525600')*60});
+  let token;try{token=await issue(c.env,row.subject,row.auth_time||undefined);}catch{return c.json({error:'inactive_account'},401);}
+  const remembered=await browserSession(c.env,token);
+  setCookie(c,'pidp_session',remembered.token,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:remembered.maxAge});
   setCookie(c,browserCookie,'',{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:0});
   return c.redirect(row.next,303);
  });

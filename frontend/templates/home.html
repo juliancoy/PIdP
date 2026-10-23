@@ -42,12 +42,12 @@
     <div class="panel pidp-login-panel stack">
         <header class="pidp-login-header">
             <div class="pidp-login-branding">
-                <span class="pidp-chip">PIdP</span>
-                {% if login_app_name %}
+                <span class="pidp-chip">{{ login_lifetech_label or "PIdP" }}</span>
+                {% if login_app_name and not login_lifetech_label %}
                     <span class="pidp-app-chip">{{ login_app_name }}</span>
                 {% endif %}
             </div>
-            <div class="pidp-powered">Powered by PIdP</div>
+            <div class="pidp-powered">{% if login_lifetech_label %}{{ "orgportal.cc" if login_lifetech_label == "LifeTech on OrgPortal" else "lifetech.fyi" }}{% else %}Powered by PIdP{% endif %}</div>
         </header>
 
         {% if branding.logo_url %}
@@ -120,8 +120,8 @@
         {% if login_app_slug and not login_force_owner %}
         <details class="login-account-options">
             <summary>Other sign-in options</summary>
-            <p class="muted">Have a separate PIdP account? Sign in to link it to your portal account.</p>
-            <p><a href="{{ ui_base }}/app/login?owner=1&amp;next={{ login_next | urlencode }}">Sign in with a PIdP account</a></p>
+            <p class="muted">Have a separate {{ "OrgPortal" if login_lifetech_label else "PIdP" }} account? Sign in to link it to your portal account.</p>
+            <p><a href="{{ ui_base }}/app/login?owner=1&amp;next={{ login_next | urlencode }}">Sign in with {{ "an OrgPortal" if login_lifetech_label else "a PIdP" }} account</a></p>
         </details>
         {% endif %}
         <div class="login-support stack">

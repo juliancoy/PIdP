@@ -34,7 +34,10 @@ export function bearerToken(c: Context): string {
   if (!header.toLowerCase().startsWith("bearer ")) {
     fail(401, "Bearer token required");
   }
-  return header.slice(7).trim();
+  const token=header.slice(7).trim();
+  try {const encoded=token.split('.')[1];if(encoded && JSON.parse(atob(encoded.replaceAll('-','+').replaceAll('_','/'))).token_use==='browser_session')fail(401,'Browser session cookies cannot be used as bearer tokens')}
+  catch(error){if(error instanceof HttpError)throw error}
+  return token;
 }
 
 export async function formCredentials(c: Context): Promise<{ username: string; password: string }> {

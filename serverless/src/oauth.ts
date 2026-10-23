@@ -1,3 +1,4 @@
+import {browserSession} from './browserSessions';
 import { providerEnabled } from './oauthProviders';
 import { identityUrl } from './identityUrls';
 import {browserReturn, sharedIdentity} from './portalClients';
@@ -153,15 +154,16 @@ function redirectLocationForSession(env: Env, target: string | undefined, token:
   return `${resolved}${separator}${new URLSearchParams({ token, token_type: "bearer" }).toString()}`;
 }
 
-function setLoginSession(c: Context<{ Bindings: Env }>, token: string) {
+async function setLoginSession(c: Context<{ Bindings: Env }>, token: string) {
+  const remembered=await browserSession(c.env,token);
   const domain = String(c.env.SESSION_COOKIE_DOMAIN || "").trim().replace(/^Domain=/i, "").replace(/;.*$/g, "");
   if(domain)deleteCookie(c,SESSION_COOKIE,{path:"/",domain,secure:true});
-  setCookie(c, SESSION_COOKIE, token, {
+  setCookie(c, SESSION_COOKIE, remembered.token, {
     httpOnly: true,
     secure: true,
     sameSite: "Lax",
     path: "/",
-    maxAge: Number(c.env.ACCESS_TOKEN_EXPIRE_MINUTES || "525600") * 60,
+    maxAge: remembered.maxAge,
   });
 }
 
@@ -460,7 +462,7 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
       ).bind(id, loginWebsite.id, profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), nowIso()).run();
     }
     const token = await signJwt(c.env, { sub: id, email: profile.email, actor_type: "website_user", website_id: loginWebsite.id });
-    setLoginSession(c, token);
+    await setLoginSession(c, token);
     return c.redirect(redirectLocationForSession(c.env, resolveRedirectTarget(c.env, state.next, loginWebsite), token), 303);
   }
 
@@ -488,6 +490,6 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
     ).bind(id, profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), nowIso()).run();
   }
   const token = await signJwt(c.env, { sub: id, email: profile.email });
-  setLoginSession(c, token);
+  await setLoginSession(c, token);
   return c.redirect(redirectLocationForSession(c.env, resolveRedirectTarget(c.env, state.next, null), token), 303);
 }

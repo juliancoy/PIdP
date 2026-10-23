@@ -1,3 +1,4 @@
+import {browserSession,revokeBrowserSession} from './browserSessions';
 import { portalLoginBrand } from './identityPage';
 import { providerEnabled } from './oauthProviders';
 import { identityUrl, mountedIdentityPath } from './identityUrls';
@@ -83,17 +84,17 @@ app.use('*', async (c,next) => {
 app.route('/', mcpAuthorization);
 app.route('/auth/account-links',accountLinkBrowserRoutes(currentOwner,currentWebsiteUser));
 app.route('/auth/account-links',accountIdentityRoutes(currentOwner,currentWebsiteUser));
-app.route('/', portalSso(async (env, subject) => {
+app.route('/', portalSso(async (env, subject, authTime) => {
  const [actor, websiteId, id] = subject.split(':');
  if (actor === 'owner' && websiteId && !id) {
   const owner = await userById(env.DB, websiteId);
   if (!owner?.is_active) fail(401, 'Inactive account');
-  return createOwnerToken(env, owner);
+  return createOwnerToken(env, owner,undefined,authTime);
  }
  if (actor !== 'website' || !websiteId || !id) fail(401, 'Invalid account namespace');
  const user = await websiteUserById(env.DB, websiteId, id);
  if (!user?.is_active) fail(401, 'Inactive account');
- return createWebsiteUserToken(env, user);
+ return createWebsiteUserToken(env, user,undefined,authTime);
 }));
 
 const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
@@ -105,7 +106,6 @@ const TOKEN_SCOPE_GRANTS: Record<string, string[]> = {
 const SESSION_COOKIE = "pidp_session";
 const GOOGLE_CALENDAR_STATE_COOKIE = "pidp_google_calendar_state";
 const MICROSOFT_CALENDAR_STATE_COOKIE = "pidp_microsoft_calendar_state";
-const DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES = 525600;
 
 type GoogleCalendarConnectState = {
   owner_user_id: string;
@@ -218,7 +218,8 @@ function sessionCookieDomain(env: Env): string {
   return String(env.SESSION_COOKIE_DOMAIN || "").trim().replace(/^Domain=/i, "").replace(/;.*$/g, "");
 }
 
-function setSessionCookie(headers: Headers, env: Env, token: string, maxAgeSeconds: number) {
+async function setSessionCookie(headers: Headers, env: Env, token: string, previous?: string) {
+  const remembered=await browserSession(env,token,previous);token=remembered.token;const maxAgeSeconds=remembered.maxAge;
   const domain = sessionCookieDomain(env);
   if(domain)headers.append("set-cookie",`${SESSION_COOKIE}=; Path=/; Max-Age=0; Domain=${domain}; HttpOnly; Secure; SameSite=Lax`);
   headers.append(
@@ -227,9 +228,6 @@ function setSessionCookie(headers: Headers, env: Env, token: string, maxAgeSecon
   );
 }
 
-function sessionMaxAgeSeconds(env: Env): number {
-  return Number(env.ACCESS_TOKEN_EXPIRE_MINUTES || String(DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES)) * 60;
-}
 
 function clearSessionCookie(headers: Headers, env: Env) {
   const domain = sessionCookieDomain(env);
@@ -310,12 +308,13 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
   });
 }
 
-function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; registration?: boolean; shared?: boolean }) {
+function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; centralLogin?: boolean; registration?: boolean; shared?: boolean }) {
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
   const brand = portalLoginBrand(params.portalName);
-  const title = params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.portalName || params.appName}` : params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
+  const lifeTechLabel = params.portalName === "LifeTech" ? (params.centralLogin ? "LifeTech on OrgPortal" : "LifeTech") : undefined;
+  const title = lifeTechLabel ? `Sign in to ${lifeTechLabel}` : params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.portalName || params.appName}` : params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -337,7 +336,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
   <main>
     ${brand ? `<img src="${escapeHtml(brand.logo_url)}" alt="${escapeHtml(params.portalName!)} logo" width="64" height="64"><p>${escapeHtml(brand.hero_eyebrow)}</p>` : ""}
     <h1>${escapeHtml(title)}</h1>
-    ${params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
+    ${lifeTechLabel ? `<p>${params.centralLogin ? "orgportal.cc" : "lifetech.fyi"}</p>` : params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
     ${error}
     ${params.socialLinks.map(link => `<a class="social-login" href="${escapeHtml(link.href)}">Continue with ${escapeHtml(link.label)}</a>`).join("\n")}
     <form method="post" action="${params.registration ? "/app/register" : "/app/login"}">
@@ -348,7 +347,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
       <label>Password <input name="password" type="password" autocomplete="${params.registration ? "new-password" : "current-password"}" ${params.registration ? 'minlength="8"' : ""} required></label>
       <button type="submit">${params.registration ? "Create account" : "Sign in"}</button>
     </form>
-    ${params.appSlug && !params.ownerMode && !params.shared ? `<details><summary>Other sign-in options</summary><p>Have a separate PIdP account? Sign in to link it to your portal account.</p><p><a href="/app/login?${escapeHtml(new URLSearchParams({owner:"1",next:params.next}).toString())}">Sign in with a PIdP account</a></p></details>` : ""}
+    ${params.appSlug && !params.ownerMode && !params.shared ? `<details><summary>Other sign-in options</summary><p>Have a separate ${lifeTechLabel ? "OrgPortal" : "PIdP"} account? Sign in to link it to your portal account.</p><p><a href="/app/login?${escapeHtml(new URLSearchParams({owner:"1",next:params.next}).toString())}">Sign in with ${lifeTechLabel ? "an OrgPortal" : "a PIdP"} account</a></p></details>` : ""}
     ${params.shared ? `<p><a href="/app/login?${escapeHtml(new URLSearchParams({next:params.next,...(params.registration ? {} : {register:"1"})}).toString())}">${params.registration ? "Already have an account? Sign in" : "Create an account"}</a></p><p>One OrgPortal account for all communities.</p>` : ""}
   </main>
 </body>
@@ -442,7 +441,7 @@ function apiTokenPublic(row: UserApiTokenRow) {
 function sessionOrBearerToken(c: { env: Env; req: { header(name: string): string | undefined } }) {
   const auth = c.req.header("authorization") || "";
   const match = /^Bearer\s+(.+)$/i.exec(auth);
-  if (match) return match[1].trim();
+  if (match) return bearerToken(c as Context);
   const session = cookieValue(c, SESSION_COOKIE);
   if (session) return session;
   fail(401, "Authentication required");
@@ -461,7 +460,11 @@ async function currentOwner(env: Env, token: string): Promise<UserRow> {
 }
 
 async function currentOwnerForTokenAdmin(env: Env, token: string): Promise<UserRow> {
-  if (!token.startsWith("pidp_pat_")) return currentOwner(env, token);
+  if (!token.startsWith("pidp_pat_")) {
+    const claims=await verifyJwt(env,token);
+    if(claims.sid && (!claims.auth_time || Math.floor(Date.now()/1000)-claims.auth_time>900))fail(401,'Sign in again before managing API credentials');
+    return currentOwner(env,token);
+  }
   const { user, tokenRow } = await ownerFromPat(env, token);
   if (tokenRow.scope !== "org_admin") fail(403, "PAT scope does not permit token administration");
   return user;
@@ -500,12 +503,12 @@ async function ownedWebsite(env: Env, ownerId: string, websiteId: string): Promi
   return website;
 }
 
-async function createOwnerToken(env: Env, user: UserRow): Promise<string> {
-  return signJwt(env, { sub: user.id, email: user.email, is_sysadmin: isSysadmin(env, user) });
+async function createOwnerToken(env: Env, user: UserRow, sid?: string, authTime?: number): Promise<string> {
+  return signJwt(env, { sub: user.id, email: user.email, ...(sid?{sid}:{}),auth_time:authTime??Math.floor(Date.now()/1000), is_sysadmin: isSysadmin(env, user) });
 }
 
-async function createWebsiteUserToken(env: Env, websiteUser: WebsiteUserRow): Promise<string> {
-  return signJwt(env, { sub: websiteUser.id, email: websiteUser.email, actor_type: "website_user", website_id: websiteUser.website_id });
+async function createWebsiteUserToken(env: Env, websiteUser: WebsiteUserRow, sid?: string, authTime?: number): Promise<string> {
+  return signJwt(env, { sub: websiteUser.id, email: websiteUser.email, ...(sid?{sid}:{}),auth_time:authTime??Math.floor(Date.now()/1000), actor_type: "website_user", website_id: websiteUser.website_id });
 }
 
 async function issueApiToken(env: Env, ownerId: string, name: string, scopeRaw: unknown) {
@@ -672,7 +675,7 @@ app.get("/app/login", async (c) => {
     else if (appSlug) redirect.searchParams.set("app", appSlug);
     return c.redirect(redirect.toString(), 303);
   }
-  return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode) }));
+  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
 });
 
 app.get("/app/login/", (c) => {
@@ -693,7 +696,7 @@ app.post("/app/login", async (c) => {
   const next = String(form.next || c.env.FRONTEND_REDIRECT_URL || "/");
   const portalName=ownerMode?undefined:(await loginPortal(c.env,requestedApp,next,portalRequestOrigin(c)))?.name;
   if (!email || !password) {
-    return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "Email and password are required." }), 422);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Email and password are required." }), 422);
   }
 
   if (!ownerMode && appSlug) {
@@ -702,25 +705,25 @@ app.post("/app/login", async (c) => {
     if (website) {
       const websiteUser = await websiteUserByEmail(c.env.DB, website.id, email);
       if (!websiteUser || !(await verifyPassword(password, websiteUser.hashed_password))) {
-        return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "Invalid credentials." }), 401);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
       }
       if (!websiteUser.is_active) {
-        return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "This account is inactive." }), 403);
+        return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
       }
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
-      setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
+      await setSessionCookie(headers, c.env, token);
       return redirectWithSession(c.env, next, token, headers);
     }
   }
 
   const user = await userByEmail(c.env.DB, email);
   if (!user?.is_active || !(await verifyPassword(password, user.hashed_password))) {
-    return c.html(renderAppLoginPage({ appName, appSlug: requestedApp, next, ownerMode, portalName, shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, requestedApp, next, ownerMode), error: "Invalid credentials." }), 401);
+    return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
   }
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
-  setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
+  await setSessionCookie(headers, c.env, token);
   return redirectWithSession(c.env, next, token, headers);
 });
 
@@ -741,7 +744,7 @@ app.post("/app/register", async c => {
     .bind(id,email,await hashPassword(password),nowIso()).run();
   const user=(await userById(c.env.DB,id))!;
   const token=await createOwnerToken(c.env,user),headers=new Headers();
-  setSessionCookie(headers,c.env,token,sessionMaxAgeSeconds(c.env));
+  await setSessionCookie(headers,c.env,token);
   return redirectWithSession(c.env,next,token,headers);
 });
 
@@ -960,11 +963,11 @@ app.post("/auth/session/exchange", async (c) => {
   const token = bearerToken(c);
   const payload = await verifyJwt(c.env, token);
   const rotated = payload.actor_type === "website_user"
-    ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
-    : await createOwnerToken(c.env, await currentOwner(c.env, token));
+    ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token),payload.sid,payload.auth_time)
+    : await createOwnerToken(c.env, await currentOwner(c.env, token),payload.sid,payload.auth_time);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, rotated, sessionMaxAgeSeconds(c.env));
-  return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
+  await setSessionCookie(headers, c.env, rotated);
+  return new Response(null, {status:204,headers});
 });
 
 app.post("/auth/session/login", async (c) => {
@@ -973,11 +976,12 @@ app.post("/auth/session/login", async (c) => {
   if (!user || !(await verifyPassword(password, user.hashed_password))) fail(401, "Invalid credentials");
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
-  return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
+  await setSessionCookie(headers, c.env, token);
+  return new Response(null, {status:204,headers});
 });
 
-app.post("/auth/session/logout", (c) => {
+app.post("/auth/session/logout", async (c) => {
+  await revokeBrowserSession(c.env,cookieValue(c,SESSION_COOKIE)||'');
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
   clearSessionCookie(headers, c.env);
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
@@ -998,10 +1002,10 @@ app.get("/auth/session-token", async (c) => {
   if (!token) fail(401, "No active session");
   const payload = await verifyJwt(c.env, token);
   const rotated = payload.actor_type === "website_user"
-    ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token))
-    : await createOwnerToken(c.env, await currentOwner(c.env, token));
-  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, rotated, sessionMaxAgeSeconds(c.env));
+    ? await createWebsiteUserToken(c.env, await currentWebsiteUser(c.env, token),payload.sid,payload.auth_time)
+    : await createOwnerToken(c.env, await currentOwner(c.env, token),payload.sid,payload.auth_time);
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control":"private, no-store" });
+  await setSessionCookie(headers, c.env, rotated,token);
   return new Response(JSON.stringify({ access_token: rotated, token_type: "bearer" }), { status: 200, headers });
 });
 
@@ -1017,7 +1021,7 @@ app.post("/auth/smoke-token", async (c) => {
   if (!user || !user.is_active) fail(404, "Smoke user not found");
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
-  setSessionCookie(headers, c.env, token, sessionMaxAgeSeconds(c.env));
+  await setSessionCookie(headers, c.env, token);
   return new Response(JSON.stringify({ access_token: token, token_type: "bearer" }), { status: 200, headers });
 });
 
