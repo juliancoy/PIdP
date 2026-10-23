@@ -4,20 +4,20 @@ import { first, userById, websiteUserById, nowIso } from './db';
 import { sha256Hex, verifyJwt } from './crypto';
 import { bearerToken, fail, readJson } from './http';
 
-export type AccountIdentity = { canonical_user_id: string; account_id: string; account_subject: string };
-export async function resolveAccountIdentity(env: Env, subject: string): Promise<AccountIdentity> {
+export type AccountIdentity = { canonical_user_id: string; account_id: string; account_subject: string; email?: string | null; email_verified?: boolean | null };
+export async function resolveAccountIdentity(env: Env, subject: string, includeEmail = false): Promise<AccountIdentity> {
  const parts=subject.split(':');
  if(parts[0]==='owner' && parts.length===2){
   const owner=await userById(env.DB,parts[1]);
   if(!owner?.is_active)fail(401,'Inactive account');
-  return {canonical_user_id:owner.id,account_id:owner.id,account_subject:subject};
+  return {canonical_user_id:owner.id,account_id:owner.id,account_subject:subject,...(includeEmail ? accountEmail(owner) : {})};
  }
  if(parts[0]!=='website'||parts.length!==3)fail(401,'Invalid account namespace');
  const member=await websiteUserById(env.DB,parts[1],parts[2]);
  if(!member?.is_active)fail(401,'Inactive account');
  const link=await first<{canonical_user_id:string}>(env.DB.prepare('SELECT canonical_user_id FROM account_identity_links WHERE subject=?').bind(subject));
  if(link){const person=await userById(env.DB,link.canonical_user_id);if(!person?.is_active)fail(401,'Inactive linked identity');}
- return {canonical_user_id:link?.canonical_user_id||member.id,account_id:member.id,account_subject:subject};
+ return {canonical_user_id:link?.canonical_user_id||member.id,account_id:member.id,account_subject:subject,...(includeEmail ? accountEmail(member) : {})};
 }
 
 export async function resolveTokenIdentity(env:Env,token:string){
@@ -76,4 +76,11 @@ export function accountIdentityRoutes(
   return c.json({ok:true,previewId:row.id,...await resolveAccountIdentity(c.env,p.subject)});
  });
  return app;
+}
+
+function accountEmail(account: UserRow | WebsiteUserRow) {
+ let identity: Record<string, unknown> = {};
+ try { identity = JSON.parse(account.identity_data || '{}'); } catch {}
+ const email = typeof account.email === 'string' && account.email ? account.email : null;
+ return {email, email_verified: email ? Boolean((account.provider && account.provider_account_id) || identity?.email_verified === true || identity?.email_verified_at) : null};
 }

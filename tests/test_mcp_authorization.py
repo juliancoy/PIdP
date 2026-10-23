@@ -61,7 +61,7 @@ class OAuthTests(unittest.TestCase):
             mcp_oauth_resources_json=json.dumps({self.resource: {'secretHash': oauth.digest('resource-secret-at-least-32-characters')}}))
         self.setting_patch.start()
         self.active = patch.object(oauth, 'active_subject', AsyncMock(return_value=True)); self.active.start()
-        async def identity(_db, subject):
+        async def identity(_db, subject, include_email=False):
             return dict(canonical_user_id=subject.split(':')[-1],account_id=subject.split(':')[-1],account_subject=subject)
         self.identity = patch.object(oauth,'resolve_account_identity',side_effect=identity);self.identity.start()
         self.actor = patch.object(oauth, 'session', AsyncMock(return_value=dict(subject='owner:alice', display='alice', hash='session-hash'))); self.actor.start()
@@ -484,3 +484,18 @@ class AdministratorOAuthTests(OAuthTests):
             with patch.object(oauth,'identity_session',AsyncMock(return_value=dict(subject='website:site:alice',display='Same ID',hash='website-session'))):
                 denied=self.client.get('/oauth/mcp/authorize',params=params)
                 self.assertEqual(denied.status_code,403)
+
+
+class AccountEmailTests(unittest.TestCase):
+    def test_verification_is_evidence_not_disabled_login_enforcement(self):
+        from types import SimpleNamespace
+        from account_identity import account_email
+        account = SimpleNamespace(email='member@example.test', identity_data={}, provider=None, provider_account_id=None)
+        self.assertEqual(account_email(account), dict(email='member@example.test', email_verified=False))
+        account.identity_data = {'email_verified': True}
+        self.assertTrue(account_email(account)['email_verified'])
+        account.identity_data = {}
+        account.provider, account.provider_account_id = 'google', 'provider-subject'
+        self.assertTrue(account_email(account)['email_verified'])
+        account.email = None
+        self.assertIsNone(account_email(account)['email_verified'])

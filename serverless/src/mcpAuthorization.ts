@@ -519,7 +519,7 @@ mcpAuthorization.post('/oauth/mcp/introspect', async c => {
   const grant = await c.env.DB.prepare('SELECT * FROM mcp_oauth_grants WHERE id = ?').bind(payload.grant_id).first<Grant>();
   if (!grant || !await validateGrant(c.env, cfg, grant) || grant.resource !== resource || grant.subject !== payload.sub || grant.scope !== payload.scope || !await activeSubject(c.env, grant.subject)) return c.json({ active: false });
   let identity;
-  try {identity=await resolveAccountIdentity(c.env,grant.subject);} catch{return c.json({active:false});}
+  try {identity=await resolveAccountIdentity(c.env,grant.subject,grant.scope.split(' ').includes('org:portal.read'));} catch{return c.json({active:false});}
   return c.json({ active: true, sub: payload.sub, iss: cfg.issuer, aud: resource, scope: payload.scope, exp: payload.exp, ...identity, is_sysadmin: grant.subject.startsWith('owner:') && (c.env.ADMIN_USER_IDS || '').split(',').map(id => id.trim()).includes(identity.account_id) });
 });
 mcpAuthorization.post('/oauth/mcp/revoke', async c => {

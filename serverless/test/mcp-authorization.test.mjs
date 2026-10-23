@@ -568,3 +568,16 @@ test('default login skips the browser chooser and uses the current browser porta
     assert.match(response.headers.get('set-cookie'),/HttpOnly/);
   } finally { f.sql.close(); }
 });
+
+test('introspection supplies subject email and verification only for portal read scope', async()=>{
+ const f=await fixture();try{
+ f.sql.exec("ALTER TABLE users ADD COLUMN email TEXT; ALTER TABLE users ADD COLUMN identity_data TEXT; ALTER TABLE users ADD COLUMN provider TEXT; ALTER TABLE users ADD COLUMN provider_account_id TEXT;");
+ f.sql.prepare('UPDATE users SET email=?,identity_data=? WHERE id=?').run('alice@example.test',JSON.stringify({email_verified:true}),'alice');
+ const tokens=await(await f.exchange(await f.code())).json();
+ let status=await(await f.introspect(tokens.access_token)).json();assert.equal(status.email,'alice@example.test');assert.equal(status.email_verified,true);
+ f.sql.prepare('UPDATE users SET identity_data=? WHERE id=?').run('{}','alice');
+ status=await(await f.introspect(tokens.access_token)).json();assert.equal(status.email_verified,false);
+ f.params.scope='org:events.read';const events=await(await f.exchange(await f.code())).json();
+ status=await(await f.introspect(events.access_token)).json();assert.equal(status.active,true);assert.equal(status.email,undefined);assert.equal(status.email_verified,undefined);
+ }finally{f.sql.close()}
+});

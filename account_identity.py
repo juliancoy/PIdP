@@ -18,7 +18,7 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-async def resolve_account_identity(session, subject):
+async def resolve_account_identity(session, subject, include_email=False):
     parts = subject.split(':')
     try:
         if len(parts) == 2 and parts[0] == 'owner':
@@ -26,7 +26,7 @@ async def resolve_account_identity(session, subject):
             owner = result.scalar_one_or_none()
             if not owner:
                 raise HTTPException(401, 'Inactive account')
-            return dict(canonical_user_id=str(owner.id), account_id=str(owner.id), account_subject=subject)
+            return dict(canonical_user_id=str(owner.id), account_id=str(owner.id), account_subject=subject, **(account_email(owner) if include_email else {}))
         if len(parts) != 3 or parts[0] != 'website':
             raise HTTPException(401, 'Invalid account namespace')
         result = await session.execute(select(WebsiteUser).where(
@@ -41,7 +41,7 @@ async def resolve_account_identity(session, subject):
             if not result.scalar_one_or_none():
                 raise HTTPException(401, 'Inactive linked identity')
         return dict(canonical_user_id=str(link.canonical_user_id if link else member.id),
-                    account_id=str(member.id), account_subject=subject)
+                    account_id=str(member.id), account_subject=subject, **(account_email(member) if include_email else {}))
     except ValueError:
         raise HTTPException(401, 'Invalid account namespace')
 
@@ -125,3 +125,10 @@ def account_link_routes(get_owner, get_member, session_dependency=get_session):
         return dict(ok=True, previewId=payload['previewId'], **await resolve_account_identity(session, subject))
 
     return router
+
+
+def account_email(account):
+    identity = account.identity_data or {}
+    email = account.email or None
+    verified = bool((account.provider and account.provider_account_id) or identity.get('email_verified') is True or identity.get('email_verified_at'))
+    return dict(email=email, email_verified=verified if email else None)

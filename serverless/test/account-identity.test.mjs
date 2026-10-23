@@ -130,3 +130,12 @@ test('shared registration creates only a primary credential and signs in through
  assert.equal((await request({email:'bad@example.test',password:'short',next:'/profile'})).status,400);
  }finally{f.sql.close()}
 });
+
+test('account email belongs to the selected subject even after linking a different primary email',async()=>{
+ const f=fixture();try{
+ f.sql.exec("UPDATE users SET email='primary@example.test',identity_data='{\"email_verified\":true}' WHERE id='person'; UPDATE website_users SET email='tenant@example.test',identity_data='{}'; INSERT INTO account_identity_links(subject,canonical_user_id,website_id,website_user_id,linked_at) VALUES('website:site:member','person','site','member','now')");
+ const member=await resolveAccountIdentity(f.env,'website:site:member',true);assert.equal(member.canonical_user_id,'person');assert.equal(member.email,'tenant@example.test');assert.equal(member.email_verified,false);
+ const owner=await resolveAccountIdentity(f.env,'owner:person',true);assert.equal(owner.email,'primary@example.test');assert.equal(owner.email_verified,true);
+ assert.equal((await resolveAccountIdentity(f.env,'website:site:member')).email,undefined);
+ }finally{f.sql.close()}
+});

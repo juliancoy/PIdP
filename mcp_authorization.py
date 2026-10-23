@@ -629,7 +629,7 @@ async def handle(request, endpoint, db):
         if not grant or not await valid_grant(cfg, grant, db) or grant['resource'] != resource or grant['subject'] != payload['sub'] or grant['scope'] != payload.get('scope') or not await active_subject(db, grant['subject']):
             return response({'active': False})
         try:
-            identity = await resolve_account_identity(db, grant['subject'])
+            identity = await resolve_account_identity(db, grant['subject'], include_email=True) if 'org:portal.read' in grant['scope'].split() else await resolve_account_identity(db, grant['subject'])
         except Exception:
             return response({'active': False})
         return response(dict(active=True, **{k: payload[k] for k in ('sub', 'iss', 'aud', 'scope', 'exp')}, **identity, is_sysadmin=grant['subject'].startswith('owner:') and identity['account_id'] in settings.admin_user_ids_list))
