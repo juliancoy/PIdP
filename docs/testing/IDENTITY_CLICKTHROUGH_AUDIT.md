@@ -9,6 +9,9 @@ branding through the same unexpired SSO ticket as the initial sign-in.
 
 `prompt=select_account` on `/auth/sso/start` presents the current active account
 and an option to authenticate another portal account before issuing a handoff.
+When no usable issuer session exists, it redirects directly to the tenant login
+form without an empty chooser or additional click. The login resumes the same
+validated request without repeating account selection.
 `prompt=login` requires a fresh sign-in rather than reusing the issuer session.
 Unsupported prompt values are rejected. Both prompts preserve the browser-bound
 request and validated portal return. Google authorization explicitly sends

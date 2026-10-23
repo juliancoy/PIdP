@@ -114,7 +114,9 @@ Explicit OrgPortal browser sign-in requests `prompt=select_account`. The PIdP
 chooser offers the active central account and a fresh sign-in for another
 account. Tenant logout clears that tenant’s session; a remaining central session
 must not silently choose the account on the next explicit sign-in. Provider
-sign-in requests fresh authentication through PIdP.
+sign-in requests fresh authentication through PIdP. When there is no usable
+central session, account selection goes directly to the tenant login form; an
+empty account chooser must never require an extra click.
 
 The fresh form retains the registered account application and validated return
 ticket. Shared identity may use the same credentials across communities while

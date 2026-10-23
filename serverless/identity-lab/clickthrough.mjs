@@ -119,3 +119,22 @@ test('tenant logout then login can switch the surviving central account and keep
   console.log('PASS: tenant logout clears tenant session; surviving central session offers a choice; alternate account signs in with LifeTech branding and original return context');
  }finally{await context.close();await browser.close()}
 });
+
+test('signed-out browser reaches the LifeTech login form without an empty account chooser',async()=>{
+ const browser=await chromium.launch({headless:true,args:['--host-resolver-rules=MAP *.identity.test 127.0.0.1, MAP * ~NOTFOUND'],executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||'/usr/bin/google-chrome'});
+ const context=await browser.newContext({ignoreHTTPSErrors:true});
+ await context.route('**/*',route=>['pidp.identity.test','lifetech.identity.test'].includes(new URL(route.request().url()).hostname)?route.continue():route.abort());
+ try{
+  const page=await context.newPage();
+  const destination=portal+'/auth/callback?next=%2Fevents%2Fdemo%23apply';
+  for(const invalid of [false,true]){
+   if(invalid)await context.addCookies([{name:'pidp_session',value:'expired-or-invalid',url:issuer}]);
+   await page.goto(portal+'/pidp/auth/sso/start?'+new URLSearchParams({prompt:'select_account',next:destination}));
+   await expect(page.getByRole('heading',{name:'Sign in to LifeTech',exact:true})).toBeVisible();
+   await expect(page.getByLabel('Email',{exact:true})).toBeVisible();
+   await expect(page.getByLabel('Password',{exact:true})).toBeVisible();
+   await expect(page.getByRole('heading',{name:'Choose an account'})).toHaveCount(0);
+   assert.equal(new URL(page.url()).pathname,'/app/login');
+  }
+ }finally{await context.close();await browser.close()}
+});

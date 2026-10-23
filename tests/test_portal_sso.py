@@ -62,6 +62,28 @@ class SsoTests(unittest.TestCase):
         self.assertIn('prompt=login',fresh.headers['location'])
         self.assertEqual(self.client.get('/auth/sso/start',params={'prompt':'unsupported'}).status_code,400)
 
+    def test_no_usable_session_goes_directly_to_login_without_an_empty_chooser(self):
+        from urllib.parse import urlsplit, parse_qs
+        destination='https://one.example/auth/callback?next=%2Fevents%2Fdemo%23apply'
+        started=self.client.get('/auth/sso/start',params={'prompt':'select_account','next':destination})
+        ticket=parse_qs(urlsplit(started.headers['location']).query)['request'][0]
+        for claims in [{}, {'sub':str(uuid.uuid4()),'actor_type':'website_user','website_id':str(self.website_id)},
+                       {'sub':str(self.member_id),'actor_type':'website_user','website_id':str(uuid.uuid4())}]:
+            with self.subTest(claims=claims):
+                self.decode_mock.return_value=claims
+                response=self.client.get(started.headers['location'])
+                self.assertEqual(response.status_code,303, 'No empty chooser or extra click')
+                login=urlsplit(response.headers['location'])
+                self.assertEqual(login.path,'/app/login')
+                params=parse_qs(login.query)
+                self.assertEqual(params['app'],['members'])
+                self.assertEqual(params['prompt'],['login'])
+                resume=parse_qs(urlsplit(params['next'][0]).query)
+                self.assertEqual(resume,{'request':[ticket]})
+                row=self.db.query(PortalSsoRequest).one()
+                self.assertEqual(row.next,destination)
+                self.assertIsNone(row.code_hash)
+
     def test_member_handoff_is_bound_to_browser_origin_and_one_use(self):
         for host in ['one.example','two.example']:
             r=self.client.get(f'https://{host}/auth/sso/start',params={'app':'members','next':f'https://{host}/auth/callback?next=%2Fpeople'})

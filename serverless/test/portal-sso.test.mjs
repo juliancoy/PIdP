@@ -165,11 +165,33 @@ test('account chooser and fresh login preserve portal context without silent ses
   const started=await f.request('one.example','/auth/sso/start?prompt=select_account');
   const authorize=new URL(started.headers.get('location'));assert.equal(authorize.searchParams.get('prompt'),'select_account');
   const chooser=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+session});
-  assert.equal(chooser.status,200);assert.match(await chooser.text(),/Choose an account/);
+  assert.equal(chooser.status,200);const html=await chooser.text();assert.match(html,/Choose an account/);assert.match(html,/Continue as member@example.test/);
   assert.equal(f.sql.prepare('SELECT code_hash FROM portal_sso_requests').get().code_hash,null);
   const fresh=await f.request('id.example',authorize.pathname+'?request='+authorize.searchParams.get('request')+'&prompt=login',{cookie:'pidp_session='+session});
   assert.match(fresh.headers.get('location'),/app\/login/);
   assert.equal((await f.request('one.example','/auth/sso/start?prompt=unknown')).status,400);
+ }finally{f.sql.close()}
+});
+
+test('sign-in without a usable session goes straight to login and retains the return destination',async()=>{
+ const f=fixture();try{
+  const next='https://one.example/auth/callback?next=%2Fevents%2Fdemo%23apply';
+  const started=await f.request('one.example','/auth/sso/start?'+new URLSearchParams({prompt:'select_account',next}));
+  const authorize=new URL(started.headers.get('location'));
+  const unknown=await signJwt(f.env,{sub:'missing',actor_type:'website_user',website_id:'site'});
+  const wrongTenant=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'other'});
+  for(const cookie of ['', 'pidp_session=invalid', 'pidp_session='+unknown, 'pidp_session='+wrongTenant]){
+   const response=await f.request('id.example',authorize.pathname+authorize.search,{cookie});
+   assert.equal(response.status,303,'No empty account chooser or extra click');
+   const login=new URL(response.headers.get('location'));
+   assert.equal(login.pathname,'/app/login');assert.equal(login.searchParams.get('app'),'members');
+   assert.equal(login.searchParams.get('prompt'),'login');
+   const resume=new URL(login.searchParams.get('next'));
+   assert.equal(resume.searchParams.get('request'),authorize.searchParams.get('request'));
+   assert.equal(resume.searchParams.has('prompt'),false,'Login must resume without another chooser');
+   assert.equal(f.sql.prepare('SELECT next,code_hash FROM portal_sso_requests').get().next,next);
+   assert.equal(f.sql.prepare('SELECT code_hash FROM portal_sso_requests').get().code_hash,null);
+  }
  }finally{f.sql.close()}
 });
 

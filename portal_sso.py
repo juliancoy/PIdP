@@ -139,6 +139,8 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
                 selected = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(str(claims['sub'])), WebsiteUser.website_id == UUID(row.website_id), WebsiteUser.is_active.is_(True)))).scalar_one_or_none()
             elif claims.get('actor_type','owner') == 'owner':
                 selected = (await session.execute(select(User).where(User.id == UUID(str(claims['sub'])),User.is_active.is_(True)))).scalar_one_or_none()
+        if not selected:
+            return RedirectResponse(login, status_code=303, headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
         current = f'<p><a href="{escape(resume)}">Continue as {escape(selected.email)}</a></p>' if selected else ''
         return HTMLResponse(identity_document('Sign in to '+portal_client(row.origin)['name'], f'<h1>Choose an account</h1><p>Continue to {escape(portal_client(row.origin)["name"])} at {escape(urlparse(row.origin).netloc)}.</p>{current}<p><a href="{escape(login)}">Use another portal account</a></p><p><a href="{escape(row.origin)}">Cancel</a></p><p>Authentication provided by PIdP.</p>', portal_client(row.origin)['name']),headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     payload = {} if prompt == 'login' else safe_decode_token(request.cookies.get('pidp_token','')) or {}
