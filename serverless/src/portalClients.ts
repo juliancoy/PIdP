@@ -37,20 +37,22 @@ export function ssoReturn(env:Env,origin:string,app:string,value:string): URL | 
  }catch{return null}
 }
 export async function loginPortal(env:Env,app:string,next:string,requestOrigin?:string):Promise<PortalClient|null>{
+ // A browser-bound ticket identifies the requesting tenant even when the
+ // login page itself is served by another registered portal (the issuer).
  const direct=requestOrigin ? portalClient(env,requestOrigin) : null;
- if(direct?.accountApp===app)return direct;
  try{
   const target=new URL(next,env.PUBLIC_BASE_URL);
   const issuer=new URL(env.PUBLIC_BASE_URL!).origin;
-  if(target.origin!==issuer || target.username || target.password)return null;
+  if(target.origin!==issuer || target.username || target.password)return direct?.accountApp===app ? direct : null;
   const path=identityPath(env,target.pathname);
   const ticketParam=path==='/auth/sso/authorize'?'request':['/auth/account-links/finish','/auth/account-links/connect'].includes(path)?'sso':null;
   if(ticketParam && target.searchParams.getAll(ticketParam).length===1 && env.DB){
    const row=await env.DB.prepare('SELECT origin,app,next FROM portal_sso_requests WHERE id=? AND expires_at>=? AND code_hash IS NULL').bind(target.searchParams.get(ticketParam),Math.floor(Date.now()/1000)).first<{origin:string;app:string;next:string}>();
    if(row?.app===app && ssoReturn(env,row.origin,row.app,row.next))return portalClient(env,row.origin);
+   return null;
   }
  }catch{return null}
- return null;
+ return direct?.accountApp===app ? direct : null;
 }
 
 export function browserReturn(env:Env,value:string,extraOrigins:string[]=[]):string|null{

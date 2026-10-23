@@ -278,3 +278,17 @@ test('LifeTech account switching keeps branding and fresh sign-in with a survivi
   }
  } finally { f.sql.close() }
 });
+
+test('central registered portal uses the requesting tenant ticket for branded login',async()=>{
+ const f=fixture(true);
+ try{
+  const clients=JSON.parse(f.env.PORTAL_CLIENTS_JSON);
+  clients['https://one.example'].name='LifeTech';clients['https://orgportal.cc'].name='OrgPortal';
+  f.env.PORTAL_CLIENTS_JSON=JSON.stringify(clients);f.env.PORTAL_AUTH_ORIGINS+=',https://orgportal.cc';f.env.PUBLIC_BASE_URL='https://orgportal.cc/pidp';
+  const s=await start(f);const authorize=new URL(s.authorize);
+  const response=await f.request('orgportal.cc',authorize.pathname.replace('/pidp','')+authorize.search);
+  const target=new URL(response.headers.get('location'));
+  const form=await f.request('orgportal.cc',target.pathname.replace('/pidp','')+target.search);
+  assert.equal(form.status,200);assert.match(await form.text(),/<h1>Sign in to LifeTech<\/h1>/);
+ }finally{f.sql.close()}
+});

@@ -55,8 +55,7 @@ def sso_return(origin, app, value):
 
 async def login_portal(app, next_url, session, request_origin=None):
     direct = portal_client(request_origin) if request_origin else None
-    if direct and direct['accountApp'] == app:
-        return direct
+    # The validated handoff ticket takes precedence over the central host.
     try:
         from sqlalchemy import select
         from models import PortalSsoRequest
@@ -64,7 +63,7 @@ async def login_portal(app, next_url, session, request_origin=None):
         target = urlsplit(urljoin(settings.public_base_url+'/',next_url))
         issuer = urlsplit(settings.public_base_url)
         if target.scheme+'://'+target.netloc != issuer.scheme+'://'+issuer.netloc or target.username or target.password:
-            return None
+            return direct if direct and direct['accountApp'] == app else None
         params = parse_qs(target.query)
         path = target.path
         prefix = issuer.path.rstrip('/')
@@ -76,9 +75,10 @@ async def login_portal(app, next_url, session, request_origin=None):
                 PortalSsoRequest.expires_at >= int(time.time()),PortalSsoRequest.code_hash.is_(None)))).scalar_one_or_none()
             if row and row.app == app and sso_return(row.origin,row.app,row.next):
                 return portal_client(row.origin)
+            return None
     except (ValueError,TypeError):
-        pass
-    return None
+        return None
+    return direct if direct and direct['accountApp'] == app else None
 
 
 def browser_return(value, issuer, extra_origins=()):
