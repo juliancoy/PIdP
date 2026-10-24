@@ -6,7 +6,7 @@
     <title>{{ page_title }}</title>
     <script>
         (function () {
-            var storageKey = "pidp-theme-mode";
+            var storageKey = "{{ 'orgportal.theme' if login_app_name else 'pidp-theme-mode' }}";
             var mode = localStorage.getItem(storageKey) || "system";
             var root = document.documentElement;
             var media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -25,12 +25,12 @@
     </script>
     <link rel="stylesheet" href="{{ asset_base }}/css/app.css">
 </head>
-<body class="{% if viewer %}shell-authenticated{% else %}shell-guest{% endif %}">
+<body class="{% if viewer %}shell-authenticated{% else %}shell-guest{% if login_app_name %} portal-login{% endif %}{% endif %}">
     {% if viewer %}
         <div class="app-shell">
             <aside class="sidebar">
                 <div class="sidebar-header">
-                    <a class="brand" href="{{ ui_base or '/' }}">PIdP</a>
+                    <a class="brand" href="{{ ui_base or '/' }}">{{ login_app_name or "PIdP" }}</a>
                 </div>
                 <nav class="sidebar-nav">
                     <label class="theme-switcher" for="theme-mode">
@@ -68,7 +68,7 @@
     {% else %}
         <div class="guest-shell">
             <header class="guest-topbar">
-                <a class="brand" href="{{ ui_base or '/' }}">PIdP</a>
+                <a class="brand" href="{{ ui_base or '/' }}">{{ login_app_name or "PIdP" }}</a>
             </header>
     {% endif %}
 

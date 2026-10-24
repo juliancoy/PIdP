@@ -1,5 +1,5 @@
 (function () {
-    var storageKey = "pidp-theme-mode";
+    var storageKey = document.body.classList.contains("portal-login") ? "orgportal.theme" : "pidp-theme-mode";
     var root = document.documentElement;
     var select = document.getElementById("theme-mode");
     var media = window.matchMedia("(prefers-color-scheme: dark)");

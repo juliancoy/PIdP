@@ -1183,3 +1183,19 @@ h2 {
         grid-column: span 1;
     }
 }
+
+/* Portal sign-in keeps the application's identity; PIdP is provider attribution. */
+.shell-guest.portal-login{background:var(--bg);--bg:#f5f7f9;--bg-accent:#edf3f5;--panel:#fff;--panel-strong:#fff;--ink:#20313e;--muted:#627482;--line:#d9e2e8;--brand:#155e59;--brand-deep:#104842;--brand-soft:#e1f4ee;--shadow:0 8px 28px #0f172a0a;--radius:16px;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
+:root[data-theme="dark"] .shell-guest.portal-login{--bg:#101923;--panel:#1b2935;--panel-strong:#1b2935;--ink:#ecf2f6;--muted:#a4b5c1;--line:#3c505f;--brand:#8be4cd;--brand-deep:#99f6e4;--brand-soft:#233542}
+.portal-login .guest-shell{width:min(100% - 40px,1000px);padding-top:24px;gap:48px;background:none}
+.portal-login .guest-topbar{background:transparent;border:0;box-shadow:none;padding:8px 0}
+.portal-login .brand,.portal-login .pidp-login-title{font-family:inherit;font-weight:750;letter-spacing:-.03em}
+.portal-login .brand{font-size:1.3rem;color:var(--brand)}
+.portal-login .pidp-login-panel{max-width:480px;padding:32px;background:var(--panel);box-shadow:var(--shadow);border:1px solid var(--line)}
+.portal-login .pidp-login-header{border-bottom:0;padding-bottom:8px;align-items:center}
+.portal-login .pidp-chip{background:var(--brand-soft);border:0;color:var(--brand-deep);text-transform:none;letter-spacing:0;border-radius:6px}
+.portal-login .pidp-powered{font-size:.7rem;text-transform:none;letter-spacing:0}
+.portal-login .pidp-login-title{font-size:clamp(1.6rem,4vw,2rem);line-height:1.2}
+.portal-login :is(.primary-button,.secondary-button){border-radius:9px;min-height:46px;font:inherit;font-weight:600;box-shadow:none}
+.portal-login .pidp-login-panel input{border-radius:9px;background:var(--panel-strong);color:var(--ink)}
+@media(max-width:520px){.portal-login .guest-shell{width:calc(100% - 32px);gap:24px}.portal-login .pidp-login-panel{padding:24px}}

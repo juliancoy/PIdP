@@ -315,6 +315,7 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
 }
 
 function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; message?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; centralLogin?: boolean; registration?: boolean; shared?: boolean }) {
+  if (params.portalName === 'Local OrgPortal') params = { ...params, portalName: 'OrgPortal', appName: 'OrgPortal' };
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
@@ -342,7 +343,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
   <main>
     ${brand ? `<img src="${escapeHtml(brand.logo_url)}" alt="${escapeHtml(params.portalName!)} logo" width="64" height="64"><p>${escapeHtml(brand.hero_eyebrow)}</p>` : ""}
     <h1>${escapeHtml(title)}</h1>
-    ${lifeTechLabel ? `<p>${params.centralLogin ? "orgportal.cc" : "lifetech.fyi"}</p>` : params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
+    ${lifeTechLabel ? `<p>${params.centralLogin ? "orgportal.cc" : "lifetech.fyi"}</p>` : params.portalName ? `<p class="provider-attribution">Powered by PIdP</p>` : ""}
     ${error}
     ${params.message ? `<p role="status">${escapeHtml(params.message)}</p>` : ""}
     ${params.socialLinks.map(link => `<a class="social-login" href="${escapeHtml(link.href)}">Continue with ${escapeHtml(link.label)}</a>`).join("\n")}

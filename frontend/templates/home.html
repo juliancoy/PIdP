@@ -42,12 +42,9 @@
     <div class="panel pidp-login-panel stack">
         <header class="pidp-login-header">
             <div class="pidp-login-branding">
-                <span class="pidp-chip">{{ login_lifetech_label or "PIdP" }}</span>
-                {% if login_app_name and not login_lifetech_label %}
-                    <span class="pidp-app-chip">{{ login_app_name }}</span>
-                {% endif %}
+                <span class="pidp-chip">{{ login_lifetech_label or login_app_name or "PIdP" }}</span>
             </div>
-            <div class="pidp-powered">{% if login_lifetech_label %}{{ "orgportal.cc" if login_lifetech_label == "LifeTech on OrgPortal" else "lifetech.fyi" }}{% else %}Powered by PIdP{% endif %}</div>
+            <div class="pidp-powered">Powered by PIdP</div>
         </header>
 
         {% if branding.logo_url %}

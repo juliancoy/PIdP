@@ -1586,11 +1586,12 @@ async def frontend_app_login(
     portal = None if explicit_owner else await login_portal(branding_app, raw_next or '/', session,
         request.headers.get('x-forwarded-proto','https')+'://'+request.headers['x-forwarded-host'] if request.headers.get('x-forwarded-host') else str(request.base_url).rstrip('/'))
     if portal:
-        login_label = portal['name']
+        portal_brand_name = 'OrgPortal' if portal['name'] == 'Local OrgPortal' else portal['name']
+        login_label = portal_brand_name
         if login_label == 'LifeTech':
             login_host = (request.headers.get('x-forwarded-host') or request.url.hostname or '').split(':')[0].lower()
             login_label = 'LifeTech on OrgPortal' if login_host == 'orgportal.cc' else 'LifeTech'
-        branding = _normalize_website_branding({**PORTAL_BRANDS.get(portal['name'], {}), 'hero_title': 'Sign in to '+login_label})
+        branding = _normalize_website_branding({**PORTAL_BRANDS.get(portal_brand_name, {}), 'hero_title': 'Sign in to '+login_label})
     elif force_owner_login:
         branding = {'hero_title': 'Sign in to OrgPortal' if settings.portal_shared_identity else 'Sign in to PIdP'}
     if app_slug and not website:
@@ -1669,7 +1670,7 @@ async def frontend_app_login(
             "login_force_owner": explicit_owner,
             "local_login_enabled": local_login_enabled(request),
             "login_lifetech_label": login_label if portal and portal["name"] == "LifeTech" else "",
-            "login_app_name": portal["name"] if portal else website.name if website else "",
+            "login_app_name": login_label if portal else website.name if website else "",
             "login_app_description": website.description if website else "",
             "login_branding": branding,
             "configuration": {
