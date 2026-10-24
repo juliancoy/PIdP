@@ -189,17 +189,12 @@ class PidpSmokeTests(unittest.TestCase):
         self.assertEqual(payload["github_redirect_uri"], os.environ["GITHUB_REDIRECT_URI"])
         self.assertEqual(payload["frontend_redirect_url"], os.environ["FRONTEND_REDIRECT_URL"])
 
-    def test_default_session_cookie_and_token_last_one_year(self):
+    def test_access_token_is_short_lived(self):
         token = self.main.create_access_token(subject="user-1", email="user@example.com")
         claims = jwt.get_unverified_claims(token)
-        expires_at = datetime.fromtimestamp(claims["exp"], UTC)
-        lifetime = expires_at - datetime.now(UTC)
-        self.assertGreaterEqual(lifetime.days, 364)
-
-        response = Response()
-        self.main._set_session_cookie(response, token)
-        cookie = response.headers["set-cookie"]
-        self.assertIn("Max-Age=31536000", cookie)
+        lifetime = datetime.fromtimestamp(claims["exp"], UTC) - datetime.now(UTC)
+        self.assertGreater(lifetime.total_seconds(), 0)
+        self.assertLessEqual(lifetime.total_seconds(), 86400)
 
     def test_email_verification_state_hashes_tokens_and_oauth_bypasses(self):
         request = SimpleNamespace(

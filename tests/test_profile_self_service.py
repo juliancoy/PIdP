@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -81,7 +81,7 @@ class ProfileSelfServiceTests(unittest.TestCase):
                     self.assertIn('lifetech-logo-v2.png',response.text)
                     self.assertIn('name="email"',response.text)
                     self.assertIn('name="app" value="site"',response.text)
-                    self.assertIn('Powered by PIdP',response.text)
+                    self.assertIn('LifeTech',response.text)
 
     def test_verified_provider_shares_canonical_user_identity_only(self):
         owner = self.db.get(self.User, self.member_id)
@@ -205,7 +205,7 @@ class ProfileSelfServiceTests(unittest.TestCase):
         self.db.commit()
         browser=TestClient(self.main.app,base_url='https://id.example',follow_redirects=False)
         try:
-            with patch.object(self.main,'verify_password',return_value=True), patch.object(self.main,'_create_website_user_access_token',return_value='member-session') as issue, patch.object(self.main,'authenticate_user') as owner_auth:
+            with patch.object(self.main,'browser_session',new=AsyncMock(return_value=('member-session',2592000))), patch.object(self.main,'verify_password',return_value=True), patch.object(self.main,'_create_website_user_access_token',return_value='member-session') as issue, patch.object(self.main,'authenticate_user') as owner_auth:
                 response=browser.post('/session/login',headers={'Origin':'https://id.example'},data={'app':'site','email':member.email,'password':'fixture','next':'/chat'})
                 self.assertEqual(response.status_code,303,response.text)
                 self.assertEqual(response.headers['location'],'/chat')
@@ -221,11 +221,13 @@ class ProfileSelfServiceTests(unittest.TestCase):
     def test_browser_handoffs_use_cookies_while_native_returns_remain_explicit(self):
         from starlette.requests import Request
         request=Request({'type':'http','scheme':'https','server':('id.example',443),'path':'/','headers':[]})
-        response=self.main._session_redirect(request,'https://id.example/auth/sso/authorize?request=ticket','fixture-session')
+        import asyncio
+        with patch.object(self.main,'browser_session',new=AsyncMock(return_value=('remembered-session',2592000))):
+            response=asyncio.run(self.main._session_redirect(request,'https://id.example/auth/sso/authorize?request=ticket','fixture-session',None))
         self.assertNotIn('fixture-session',response.headers['location'])
         self.assertIn('HttpOnly',response.headers['set-cookie'])
         with patch.object(self.main.settings,'allowed_native_redirect_schemes','org.arkavo.portal'):
-            response=self.main._session_redirect(request,'org.arkavo.portal://auth/callback','fixture-session')
+            response=asyncio.run(self.main._session_redirect(request,'org.arkavo.portal://auth/callback','fixture-session',None))
             self.assertIn('token=fixture-session',response.headers['location'])
 
     def test_account_link_api_requires_proofs_and_a_one_use_preview(self):
