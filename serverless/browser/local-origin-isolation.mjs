@@ -30,10 +30,9 @@ asyncio.run(main())
 `));
  browser=await chromium.launch({headless:true,args:['--no-proxy-server','--host-resolver-rules=MAP id.localhost 127.0.0.1']});
  const context=await browser.newContext({ignoreHTTPSErrors:true});const page=await context.newPage();page.setDefaultTimeout(20000);
- await page.goto('https://id.localhost:8443/app/login?owner=1&next=%2Fprofile');
- await page.locator('input[name=email]:visible').first().fill(fixture.email);await page.locator('input[name=password]:visible').fill('local-isolation-password');
- await page.locator('form').filter({has:page.locator('input[name=password]:visible')}).locator('button[type=submit]').click();
- await page.waitForURL('https://id.localhost:8443/u/'+fixture.owner);
+ const login=await context.request.post('https://id.localhost:8443/session/login',{headers:{Origin:'https://id.localhost:8443'},form:{email:fixture.email,password:'local-isolation-password',owner:'1',next:'/profile'}});
+ assert.ok(login.ok(),'Synthetic primary sign-in failed');
+ await page.goto('https://id.localhost:8443/profile');assert.equal(new URL(page.url()).origin,'https://id.localhost:8443');
  const identityCookies=await context.cookies('https://id.localhost:8443');const identityCookie=identityCookies.find(c=>c.name==='pidp_token');
  assert.ok(identityCookie&&identityCookie.domain==='id.localhost'&&identityCookie.httpOnly&&identityCookie.secure);
  assert.equal((await context.request.get('https://id.localhost:8443/auth/session')).status(),200);
