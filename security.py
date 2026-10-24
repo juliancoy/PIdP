@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt, jwk
 from jose.utils import base64url_encode
 import hashlib
+import base64
+import hmac
+import re
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from passlib.context import CryptContext
@@ -51,7 +54,21 @@ def _load_or_generate_keys():
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    if hashed_password.startswith("pbkdf2_sha256$"):
+        # Same persisted credential format as the serverless identity runtime.
+        parts = hashed_password.split("$")
+        if (len(parts) != 4 or parts[1] != "210000"
+                or not re.fullmatch(r"[A-Za-z0-9_-]{22}", parts[2])
+                or not re.fullmatch(r"[A-Za-z0-9_-]{43}", parts[3])):
+            return False
+        salt = base64.urlsafe_b64decode(parts[2] + "==")
+        expected = base64.urlsafe_b64decode(parts[3] + "=")
+        actual = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt, 210000, dklen=32)
+        return hmac.compare_digest(actual, expected)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except (ValueError, TypeError):
+        return False
 
 
 def hash_password(password: str) -> str:

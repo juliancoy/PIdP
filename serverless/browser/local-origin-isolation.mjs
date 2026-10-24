@@ -14,6 +14,7 @@ test('local identity origin isolates authenticated responses while tenant SSO wo
  const config=JSON.parse(execFileSync('docker',['inspect',container,'--format','{{json .Config.Env}}'],{encoding:'utf8'}));
  const environment=Object.fromEntries(config.map(value=>{const at=value.indexOf('=');return [value.slice(0,at),value.slice(at+1)];}));
  assert.equal(environment.ENV,'dev','Rehearsal requires a development identity service');
+ assert.equal(environment.PORTAL_SHARED_IDENTITY,'true','Shared account identity must be enabled');
  assert.equal(environment.PUBLIC_BASE_URL,'https://id.localhost:8443','Rehearsal requires the isolated local identity origin');
 
  fixture=JSON.parse(python(`import asyncio,json,uuid
@@ -21,12 +22,11 @@ from datetime import datetime,timezone
 from sqlalchemy import select
 from db import SessionLocal,engine
 from models import User,Website,WebsiteUser,AccountIdentityLink
-from security import hash_password
 async def main():
  async with SessionLocal() as s:
   site=(await s.execute(select(Website).where(Website.slug=='orgportal'))).scalar_one()
   owner,member=uuid.uuid4(),uuid.uuid4();email='origin-'+owner.hex+'@example.test'
-  s.add(User(id=owner,email=email,hashed_password=hash_password('local-isolation-password'),identity_data={'email_verified':True}))
+  s.add(User(id=owner,email=email,hashed_password='pbkdf2_sha256$210000$efQSdVLVMvIxidzzHSLpXA$4mwDckrnGHdzvix9cXdz7N5TBJ-N1JcfDceuLVPGCyE',identity_data={'email_verified':True}))
   await s.flush()
   s.add(WebsiteUser(id=member,website_id=site.id,email=email,hashed_password=None,identity_data={'email_verified':True}))
   await s.flush()
@@ -37,12 +37,13 @@ asyncio.run(main())
 `));
  browser=await chromium.launch({headless:true,args:['--no-proxy-server','--host-resolver-rules=MAP id.localhost 127.0.0.1']});
  const context=await browser.newContext({ignoreHTTPSErrors:true});const page=await context.newPage();page.setDefaultTimeout(20000);
- const login=await context.request.post('https://id.localhost:8443/session/login',{headers:{Origin:'https://id.localhost:8443'},form:{email:fixture.email,password:'local-isolation-password',owner:'1',next:'/profile'}});
+ const login=await context.request.post('https://id.localhost:8443/session/login',{headers:{Origin:'https://id.localhost:8443'},form:{email:fixture.email,password:'imported-password-✓',app:'orgportal',next:'/profile'}});
  assert.ok(login.ok(),'Synthetic primary sign-in failed');
  await page.goto('https://id.localhost:8443/profile');assert.equal(new URL(page.url()).origin,'https://id.localhost:8443');
  const identityCookies=await context.cookies('https://id.localhost:8443');const identityCookie=identityCookies.find(c=>c.name==='pidp_token');
  assert.ok(identityCookie&&identityCookie.domain==='id.localhost'&&identityCookie.httpOnly&&identityCookie.secure);
  assert.equal((await context.request.get('https://id.localhost:8443/auth/session')).status(),200);
+ const primaryClaims=JSON.parse(Buffer.from(identityCookie.value.split('.')[1],'base64url'));assert.equal(primaryClaims.sub,fixture.owner);assert.notEqual(primaryClaims.actor_type,'website_user');
  assert.equal((await context.request.post('https://id.localhost:8443/auth/session/logout',{headers:{Origin:'https://localhost:8443'}})).status(),403);
  assert.equal((await context.request.get('https://id.localhost:8443/auth/session')).status(),200,'Rejected cross-origin logout must not revoke the identity session');
  await page.goto('https://localhost:8443/pidp/health');

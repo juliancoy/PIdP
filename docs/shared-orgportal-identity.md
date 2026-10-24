@@ -1,8 +1,9 @@
 # OrgPortal domain and shared-account migration plan
 
 **Decision: use `orgportal.cc` for the portal and `id.orgportal.cc` for isolated identity; consolidate
-portal credentials into primary PIdP accounts. Implementation remains disabled;
-this plan and its rehearsal do not authorize production cutover.** The checked-in
+portal credentials into primary PIdP accounts. Shared identity is enabled locally
+after the archived account import and consolidation. Production remains disabled;
+local activation does not authorize production cutover.** The checked-in
 configuration uses `PORTAL_SHARED_IDENTITY=false`, `PORTAL_SSO_APP_SLUG=orgportal`
 and `PUBLIC_BASE_URL=https://orgportal.cc/pidp`. This document describes a future
 cutover, not evidence of deployed settings or database state.
@@ -160,8 +161,8 @@ proxied into the portal origin. The portal exposes only tenant-session and
 browser-bound SSO endpoints. Identity cookies stay host-only on `id.localhost`;
 tenant cookies stay on the portal. Identity CORS excludes the portal origin.
 A portal script must fail to read the signed-in identity response, while normal
-navigation and validated SSO remain functional. Account consolidation is still a
-separate data operation; changing the local origins does not apply it.
+navigation and validated SSO remain functional. The archived account dataset has been consolidated and imported into the local
+identity database, with shared identity enabled. Membership IDs remain stable.
 
 Production domain/provider/issuer changes require the owning release and are not
 performed by this local activation. Reconnect clients if their issuer changes;
