@@ -1,10 +1,11 @@
 # PIdP (People's Identity Provider)
 
 The deployed OrgPortal identity entry point is `https://orgportal.cc/pidp`.
-Tenant browser sessions use their same-origin `/pidp` proxy. The proposed
-shared-account migration is **not enabled or applied**; current credential and
-session namespaces remain in use. See the [migration proposal](docs/shared-orgportal-identity.md)
-for review material, not production deployment instructions.
+Tenant browser sessions use their same-origin `/pidp` proxy. The planned
+shared-account consolidation is **not enabled or applied**; current credential and
+session namespaces remain in use. The agreed [migration plan](docs/shared-orgportal-identity.md) centralizes login,
+identity settings and OAuth under `orgportal.cc`, consolidates portal accounts,
+and retires alternate identity hosts after acceptance. Cutover remains pending.
 
 PIdP is a token-based identity provider (IdP) built with FastAPI. It supports local credentials with hashed passwords, optional OAuth2 social sign-in (enabled via environment variables), and stores identity data in a parallel Postgres database.
 

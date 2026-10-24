@@ -18,6 +18,7 @@
     "db:migrate:local": "wrangler d1 migrations apply pidp --local",
     "db:migrate:remote": "wrangler d1 migrations apply pidp --remote",
     "test:portal-browser": "node --import tsx --test browser/portal-signin.mjs",
+    "test:domain-rehearsal": "node --import tsx --test --test-force-exit browser/orgportal-domain-rehearsal.mjs",
     "test:identity-lab": "node --test identity-lab/clickthrough.mjs"
   },
   "dependencies": {

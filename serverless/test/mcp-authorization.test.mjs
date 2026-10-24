@@ -7,7 +7,7 @@ import { authorizationConfig, mcpAuthorization as app } from '../src/mcpAuthoriz
 import { signJwt, sha256Hex } from '../src/crypto.ts';
 import fullApp from '../src/index.ts';
 
-async function fixture() {
+async function fixture(canonical = false) {
   const sql = new DatabaseSync(':memory:');
   sql.exec(`CREATE TABLE users(id TEXT PRIMARY KEY, is_active INTEGER); INSERT INTO users VALUES ('alice',1),('bob',1);
     CREATE TABLE website_users(id TEXT, website_id TEXT, is_active INTEGER);`);
@@ -21,7 +21,7 @@ async function fixture() {
   }; } }; } };
   const { privateKey } = await generateKeyPair('ES256', { extractable: true });
   const key = { ...await exportJWK(privateKey), kid: 'test-key' };
-  const issuer = 'https://id.example'; const resource = 'https://portal.example/api/org/mcp';
+  const issuer = canonical ? 'https://orgportal.cc' : 'https://id.example'; const resource = canonical ? 'https://orgportal.cc/mcp' : 'https://portal.example/api/org/mcp';
   const env = { DB: db, SECRET_KEY: 'test-session-key', MCP_OAUTH_ISSUER: issuer,
     MCP_OAUTH_PRIVATE_JWK: JSON.stringify(key),
     MCP_OAUTH_CLIENTS_JSON: JSON.stringify({ chatgpt: { name: '<ChatGPT>', secretHash: await sha256Hex('client-secret-for-tests-at-least-32-chars'),
@@ -580,4 +580,23 @@ test('introspection supplies subject email and verification only for portal read
  f.params.scope='org:events.read';const events=await(await f.exchange(await f.code())).json();
  status=await(await f.introspect(events.access_token)).json();assert.equal(status.active,true);assert.equal(status.email,undefined);assert.equal(status.email_verified,undefined);
  }finally{f.sql.close()}
+});
+
+
+test('canonical OrgPortal issuer supports consent, tokens, refresh and rejects foreign issuers',async()=>{
+ const f=await fixture(true);
+ try {
+  const discovery=await(await f.request('/.well-known/oauth-authorization-server')).json();
+  assert.equal(discovery.issuer,'https://orgportal.cc');
+  assert.equal(discovery.authorization_endpoint,'https://orgportal.cc/oauth/mcp/authorize');
+  assert.equal(discovery.token_endpoint,'https://orgportal.cc/oauth/mcp/token');
+  const issued=await f.exchange(await f.code());assert.equal(issued.status,200);
+  const tokens=await issued.json();
+  const config=authorizationConfig(f.env),publicKey=await importJWK(config.keys[0]);
+  const claims=await jwtVerify(tokens.access_token,publicKey,{issuer:f.issuer,audience:f.resource});
+  assert.equal(claims.payload.sub,'owner:alice');
+  await assert.rejects(jwtVerify(tokens.access_token,publicKey,{issuer:'https://id.codecollective.us',audience:f.resource}));
+  assert.equal((await(await f.introspect(tokens.access_token)).json()).active,true);
+  assert.equal((await f.refresh(tokens.refresh_token)).status,200);
+ }finally{f.sql.close();}
 });

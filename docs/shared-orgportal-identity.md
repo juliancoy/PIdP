@@ -1,16 +1,68 @@
-# Proposed shared OrgPortal identity migration
+# OrgPortal domain and shared-account migration plan
 
-**Status: disabled; not authorized for production application.** The checked-in
+**Decision: use `orgportal.cc` as the canonical public domain and consolidate
+portal credentials into primary PIdP accounts. Implementation remains disabled;
+this plan and its rehearsal do not authorize production cutover.** The checked-in
 configuration uses `PORTAL_SHARED_IDENTITY=false`, `PORTAL_SSO_APP_SLUG=orgportal`
 and `PUBLIC_BASE_URL=https://orgportal.cc/pidp`. This document describes a future
 cutover, not evidence of deployed settings or database state.
 
-## Account consolidation
+## Agreed destination
 
-Consolidation changes the credential store, not the login hostname. Keep the
-current public base URL, provider callback URLs, issuer, keys, database and tenant
-same-origin `/pidp` proxies throughout this migration. A later hostname move must
-have its own review and rollout; `id.orgportal.cc` is not required here.
+The product goal is one account, one sign-in entry point, and one coherent set of
+identity settings. PIdP stays the identity implementation; OrgPortal stays the
+owner of organizations, membership, permissions and tenant branding.
+
+| Public address | Responsibility |
+| --- | --- |
+| `https://orgportal.cc/` | Portal, communities and organization settings |
+| `https://orgportal.cc/pidp/app/login` | Central login and registration |
+| `https://orgportal.cc/pidp/profile` | PIdP identity/account entry point |
+| `https://orgportal.cc/pidp/auth/google/callback` | Google callback |
+| `https://orgportal.cc/pidp/auth/github/callback` | GitHub callback |
+| `https://orgportal.cc/api/org/*` | Organization API |
+| `https://orgportal.cc/api/chat/*` | Chat HTTP API; verify WebSocket routing separately |
+| `https://orgportal.cc/mcp` | Agent resource |
+| `https://orgportal.cc/oauth/mcp/*` | OAuth registration, authorization, tokens and grant operations |
+| `https://orgportal.cc/.well-known/oauth-authorization-server` | Issuer discovery |
+| `https://orgportal.cc/.well-known/jwks.json` | Public signing keys |
+
+The canonical MCP issuer is `https://orgportal.cc` (no `/pidp` suffix). Identity
+pages live under `/pidp`; OAuth protocol endpoints remain at the domain root.
+`id.orgportal.cc` and `id.codecollective.us` are retirement targets, not new login
+destinations. Do not create a second identity database or independent token issuer.
+Tenant domains retain their branding and initiate validated browser-bound SSO at
+the central login; their own host-only sessions remain scoped to each tenant.
+
+## Rollout sequence
+
+1. **Inventory and baseline.** Record actual deployed public URLs, callback
+   registrations, issuer, signing-key IDs, resources, clients, grants, provider
+   links and settings links. Record backups and independently verify primary
+   account access before any credential change. Stored production secrets/provider
+   console registrations are not established by checked-in config alone.
+2. **Consolidate accounts.** Keep the current `/pidp` public base, database, keys,
+   issuer and provider callbacks during the credential migration. Apply the
+   reviewed consolidation under maintenance, then enable shared identity only
+   after the account acceptance gates below pass.
+3. **Unify the entry points and settings.** Send first-party sign-in/registration
+   and reusable account-security settings to the canonical PIdP mount. Keep
+   organization-specific settings in OrgPortal and preserve the validated tenant
+   return context. Acceptance requires no duplicate credential or identity-settings
+   workflow presented to users.
+4. **Reconcile protocol configuration.** Set provider callbacks to the canonical
+   addresses above and update clients/resources and all first-party links. If the
+   deployed issuer already equals `https://orgportal.cc`, retain its keys/grants.
+   If it differs, explicitly register/reconnect clients and obtain new consent at
+   the new issuer. Never relabel old tokens or silently rewrite grant ownership.
+   Reject foreign-issuer tokens. Client reconnection is planned work, not a promise
+   of backwards compatibility.
+5. **Retire alternate hosts.** After canonical acceptance, remove old identity
+   domain routes, callback registrations and old links in their owning releases.
+   Do not retain legacy login flows. Confirm required clients are connected before
+   removing their former issuer. Do not remove tenant public websites.
+
+## Account consolidation
 
 The target must equal the deployment's configured `PORTAL_SSO_APP_SLUG`. Never
 substitute a historical slug. A missing target aborts. Case-insensitive email
@@ -94,3 +146,53 @@ changes, revocations and links created after it. Re-enter maintenance and reconc
 those changes before any restore; do not overwrite live identity state blindly.
 There is no automatic post-cutover reverse migration. Do not approve a rollout
 without an agreed maintenance window and recovery procedure.
+
+
+## Local rehearsal: 2026-10-24
+
+The adopted domain plan was rehearsed without changing active identity data,
+production DNS/routes, provider registrations or the shared-identity feature flag.
+
+- Headless Chromium used a loopback HTTPS server executing the actual OrgPortal
+  edge router and PIdP Worker modules. Chromium mapped `orgportal.cc` and the tenant
+  host to loopback and blocked other DNS resolution. Synthetic accounts exercised
+  migration, password login, mounted account pages, reload, tenant SSO and
+  host-only cookies. No production identity data was served to the browser.
+- Both Google and GitHub authorization URLs used the canonical callback paths.
+  Real provider-console registrations and real provider exchanges were not tested.
+- MCP consent, authorization-code exchange, introspection and refresh passed with
+  issuer `https://orgportal.cc` and resource `https://orgportal.cc/mcp`.
+  Validation under a foreign issuer was rejected.
+- Organization API, chat API and MCP forwarding passed through the actual edge
+  router with synthetic upstream responses. This does not prove authenticated
+  organization writes, live chat/WebSockets or a deployed service binding.
+- A fresh offline copy of the local archived identity dataset migrated all 15
+  members. All 46 existing primary-account records and unrelated tables, including
+  sessions and grants, stayed unchanged. Restoring the created backup exactly
+  reproduced every original table's data.
+- Focused results: 34 protocol/migration tests, 11 edge tests and one headless
+  browser rehearsal passed. Whitespace/reference review also passed.
+
+Repeat from the PIdP `serverless/` directory, with Node 24+, OpenSSL, installed npm
+dependencies, the sibling OrgPortal checkout and Playwright Chromium available:
+
+```sh
+IDENTITY_DOMAIN_REPORT=/absolute/path/to/private-report npm run test:domain-rehearsal
+node --import tsx --test test/mcp-authorization.test.mjs test/identity-urls.test.mjs test/portal-oauth.test.mjs test/shared-credentials-migration.test.mjs
+```
+
+From OrgPortal, run the routing checks:
+
+```sh
+node --test cloudflare/identity.test.mjs cloudflare/mcp-origin.test.mjs cloudflare/chat-websocket.test.mjs cloudflare/orgportal-platform.test.mjs
+```
+
+The archived-data rehearsal uses the offline SQLite command above on a fresh
+private copy, compares existing primary records and all unrelated tables, restores
+its generated backup, and compares every table again. Never place archive data,
+credentials, session tokens or database copies in source control.
+
+Remaining cutover evidence: deployed issuer/client inventory, verified primary
+access for affected people, real provider registrations, first-party settings and
+sign-in link inventory, required client reconnection, live WebSocket checks,
+maintenance-window backup/restore and owning-service release acceptance.
