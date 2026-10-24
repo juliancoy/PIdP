@@ -369,8 +369,8 @@ ID and expiry. Requests expire after ten minutes; successful redemption removes
 both handoff records. Each new SSO start removes expired records. Abandoned rows
 are therefore physically deleted on the next SSO start, not by a background timer.
 The verifier and credentials are never persisted in this table or emitted to logs.
-Backup copies retain expired metadata only; expired or consumed proofs cannot be
-redeemed. Do not include this transient table in application-data exports.
+Backups may contain transient metadata; expiry checks still apply after a restore.
+Do not include this transient table in application-data exports.
 
 Python local deployments with `AUTO_CREATE_TABLES` create this new table at startup.
 Worker releases require migration `0015_portal_desktop_auth.sql` first. Do not
