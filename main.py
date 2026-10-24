@@ -1542,19 +1542,7 @@ async def frontend_local_admin_login(request: Request, session: AsyncSession = D
     target = _resolve_frontend_redirect_target(request, str(form.get('next') or '/'))
     if not target:
         raise HTTPException(400, 'Invalid return destination')
-    # The local admin uses the portal's shared HttpOnly identity cookie directly.
-    # Resume the requested page without the separate website-account linking flow.
-    parsed = urlparse(target)
-    if parsed.path == urlparse(settings.public_base_url).path.rstrip('/') + '/auth/sso/authorize':
-        from models import PortalSsoRequest
-        from portal_clients import sso_return
-        ticket = parse_qs(parsed.query).get('request', [''])[0]
-        row = await session.get(PortalSsoRequest, ticket)
-        if not row or row.expires_at < int(time.time()) or row.code_hash or not sso_return(row.origin, row.app, row.next):
-            raise HTTPException(400, 'Expired local sign-in request')
-        target = parse_qs(urlparse(row.next).query).get('next', ['/'])[0]
-        await session.delete(row)
-        await session.commit()
+    # Keep the validated SSO return intact so both web and native handoffs finish.
     owner = await provision_local_admin(session)
     token = create_access_token(str(owner.id), owner.email, {'is_sysadmin': True})
     return await _session_redirect(request, target, token, session)

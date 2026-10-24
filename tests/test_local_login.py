@@ -56,3 +56,23 @@ class LocalLoginTests(unittest.TestCase):
                         dict(public_base_url='https://orgportal.cc/pidp')]:
             with self.subTest(changes=changes), patch.multiple(settings, **changes):
                 self.assertFalse(local_login_enabled(request()))
+
+
+class LocalAdminReturnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_admin_preserves_sso_handoff(self):
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+        import main
+        target = 'https://id.localhost:8443/auth/sso/authorize?request=opaque-ticket'
+        req = SimpleNamespace(form=AsyncMock(return_value={'next': target}))
+        session = AsyncMock()
+        owner = SimpleNamespace(id='local-admin-fixture', email='fixture@example.com')
+        response = object()
+        with patch.object(main, 'local_login_enabled', return_value=True), \
+             patch.object(main, '_resolve_frontend_redirect_target', return_value=target), \
+             patch('scripts.local_admin.provision_local_admin', AsyncMock(return_value=owner)), \
+             patch.object(main, 'create_access_token', return_value='fixture-token'), \
+             patch.object(main, '_session_redirect', AsyncMock(return_value=response)) as redirect:
+            self.assertIs(await main.frontend_local_admin_login(req, session), response)
+            redirect.assert_awaited_once_with(req, target, 'fixture-token', session)
+            session.delete.assert_not_awaited()
