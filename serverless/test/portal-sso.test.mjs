@@ -363,6 +363,9 @@ test('LifeTech login identifies tenant and central host on form and validation e
     const html=await response.text();
     assert.ok(html.includes('<h1>Sign in to '+label+'</h1>'));
     assert.ok(html.includes('<p>'+domain+'</p>'));
+    assert.match(html, /background:\s*#155E59;\s*color:\s*#fff/i);
+    assert.match(html, /border: 1px solid #155E59/);
+    assert.match(html, /outline: 3px solid #155E59/);
     assert.doesNotMatch(html,/Authentication provided by PIdP/);
     const visible=html.replace(/<style>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,'');
     assert.equal(visible.split('orgportal.cc').length-1,host==='orgportal.cc'?1:0);

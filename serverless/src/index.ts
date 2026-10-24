@@ -333,10 +333,11 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
     main { box-sizing: border-box; width: min(100% - 32px, 420px); background: #fff; border: 1px solid #d7dce3; border-radius: 8px; padding: 24px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08); }
     h1 { font-size: 1.4rem; margin: 0 0 16px; }
     label { display: grid; gap: 6px; font-size: 0.92rem; margin: 12px 0; }
-    input { font: inherit; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; }
+    input { font: inherit; padding: 10px 12px; border: 1px solid ${brand?.accent_color === "#155E59" ? brand.accent_color : "#bcc4d0"}; border-radius: 6px; }
     button { width: 100%; margin-top: 12px; padding: 10px 12px; border: 0; border-radius: 6px; background: ${brand?.accent_color || "#111827"}; color: #fff; font: inherit; cursor: pointer; }
-    .social-login { display: block; margin: 12px 0; padding: 10px 12px; border: 1px solid #bcc4d0; border-radius: 6px; text-align: center; text-decoration: none; color: #111827; }
+    .social-login { display: block; margin: 12px 0; padding: 10px 12px; border: 1px solid ${brand?.accent_color === "#155E59" ? brand.accent_color : "#bcc4d0"}; border-radius: 6px; text-align: center; text-decoration: none; color: #111827; }
     .error { color: #b42318; background: #fff1f0; border: 1px solid #ffccc7; padding: 10px 12px; border-radius: 6px; }
+      ${brand?.accent_color === "#155E59" ? `input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid ${brand.accent_color}; outline-offset: 3px; }` : ""}
   </style>
 </head>
 <body>
