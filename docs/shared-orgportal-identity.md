@@ -23,9 +23,9 @@ owner of organizations, membership, permissions and tenant branding.
 | `https://orgportal.cc/api/org/*` | Organization API |
 | `https://orgportal.cc/api/chat/*` | Chat HTTP API; verify WebSocket routing separately |
 | `https://orgportal.cc/mcp` | Agent resource |
-| `https://orgportal.cc/oauth/mcp/*` | OAuth registration, authorization, tokens and grant operations |
-| `https://orgportal.cc/.well-known/oauth-authorization-server` | Issuer discovery |
-| `https://orgportal.cc/.well-known/jwks.json` | Public signing keys |
+| `https://id.orgportal.cc/oauth/mcp/*` | OAuth registration, authorization, tokens and grant operations |
+| `https://id.orgportal.cc/.well-known/oauth-authorization-server` | Issuer discovery |
+| `https://id.orgportal.cc/.well-known/jwks.json` | Public signing keys |
 
 The target identity issuer is `https://id.orgportal.cc`. Identity pages and OAuth
 protocol endpoints use that separate origin. `id.codecollective.us` and same-origin
@@ -44,7 +44,7 @@ the central login; their own host-only sessions remain scoped to each tenant.
    issuer and provider callbacks during the credential migration. Apply the
    reviewed consolidation under maintenance, then enable shared identity only
    after the account acceptance gates below pass.
-3. **Unify the entry points and settings.** Send first-party sign-in/registration
+3. **Unify the entry points and settings on the isolated identity origin.** Send first-party sign-in/registration
    and reusable account-security settings to the canonical PIdP mount. Keep
    organization-specific settings in OrgPortal and preserve the validated tenant
    return context. Acceptance requires no duplicate credential or identity-settings
