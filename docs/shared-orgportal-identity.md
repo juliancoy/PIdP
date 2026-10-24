@@ -40,23 +40,27 @@ the central login; their own host-only sessions remain scoped to each tenant.
    links and settings links. Record backups and independently verify primary
    account access before any credential change. Stored production secrets/provider
    console registrations are not established by checked-in config alone.
-2. **Consolidate accounts.** Keep the current `/pidp` public base, database, keys,
-   issuer and provider callbacks during the credential migration. Apply the
-   reviewed consolidation under maintenance, then enable shared identity only
-   after the account acceptance gates below pass.
-3. **Unify the entry points and settings on the isolated identity origin.** Send first-party sign-in/registration
+2. **Establish isolation without moving account data.** Provision `id.orgportal.cc`
+   on the existing identity service/database. Prepare provider registrations before
+   changing their callback URLs. Configure host-only cookies, identity-only CORS
+   and validated tenant SSO; remove primary identity proxies from the portal.
+   Verify cross-origin read/write denial and normal SSO before consolidation.
+3. **Consolidate accounts.** Keep the established identity origin, database and
+   keys stable. Apply the reviewed consolidation under maintenance and enable
+   shared identity only after the account acceptance gates below pass.
+4. **Unify the entry points and settings on the isolated identity origin.** Send first-party sign-in/registration
    and reusable account-security settings to the canonical PIdP mount. Keep
    organization-specific settings in OrgPortal and preserve the validated tenant
    return context. Acceptance requires no duplicate credential or identity-settings
    workflow presented to users.
-4. **Reconcile protocol configuration.** Set provider callbacks to the canonical
+5. **Reconcile protocol configuration.** Set provider callbacks to the canonical
    addresses above and update clients/resources and all first-party links. If the
-   deployed issuer already equals `https://orgportal.cc`, retain its keys/grants.
+   deployed issuer already equals `https://id.orgportal.cc`, retain its keys/grants.
    If it differs, explicitly register/reconnect clients and obtain new consent at
    the new issuer. Never relabel old tokens or silently rewrite grant ownership.
    Reject foreign-issuer tokens. Client reconnection is planned work, not a promise
    of backwards compatibility.
-5. **Retire alternate hosts.** After canonical acceptance, remove old identity
+6. **Retire alternate hosts.** After canonical acceptance, remove old identity
    domain routes, callback registrations and old links in their owning releases.
    Do not retain legacy login flows. Confirm required clients are connected before
    removing their former issuer. Do not remove tenant public websites.
@@ -147,59 +151,6 @@ There is no automatic post-cutover reverse migration. Do not approve a rollout
 without an agreed maintenance window and recovery procedure.
 
 
-## Earlier same-origin rehearsal: 2026-10-24
-
-This historical rehearsal is superseded for browser-origin isolation by the
-separate-origin local deployment below.
-
-The adopted domain plan was rehearsed without changing active identity data,
-production DNS/routes, provider registrations or the shared-identity feature flag.
-
-- Headless Chromium used a loopback HTTPS server executing the actual OrgPortal
-  edge router and PIdP Worker modules. Chromium mapped `orgportal.cc` and the tenant
-  host to loopback and blocked other DNS resolution. Synthetic accounts exercised
-  migration, password login, mounted account pages, reload, tenant SSO and
-  host-only cookies. No production identity data was served to the browser.
-- Both Google and GitHub authorization URLs used the canonical callback paths.
-  Real provider-console registrations and real provider exchanges were not tested.
-- MCP consent, authorization-code exchange, introspection and refresh passed with
-  issuer `https://orgportal.cc` and resource `https://orgportal.cc/mcp`.
-  Validation under a foreign issuer was rejected.
-- Organization API, chat API and MCP forwarding passed through the actual edge
-  router with synthetic upstream responses. This does not prove authenticated
-  organization writes, live chat/WebSockets or a deployed service binding.
-- A fresh offline copy of the local archived identity dataset migrated all 15
-  members. All 46 existing primary-account records and unrelated tables, including
-  sessions and grants, stayed unchanged. Restoring the created backup exactly
-  reproduced every original table's data.
-- Focused results: 34 protocol/migration tests, 11 edge tests and one headless
-  browser rehearsal passed. Whitespace/reference review also passed.
-
-Repeat from the PIdP `serverless/` directory, with Node 24+, OpenSSL, installed npm
-dependencies, the sibling OrgPortal checkout and Playwright Chromium available:
-
-```sh
-IDENTITY_DOMAIN_REPORT=/absolute/path/to/private-report npm run test:domain-rehearsal
-node --import tsx --test test/mcp-authorization.test.mjs test/identity-urls.test.mjs test/portal-oauth.test.mjs test/shared-credentials-migration.test.mjs
-```
-
-From OrgPortal, run the routing checks:
-
-```sh
-node --test cloudflare/identity.test.mjs cloudflare/mcp-origin.test.mjs cloudflare/chat-websocket.test.mjs cloudflare/orgportal-platform.test.mjs
-```
-
-The archived-data rehearsal uses the offline SQLite command above on a fresh
-private copy, compares existing primary records and all unrelated tables, restores
-its generated backup, and compares every table again. Never place archive data,
-credentials, session tokens or database copies in source control.
-
-Remaining cutover evidence: deployed issuer/client inventory, verified primary
-access for affected people, real provider registrations, first-party settings and
-sign-in link inventory, required client reconnection, live WebSocket checks,
-maintenance-window backup/restore and owning-service release acceptance.
-
-
 ## Separate-origin local deployment
 
 Portal: `https://localhost:8443`. Identity: `https://id.localhost:8443`.
@@ -216,3 +167,17 @@ Production domain/provider/issuer changes require the owning release and are not
 performed by this local activation. Reconnect clients if their issuer changes;
 never relabel grants or tokens. All first-party identity links and provider
 registrations must use `id.orgportal.cc` at cutover.
+
+
+Repeat the active local browser rehearsal from `PIdP/serverless`:
+
+```sh
+IDENTITY_ORIGIN_REPORT=/absolute/path/to/private-report npm run test:domain-rehearsal
+```
+
+It uses the running local nginx/FastAPI deployment, creates and removes only its
+own synthetic linked accounts, verifies primary sign-in, rejects authenticated
+identity reads and logout from the portal origin, and completes tenant SSO with a
+distinct member session. It requires Docker access and Playwright Chromium.
+Distributed workspace/Python and identity suites are requested through the local
+master's test-request API; preserve request IDs, source revisions, runtimes and logs.

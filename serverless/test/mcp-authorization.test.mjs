@@ -21,7 +21,7 @@ async function fixture(canonical = false) {
   }; } }; } };
   const { privateKey } = await generateKeyPair('ES256', { extractable: true });
   const key = { ...await exportJWK(privateKey), kid: 'test-key' };
-  const issuer = canonical ? 'https://orgportal.cc' : 'https://id.example'; const resource = canonical ? 'https://orgportal.cc/mcp' : 'https://portal.example/api/org/mcp';
+  const issuer = canonical ? 'https://id.orgportal.cc' : 'https://id.example'; const resource = canonical ? 'https://orgportal.cc/mcp' : 'https://portal.example/api/org/mcp';
   const env = { DB: db, SECRET_KEY: 'test-session-key', MCP_OAUTH_ISSUER: issuer,
     MCP_OAUTH_PRIVATE_JWK: JSON.stringify(key),
     MCP_OAUTH_CLIENTS_JSON: JSON.stringify({ chatgpt: { name: '<ChatGPT>', secretHash: await sha256Hex('client-secret-for-tests-at-least-32-chars'),
@@ -587,9 +587,9 @@ test('canonical OrgPortal issuer supports consent, tokens, refresh and rejects f
  const f=await fixture(true);
  try {
   const discovery=await(await f.request('/.well-known/oauth-authorization-server')).json();
-  assert.equal(discovery.issuer,'https://orgportal.cc');
-  assert.equal(discovery.authorization_endpoint,'https://orgportal.cc/oauth/mcp/authorize');
-  assert.equal(discovery.token_endpoint,'https://orgportal.cc/oauth/mcp/token');
+  assert.equal(discovery.issuer,'https://id.orgportal.cc');
+  assert.equal(discovery.authorization_endpoint,'https://id.orgportal.cc/oauth/mcp/authorize');
+  assert.equal(discovery.token_endpoint,'https://id.orgportal.cc/oauth/mcp/token');
   const issued=await f.exchange(await f.code());assert.equal(issued.status,200);
   const tokens=await issued.json();
   const config=authorizationConfig(f.env),publicKey=await importJWK(config.keys[0]);

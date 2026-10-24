@@ -9,6 +9,13 @@ const python=(body)=>execFileSync('docker',['exec','-i',container,'/venv/bin/pyt
 test('local identity origin isolates authenticated responses while tenant SSO works',{timeout:90000},async()=>{
  let browser,fixture;
  try {
+ const contextHost=JSON.parse(execFileSync('docker',['context','inspect','--format','{{json .Endpoints.docker.Host}}'],{encoding:'utf8'}));
+ assert.ok((process.env.DOCKER_HOST||contextHost).startsWith('unix://'),'Rehearsal requires a local Docker socket');
+ const config=JSON.parse(execFileSync('docker',['inspect',container,'--format','{{json .Config.Env}}'],{encoding:'utf8'}));
+ const environment=Object.fromEntries(config.map(value=>{const at=value.indexOf('=');return [value.slice(0,at),value.slice(at+1)];}));
+ assert.equal(environment.ENV,'dev','Rehearsal requires a development identity service');
+ assert.equal(environment.PUBLIC_BASE_URL,'https://id.localhost:8443','Rehearsal requires the isolated local identity origin');
+
  fixture=JSON.parse(python(`import asyncio,json,uuid
 from datetime import datetime,timezone
 from sqlalchemy import select
