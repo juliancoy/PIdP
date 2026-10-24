@@ -10,6 +10,22 @@ import { googleLoginHint } from './loginHints';
 import { portalClient, ssoReturn, sharedIdentity } from './portalClients';
 
 const escapeHtml=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+type DesktopTicket = {id:string; redirect_uri:string;challenge:string;state:string;expires_at:number};
+function nativeRequest(params:URLSearchParams) {
+ const keys=['redirect_uri','code_challenge','code_challenge_method','state'];
+ if(!keys.some(key=>params.has(key)))return null;
+ const uri=params.get('redirect_uri')||'';
+ try {
+  const url=new URL(uri);
+  if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||!url.port||url.pathname!=='/callback'||url.username||url.password||url.search||url.hash||uri!==`http://127.0.0.1:${url.port}/callback`)throw Error();
+  if(params.get('code_challenge_method')!=='S256'||!(/^[A-Za-z0-9_-]{43}$/).test(params.get('code_challenge')||'')||!(/^[A-Za-z0-9_-]{43,128}$/).test(params.get('state')||''))throw Error();
+  return {redirect_uri:uri,challenge:params.get('code_challenge')!,state:params.get('state')!};
+ }catch{throw Error('invalid_native_request')}
+}
+async function pkceChallenge(verifier:string) {
+ const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
+ return btoa(String.fromCharCode(...digest)).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
+}
 const browserCookie = '__Host-pidp_sso_browser';
 type Ticket = { id: string; browser_hash: string; origin: string; next: string; website_id: string; app: string; subject: string | null; code_hash: string | null; expires_at: number; auth_time: number | null };
 const now = () => Math.floor(Date.now()/1000);
@@ -22,6 +38,7 @@ export function portalSso(issue: (env: Env, subject: string, authTime?: number) 
  app.use('/auth/sso/*', async (c,next) => { c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');const params=new URL(c.req.url).searchParams;for(const key of params.keys())if(params.getAll(key).length!==1)return c.json({error:'invalid_request'},400);await next(); });
  app.get('/auth/sso/client',c=>{const client=portalClient(c.env,origin(c));return client?c.json({name:client.name,accountApp:client.accountApp,callbacks:client.callbacks,origin:client.restartOrigin||origin(c)}):c.json({error:'invalid_portal'},400)});
  app.get('/auth/sso/start', async c => {
+  let native;try{native=nativeRequest(new URL(c.req.url).searchParams)}catch{return c.json({error:'invalid_native_request'},400)}
   const destination=origin(c),client=portalClient(c.env,destination);
   if(!client)return c.json({error:'invalid_portal'},400);
   const appSlug=c.req.query('app') || client.accountApp;
@@ -30,6 +47,7 @@ export function portalSso(issue: (env: Env, subject: string, authTime?: number) 
   if(!target)return c.json({error:'invalid_return'},400);
   const prompt=c.req.query('prompt');if(prompt && !['select_account','login'].includes(prompt))return c.json({error:'invalid_prompt'},400);
   const provider=c.req.query('provider');if(provider && !['google','github'].includes(provider))return c.json({error:'invalid_provider'},400);
+  if(native && client.restartOrigin)return c.json({error:'native_origin_requires_direct_registration'},400);
   if(client.restartOrigin){
    const destinationClient=portalClient(c.env,client.restartOrigin);if(!destinationClient)return c.json({error:'invalid_portal'},400);
    const callback=new URL('/auth/callback',client.restartOrigin);callback.search=target.search;
@@ -51,14 +69,16 @@ export function portalSso(issue: (env: Env, subject: string, authTime?: number) 
   const browser=randomToken(''), id=randomToken('');
   await c.env.DB.prepare('DELETE FROM portal_sso_requests WHERE expires_at < ?').bind(now()).run();
   await c.env.DB.prepare('INSERT INTO portal_sso_requests (id,browser_hash,origin,next,website_id,app,expires_at) VALUES (?,?,?,?,?,?,?)')
-   .bind(id,await sha256Hex(browser),destination,target.toString(),website.id,appSlug,now()+600).run();
+   .bind(id,await sha256Hex(native?browser+':'+native.challenge:browser),destination,target.toString(),website.id,appSlug,now()+600).run();
+  await c.env.DB.prepare('DELETE FROM portal_desktop_requests WHERE expires_at < ?').bind(now()).run();
+  if(native)await c.env.DB.prepare('INSERT INTO portal_desktop_requests(id,redirect_uri,challenge,state,expires_at) VALUES(?,?,?,?,?)').bind(id,native.redirect_uri,native.challenge,native.state,now()+600).run();
   setCookie(c,browserCookie,browser,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:600});
   const authorize=identityUrl(c.env,'/auth/sso/authorize');
   authorize.searchParams.set('request',id);
   if(provider)authorize.searchParams.set('provider',provider);if(prompt)authorize.searchParams.set('prompt',prompt);
   const hint=googleLoginHint(provider,c.req.query('login_hint'));
   if(hint)authorize.searchParams.set('login_hint',hint);
-  return c.redirect(authorize.toString(),303);
+  return native?c.json({authorization_url:authorize.toString(),request:id,expires_in:600}):c.redirect(authorize.toString(),303);
  });
  app.get('/auth/sso/authorize', async c => {
   if(new URL(c.req.url).origin!==new URL(c.env.PUBLIC_BASE_URL || c.req.url).origin || c.req.header('x-forwarded-host'))return c.json({error:'issuer_required'},400);
@@ -120,14 +140,26 @@ export function portalSso(issue: (env: Env, subject: string, authTime?: number) 
   const code=randomToken('');
   const claimed=await c.env.DB.prepare('UPDATE portal_sso_requests SET subject=?, auth_time=?, code_hash=?, expires_at=? WHERE id=? AND code_hash IS NULL AND expires_at>=? RETURNING id').bind(account,authTime,await sha256Hex(code),now()+120,row.id,now()).first();
   if(!claimed)return c.json({error:'expired_request'},400);
+  const native=await c.env.DB.prepare('SELECT * FROM portal_desktop_requests WHERE id=? AND expires_at>=?').bind(row.id,now()).first<DesktopTicket>();
+  if(native){const callback=new URL(native.redirect_uri);callback.search=new URLSearchParams({request:row.id,code,state:native.state}).toString();return c.redirect(callback.toString(),303)}
   const complete=new URL('/pidp/auth/sso/complete',row.origin);complete.searchParams.set('request',row.id);complete.searchParams.set('code',code);
   return c.redirect(complete.toString(),303);
  });
- app.get('/auth/sso/complete', async c => {
+ app.on(['GET','POST'],'/auth/sso/complete', async c => {
+  let params:Record<string,string>=Object.fromEntries(new URL(c.req.url).searchParams);
+  if(c.req.method==='POST'){
+   const body=await c.req.text();if(body.length>4096)return c.json({error:'invalid_request'},400);
+   try{params=JSON.parse(body);if(!params||Array.isArray(params)||Object.values(params).some(v=>typeof v!=='string'))throw Error()}catch{return c.json({error:'invalid_request'},400)}
+  }
+  const native=await c.env.DB.prepare('SELECT * FROM portal_desktop_requests WHERE id=?').bind(params.request||'').first<DesktopTicket>();
+  if(native){const verifier=params.code_verifier||'';if(c.req.method!=='POST'||native.expires_at<now()||!(/^[A-Za-z0-9._~-]{43,128}$/).test(verifier)||await pkceChallenge(verifier)!==native.challenge)return c.json({error:'invalid_pkce'},400)}
+  else if(c.req.method==='POST')return c.json({error:'invalid_native_request'},400);
+
   const browser=getCookie(c,browserCookie);if(!browser)return c.json({error:'invalid_browser'},400);
   const row=await c.env.DB.prepare('DELETE FROM portal_sso_requests WHERE id=? AND code_hash=? AND browser_hash=? AND origin=? AND expires_at>=? RETURNING *')
-   .bind(c.req.query('request') || '',await sha256Hex(c.req.query('code') || ''),await sha256Hex(browser),origin(c),now()).first<Ticket>();
+   .bind(params.request || '',await sha256Hex(params.code || ''),await sha256Hex(native?browser+':'+native.challenge:browser),origin(c),now()).first<Ticket>();
   if(!row?.website_id || !row.subject || !(row.subject?.startsWith(`website:${row.website_id}:`) || (sharedIdentity(c.env,row.app) && /^owner:[^:]+$/.test(row.subject || ''))) || !ssoReturn(c.env,row.origin,row.app,row.next))return c.json({error:'invalid_handoff'},400);
+  if(native)await c.env.DB.prepare('DELETE FROM portal_desktop_requests WHERE id=?').bind(row.id).run();
   let token;try{token=await issue(c.env,row.subject,row.auth_time||undefined);}catch{return c.json({error:'inactive_account'},401);}
   const remembered=await browserSession(c.env,token);
   setCookie(c,'pidp_session',remembered.token,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:remembered.maxAge});

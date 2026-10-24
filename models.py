@@ -108,6 +108,15 @@ class PortalSsoRequest(Base):
     expires_at: Mapped[int] = mapped_column(Integer, index=True)
 
 
+class PortalDesktopRequest(Base):
+    __tablename__ = 'portal_desktop_requests'
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    redirect_uri: Mapped[str] = mapped_column(Text)
+    challenge: Mapped[str] = mapped_column(String(43))
+    state: Mapped[str] = mapped_column(String(128))
+    expires_at: Mapped[int] = mapped_column(Integer, index=True)
+
+
 class PortalSsoLimit(Base):
     __tablename__ = 'portal_sso_limits'
     ip_hash: Mapped[str] = mapped_column(String(64), primary_key=True)

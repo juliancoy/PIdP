@@ -1,20 +1,22 @@
 from browser_sessions import browser_session, browser_claims
 """Browser-bound, one-use PIdP session handoff; no session tokens in URLs."""
 import re
+import base64
+import hmac
 import hashlib
 import secrets
 import time
 from uuid import UUID
 from urllib.parse import parse_qs, urlencode, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
 from html import escape
 from browser_pages import identity_document
 from sqlalchemy import select, delete, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
-from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
+from models import PortalSsoRequest, PortalDesktopRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink
 from security import safe_decode_token, create_access_token
 from login_hints import google_login_hint
 from portal_clients import portal_client, sso_return, shared_identity
@@ -24,6 +26,21 @@ BROWSER = '__Host-pidp_sso_browser'
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+def native_request(params):
+    fields = ('redirect_uri', 'code_challenge', 'code_challenge_method', 'state')
+    if not any(key in params for key in fields):
+        return None
+    uri = params.get('redirect_uri', '')
+    parsed = urlparse(uri)
+    try:
+        valid = parsed.scheme == 'http' and parsed.hostname == '127.0.0.1' and parsed.port not in (None, 0, 80) and parsed.path == '/callback' and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and uri == f'http://127.0.0.1:{parsed.port}/callback'
+    except ValueError:
+        valid = False
+    if not valid or params.get('code_challenge_method') != 'S256' or not re.fullmatch(r'[A-Za-z0-9_-]{43}', params.get('code_challenge', '')) or not re.fullmatch(r'[A-Za-z0-9_-]{43,128}', params.get('state', '')):
+        raise HTTPException(400, 'invalid_native_request')
+    return dict(redirect_uri=uri, challenge=params['code_challenge'], state=params['state'])
+
 
 def origins():
     return [s.strip() for s in settings.portal_auth_origins.split(',') if s.strip()]
@@ -54,6 +71,7 @@ async def registration(request: Request):
 @router.get('/auth/sso/start')
 async def start(request: Request, session: AsyncSession = Depends(get_session)):
     unique_query(request)
+    native = native_request(request.query_params)
     destination = origin(request)
     client = portal_client(destination)
     if not client:
@@ -70,6 +88,8 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
     provider = request.query_params.get('provider')
     if provider and provider not in ('google','github'):
         raise HTTPException(400, 'invalid_provider')
+    if native and client.get('restartOrigin'):
+        raise HTTPException(400, 'native_origin_requires_direct_registration')
     if client.get('restartOrigin'):
         destination_client = portal_client(client['restartOrigin'])
         if not destination_client:
@@ -98,10 +118,13 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
     if not permitted:
         raise HTTPException(429, 'too_many_requests')
     browser = secrets.token_urlsafe(40)
-    row = PortalSsoRequest(id=secrets.token_urlsafe(40), browser_hash=digest(browser), origin=destination,
+    row = PortalSsoRequest(id=secrets.token_urlsafe(40), browser_hash=digest(browser+':'+native['challenge']) if native else digest(browser), origin=destination,
         next=target, website_id=str(website.id), app=app_slug, expires_at=int(time.time())+600)
     await session.execute(delete(PortalSsoRequest).where(PortalSsoRequest.expires_at < int(time.time())))
+    await session.execute(delete(PortalDesktopRequest).where(PortalDesktopRequest.expires_at < int(time.time())))
     session.add(row)
+    if native:
+        session.add(PortalDesktopRequest(id=row.id, expires_at=row.expires_at, **native))
     await session.commit()
     params = {'request':row.id}
     if prompt:
@@ -111,7 +134,8 @@ async def start(request: Request, session: AsyncSession = Depends(get_session)):
     hint = google_login_hint(provider, request.query_params.get('login_hint'))
     if hint:
         params['login_hint'] = hint
-    response = redirect(issuer(request)+'/auth/sso/authorize?'+urlencode(params))
+    authorization_url = issuer(request)+'/auth/sso/authorize?'+urlencode(params)
+    response = JSONResponse({'authorization_url': authorization_url, 'request': row.id, 'expires_in': 600}, headers={'Cache-Control':'no-store'}) if native else redirect(authorization_url)
     response.set_cookie(BROWSER,browser,max_age=600,secure=True,httponly=True,samesite='lax',path='/')
     return response
 
@@ -190,20 +214,45 @@ async def authorize(request: Request, session: AsyncSession = Depends(get_sessio
     await session.commit()
     if not claimed:
         raise HTTPException(400, 'expired_request')
+    native = (await session.execute(select(PortalDesktopRequest).where(PortalDesktopRequest.id == row.id, PortalDesktopRequest.expires_at >= int(time.time())))).scalar_one_or_none()
+    if native:
+        return redirect(native.redirect_uri+'?'+urlencode({'request':row.id,'code':code,'state':native.state}))
     return redirect(row.origin+'/pidp/auth/sso/complete?'+urlencode({'request':row.id,'code':code}))
 
 @router.get('/auth/sso/complete')
+@router.post('/auth/sso/complete')
 async def complete(request: Request, session: AsyncSession = Depends(get_session)):
     unique_query(request)
+    params = request.query_params
+    if request.method == 'POST':
+        if int(request.headers.get('content-length', '0')) > 4096:
+            raise HTTPException(400, 'invalid_request')
+        try:
+            params = await request.json()
+        except ValueError:
+            raise HTTPException(400, 'invalid_request')
+        if not isinstance(params, dict) or any(not isinstance(v, str) for v in params.values()):
+            raise HTTPException(400, 'invalid_request')
+    native = (await session.execute(select(PortalDesktopRequest).where(PortalDesktopRequest.id == params.get('request', '')))).scalar_one_or_none()
+    if native:
+        verifier = params.get('code_verifier', '')
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+        if request.method != 'POST' or native.expires_at < int(time.time()) or not re.fullmatch(r'[A-Za-z0-9._~-]{43,128}', verifier) or not hmac.compare_digest(challenge, native.challenge):
+            raise HTTPException(400, 'invalid_pkce')
+    elif request.method == 'POST':
+        raise HTTPException(400, 'invalid_native_request')
     browser = request.cookies.get(BROWSER)
     if not browser:
         raise HTTPException(400, 'invalid_browser')
-    row = (await session.execute(delete(PortalSsoRequest).where(PortalSsoRequest.id == request.query_params.get('request'),
-        PortalSsoRequest.code_hash == digest(request.query_params.get('code','')), PortalSsoRequest.browser_hash == digest(browser),
+    row = (await session.execute(delete(PortalSsoRequest).where(PortalSsoRequest.id == params.get('request'),
+        PortalSsoRequest.code_hash == digest(params.get('code','')), PortalSsoRequest.browser_hash == (digest(browser+':'+native.challenge) if native else digest(browser)),
         PortalSsoRequest.origin == origin(request), PortalSsoRequest.expires_at >= int(time.time())).returning(PortalSsoRequest))).scalar_one_or_none()
     await session.commit()
     if not row or not row.subject or not sso_return(row.origin,row.app,row.next):
         raise HTTPException(400, 'invalid_handoff')
+    if native:
+        await session.execute(delete(PortalDesktopRequest).where(PortalDesktopRequest.id == row.id))
+        await session.commit()
     parts = row.subject.split(':')
     if len(parts) == 3 and parts[0] == 'website' and parts[1] == row.website_id:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.id == UUID(parts[2]),

@@ -9,6 +9,7 @@ function fixture(real = false) {
  const sql=new DatabaseSync(':memory:');
  sql.exec('CREATE TABLE account_identity_links(subject TEXT,canonical_user_id TEXT,website_id TEXT,website_user_id TEXT,linked_at TEXT)');
  sql.exec(readFileSync(new URL('../migrations/0009_portal_sso.sql',import.meta.url),'utf8'));
+ sql.exec(readFileSync(new URL('../migrations/0015_portal_desktop_auth.sql',import.meta.url),'utf8'));
  sql.exec(`CREATE TABLE websites(id TEXT PRIMARY KEY,slug TEXT);INSERT INTO websites VALUES('site','members');
  CREATE TABLE users(id TEXT PRIMARY KEY,is_active INTEGER,email TEXT,identity_data TEXT);INSERT INTO users VALUES('owner',1,'owner@example.test','{}');
  CREATE TABLE website_users(id TEXT PRIMARY KEY,website_id TEXT,is_active INTEGER,email TEXT,identity_data TEXT,profile_data TEXT);INSERT INTO website_users VALUES('member','site',1,'member@example.test','{}','{}');`);
@@ -368,4 +369,32 @@ test('LifeTech login identifies tenant and central host on form and validation e
    }
   }
  } finally {f.sql.close();}
+});
+test('native browser login binds PKCE, initiating cookie, portal origin and one-use code',async()=>{
+ const f=fixture();try{
+  const verifier='v'.repeat(64),challenge=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))).toString('base64url');
+  const params=new URLSearchParams({redirect_uri:'http://127.0.0.1:49321/callback',code_challenge:challenge,code_challenge_method:'S256',state:'s'.repeat(43)});
+  const started=await f.request('one.example','/auth/sso/start?'+params);assert.equal(started.status,200);
+  const cookie=started.headers.getSetCookie()[0].split(';')[0],flow=await started.json();
+  const session=await signJwt(f.env,{sub:'member',actor_type:'website_user',website_id:'site'});
+  const authorize=new URL(flow.authorization_url);
+  const approved=await f.request('id.example',authorize.pathname+authorize.search,{cookie:'pidp_session='+session});
+  const callback=new URL(approved.headers.get('location'));assert.equal(callback.origin,'http://127.0.0.1:49321');assert.equal(callback.searchParams.get('state'),'s'.repeat(43));
+  const proof={request:flow.request,code:callback.searchParams.get('code'),code_verifier:verifier};
+  const redeem=(host,body,sessionCookie=cookie)=>portalSso(async(env,subject)=>signJwt(env,{sub:subject.split(':').at(-1),actor_type:'website_user',website_id:'site'})).request('https://'+host+'/auth/sso/complete',{method:'POST',headers:{cookie:sessionCookie,'Content-Type':'application/json'},body:JSON.stringify(body)},f.env);
+  assert.equal((await f.request('one.example','/auth/sso/complete?'+new URLSearchParams(proof),{cookie})).status,400);
+  assert.equal((await redeem('one.example',{...proof,code_verifier:'x'.repeat(64)})).status,400);
+  assert.equal((await redeem('two.example',proof)).status,400);
+  assert.equal((await redeem('one.example',proof,'')).status,400);
+  const complete=await redeem('one.example',proof);assert.equal(complete.status,303);assert.match(complete.headers.get('set-cookie'),/HttpOnly/);
+  assert.equal((await redeem('one.example',proof)).status,400);
+  assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_desktop_requests').get().n,0);
+ }finally{f.sql.close()}
+});
+test('native login rejects external, hostname, credential, malformed and non-S256 redirects',async()=>{
+ const f=fixture();try{
+  const params={redirect_uri:'http://127.0.0.1:49321/callback',code_challenge:'a'.repeat(43),code_challenge_method:'S256',state:'s'.repeat(43)};
+  for(const redirect_uri of ['https://evil.example/callback','http://localhost:49321/callback','http://127.0.0.1:49321/other','http://127.0.0.1:49321/callback?x=1','http://user@127.0.0.1:49321/callback','http://127.0.0.1:80/callback'])assert.equal((await f.request('one.example','/auth/sso/start?'+new URLSearchParams({...params,redirect_uri}))).status,400);
+  assert.equal((await f.request('one.example','/auth/sso/start?'+new URLSearchParams({...params,code_challenge_method:'plain'}))).status,400);
+ }finally{f.sql.close()}
 });

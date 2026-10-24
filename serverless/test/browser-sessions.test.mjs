@@ -4,6 +4,7 @@ import {browserSession,BROWSER_IDLE_SECONDS,BROWSER_ABSOLUTE_SECONDS} from '../s
 import {signJwt,verifyJwt,sha256Hex} from '../src/crypto.ts';import app from '../src/index.ts';
 function fixture(){
  const sql=new DatabaseSync(':memory:');for(const migration of ['0001_initial.sql','0009_portal_sso.sql','0013_browser_sessions.sql'])sql.exec(readFileSync(new URL('../migrations/'+migration,import.meta.url),'utf8'));
+ sql.exec(readFileSync(new URL('../migrations/0015_portal_desktop_auth.sql',import.meta.url),'utf8'));
  sql.exec("INSERT INTO users(id,email,is_active) VALUES('owner','owner@example.test',1),('other','other@example.test',1)");
  const DB={prepare(query){const s=sql.prepare(query);return{bind(...args){return{async first(){return s.get(...args)||null},async run(){return{meta:s.run(...args)}}}}}}};
  return{sql,env:{DB,SECRET_KEY:'session-fixture-only',ACCESS_TOKEN_EXPIRE_MINUTES:'60'}};

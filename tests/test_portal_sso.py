@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import portal_sso as sso
-from models import PortalSsoRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink, BrowserSession
+from models import PortalSsoRequest, PortalDesktopRequest, Website, WebsiteUser, User, PortalSsoLimit, AccountIdentityLink, BrowserSession
 @compiles(JSONB,'sqlite')
 def sqlite_json(type_,compiler,**kw): return 'JSON'
 class AsyncAdapter:
@@ -25,7 +25,7 @@ class AsyncAdapter:
 class SsoTests(unittest.TestCase):
     def setUp(self):
         self.engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
-        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalSsoLimit,AccountIdentityLink,BrowserSession]:model.__table__.create(self.engine)
+        for model in [User,Website,WebsiteUser,PortalSsoRequest,PortalDesktopRequest,PortalSsoLimit,AccountIdentityLink,BrowserSession]:model.__table__.create(self.engine)
         self.user_id=uuid.uuid4()
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO users(id,email,is_active,created_at,identity_data) VALUES (?,?,1,CURRENT_TIMESTAMP,'null')",(self.user_id.hex,'member@example.test'))
@@ -45,6 +45,39 @@ class SsoTests(unittest.TestCase):
         self.issue=patch.object(sso,'create_access_token',wraps=sso.create_access_token);self.issue_mock=self.issue.start()
     def tearDown(self):
         self.browser_claims.stop();self.issue.stop();self.decode.stop();self.settings.stop();self.client.close();self.db.close();self.engine.dispose()
+    def test_native_browser_handoff_requires_pkce_cookie_origin_and_one_use(self):
+        import base64,hashlib
+        verifier='v'*64
+        challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+        params={'redirect_uri':'http://127.0.0.1:49321/callback','code_challenge':challenge,'code_challenge_method':'S256','state':'s'*43}
+        started=self.client.get('/auth/sso/start',params=params)
+        self.assertEqual(started.status_code,200)
+        ticket=started.json()['request']
+        cookie=self.client.cookies.get(sso.BROWSER)
+        authorized=self.client.get(started.json()['authorization_url'])
+        callback=urlsplit(authorized.headers['location']);query=parse_qs(callback.query)
+        self.assertEqual(callback.netloc,'127.0.0.1:49321')
+        self.assertEqual(query['state'],['s'*43])
+        proof={'request':ticket,'code':query['code'][0],'code_verifier':verifier}
+        self.assertEqual(self.client.get('/auth/sso/complete',params=proof).status_code,400)
+        self.assertEqual(self.client.post('/auth/sso/complete',json={**proof,'code_verifier':'x'*64}).status_code,400)
+        self.assertEqual(self.client.post('https://two.example/auth/sso/complete',json=proof,headers={'cookie':sso.BROWSER+'='+cookie}).status_code,400)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.post('/auth/sso/complete',json=proof).status_code,400)
+        self.client.cookies.set(sso.BROWSER,cookie,domain='one.example',path='/')
+        finished=self.client.post('/auth/sso/complete',json=proof)
+        self.assertEqual(finished.status_code,303)
+        self.assertIn('HttpOnly',finished.headers['set-cookie'])
+        self.assertEqual(self.client.post('/auth/sso/complete',json=proof).status_code,400)
+        self.assertEqual(self.db.query(PortalDesktopRequest).count(),0)
+
+    def test_native_requests_reject_unsafe_or_incomplete_callbacks(self):
+        params={'redirect_uri':'http://127.0.0.1:49321/callback','code_challenge':'a'*43,'code_challenge_method':'S256','state':'s'*43}
+        for uri in ['https://evil.example/callback','http://localhost:49321/callback','http://127.0.0.1:49321/other','http://127.0.0.1:49321/callback?x=1','http://user@127.0.0.1:49321/callback','http://127.0.0.1:80/callback']:
+            self.assertEqual(self.client.get('/auth/sso/start',params={**params,'redirect_uri':uri}).status_code,400)
+        self.assertEqual(self.client.get('/auth/sso/start',params={**params,'code_challenge_method':'plain'}).status_code,400)
+        self.assertEqual(self.client.get('/auth/sso/start',params={**params,'state':'short'}).status_code,400)
+
     def test_prompt_select_account_and_fresh_login_preserve_context(self):
         started=self.client.get('/auth/sso/start',params={'prompt':'select_account'})
         self.assertEqual(started.status_code,303)

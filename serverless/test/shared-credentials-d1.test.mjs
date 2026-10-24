@@ -14,7 +14,7 @@ test('real local D1 batch migrates, rolls back late failure, and restores a back
   const config=join(dir,'wrangler.json');
   await writeFile(config,JSON.stringify({name:'migration-rehearsal',compatibility_date:'2026-06-03',d1_databases:[{binding:'DB',database_name:'isolated',database_id:'00000000-0000-0000-0000-000000000001'}]}));
   proxy=await getPlatformProxy({configPath:config,persist:false,remoteBindings:false,envFiles:[]});const db=proxy.env.DB;
-  for(const file of ['0001_initial.sql','0010_account_identity_links.sql','0009_portal_sso.sql','0013_browser_sessions.sql']){
+  for(const file of ['0001_initial.sql','0010_account_identity_links.sql','0009_portal_sso.sql','0013_browser_sessions.sql','0015_portal_desktop_auth.sql']){
    const sql=await readFile(new URL('../migrations/'+file,import.meta.url),'utf8');
    for(const statement of sql.replace(/^--.*$/gm,'').split(';').map(s=>s.trim()).filter(Boolean)) await db.prepare(statement).run();
   }

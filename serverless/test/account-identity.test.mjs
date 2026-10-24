@@ -8,6 +8,7 @@ import {resolveAccountIdentity} from '../src/accountIdentity.ts';
 function fixture(){
  const sql=new DatabaseSync(':memory:');
  for(const name of ['0001_initial.sql','0010_account_identity_links.sql','0009_portal_sso.sql','0013_browser_sessions.sql'])sql.exec(readFileSync(new URL(`../migrations/${name}`,import.meta.url),'utf8'));
+ sql.exec(readFileSync(new URL('../migrations/0015_portal_desktop_auth.sql',import.meta.url),'utf8'));
  sql.exec(`INSERT INTO users(id,email,full_name) VALUES ('person','same@example.test','Person'),('other','other@example.test','Other');
  INSERT INTO websites(id,owner_id,name,slug) VALUES ('site','other','Site','site');
  INSERT INTO website_users(id,website_id,email,full_name) VALUES ('member','site','same@example.test','Member');`);
