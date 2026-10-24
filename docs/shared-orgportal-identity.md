@@ -1,6 +1,6 @@
 # OrgPortal domain and shared-account migration plan
 
-**Decision: use `orgportal.cc` as the canonical public domain and consolidate
+**Decision: use `orgportal.cc` for the portal and `id.orgportal.cc` for isolated identity; consolidate
 portal credentials into primary PIdP accounts. Implementation remains disabled;
 this plan and its rehearsal do not authorize production cutover.** The checked-in
 configuration uses `PORTAL_SHARED_IDENTITY=false`, `PORTAL_SSO_APP_SLUG=orgportal`
@@ -16,10 +16,10 @@ owner of organizations, membership, permissions and tenant branding.
 | Public address | Responsibility |
 | --- | --- |
 | `https://orgportal.cc/` | Portal, communities and organization settings |
-| `https://orgportal.cc/pidp/app/login` | Central login and registration |
-| `https://orgportal.cc/pidp/profile` | PIdP identity/account entry point |
-| `https://orgportal.cc/pidp/auth/google/callback` | Google callback |
-| `https://orgportal.cc/pidp/auth/github/callback` | GitHub callback |
+| `https://id.orgportal.cc/app/login` | Central login and registration |
+| `https://id.orgportal.cc/profile` | PIdP identity/account entry point |
+| `https://id.orgportal.cc/auth/google/callback` | Google callback |
+| `https://id.orgportal.cc/auth/github/callback` | GitHub callback |
 | `https://orgportal.cc/api/org/*` | Organization API |
 | `https://orgportal.cc/api/chat/*` | Chat HTTP API; verify WebSocket routing separately |
 | `https://orgportal.cc/mcp` | Agent resource |
@@ -27,10 +27,9 @@ owner of organizations, membership, permissions and tenant branding.
 | `https://orgportal.cc/.well-known/oauth-authorization-server` | Issuer discovery |
 | `https://orgportal.cc/.well-known/jwks.json` | Public signing keys |
 
-The canonical MCP issuer is `https://orgportal.cc` (no `/pidp` suffix). Identity
-pages live under `/pidp`; OAuth protocol endpoints remain at the domain root.
-`id.orgportal.cc` and `id.codecollective.us` are retirement targets, not new login
-destinations. Do not create a second identity database or independent token issuer.
+The target identity issuer is `https://id.orgportal.cc`. Identity pages and OAuth
+protocol endpoints use that separate origin. `id.codecollective.us` and same-origin
+primary login pages are retirement targets. Do not create a second identity database or independent token issuer.
 Tenant domains retain their branding and initiate validated browser-bound SSO at
 the central login; their own host-only sessions remain scoped to each tenant.
 
@@ -148,7 +147,10 @@ There is no automatic post-cutover reverse migration. Do not approve a rollout
 without an agreed maintenance window and recovery procedure.
 
 
-## Local rehearsal: 2026-10-24
+## Earlier same-origin rehearsal: 2026-10-24
+
+This historical rehearsal is superseded for browser-origin isolation by the
+separate-origin local deployment below.
 
 The adopted domain plan was rehearsed without changing active identity data,
 production DNS/routes, provider registrations or the shared-identity feature flag.
@@ -196,3 +198,21 @@ Remaining cutover evidence: deployed issuer/client inventory, verified primary
 access for affected people, real provider registrations, first-party settings and
 sign-in link inventory, required client reconnection, live WebSocket checks,
 maintenance-window backup/restore and owning-service release acceptance.
+
+
+## Separate-origin local deployment
+
+Portal: `https://localhost:8443`. Identity: `https://id.localhost:8443`.
+The same gateway terminates TLS using certificates covering both hosts; the host
+boundary, not the port, provides isolation. Primary account pages are never
+proxied into the portal origin. The portal exposes only tenant-session and
+browser-bound SSO endpoints. Identity cookies stay host-only on `id.localhost`;
+tenant cookies stay on the portal. Identity CORS excludes the portal origin.
+A portal script must fail to read the signed-in identity response, while normal
+navigation and validated SSO remain functional. Account consolidation is still a
+separate data operation; changing the local origins does not apply it.
+
+Production domain/provider/issuer changes require the owning release and are not
+performed by this local activation. Reconnect clients if their issuer changes;
+never relabel grants or tokens. All first-party identity links and provider
+registrations must use `id.orgportal.cc` at cutover.

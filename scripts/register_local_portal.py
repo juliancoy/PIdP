@@ -15,7 +15,7 @@ from local_admin import provision_local_admin
 
 async def register():
     origin = urlsplit(settings.public_base_url or '')
-    if origin.hostname not in {'localhost', '127.0.0.1', '::1', '192.168.50.141'}:
+    if origin.hostname not in {'localhost', 'id.localhost', '127.0.0.1', '::1', '192.168.50.141'}:
         raise RuntimeError('Local portal registration requires the configured local machine address.')
     slug = settings.portal_sso_app_slug
     if not slug:
@@ -50,7 +50,7 @@ async def register():
             website.allowed_redirect_origins = list(dict.fromkeys([*(website.allowed_redirect_origins or []), f'{origin.scheme}://{origin.netloc}']))
             await session.commit()
             print(f'Local portal application updated: {slug}')
-        if origin.hostname in {'localhost', '127.0.0.1', '::1'}:
+        if origin.hostname in {'localhost', 'id.localhost', '127.0.0.1', '::1'}:
             admin = await provision_local_admin(session)
             print(f'Local administrator provisioned: {admin.email}')
 
