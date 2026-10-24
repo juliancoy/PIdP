@@ -41,7 +41,7 @@ from urllib.parse import quote, urlencode, urlparse, parse_qs
 from config import settings
 from db import SessionLocal, engine, get_session
 from encrypted_json import validate_pii_encryption_config
-from models import Base, SystemSetting, User, UserAPIToken, Website, WebsiteUser
+from models import Base, SystemSetting, User, UserAPIToken, Website, WebsiteUser, AccountIdentityLink
 from mcp_authorization import (
     OAuthError as McpOAuthError,
     configuration as mcp_oauth_configuration,
@@ -865,11 +865,15 @@ PERSONAL_PROFILE_FIELDS.update({"avatar_object_key", "avatar_source"})
 
 
 async def _linked_personal_owner(member: WebsiteUser, session: AsyncSession) -> User | None:
-    identity = await resolve_account_identity(session, f'website:{member.website_id}:{member.id}')
-    if identity['canonical_user_id'] == str(member.id):
+    link = (await session.execute(select(AccountIdentityLink).where(
+        AccountIdentityLink.subject == f'website:{member.website_id}:{member.id}'))).scalar_one_or_none()
+    if not link:
         return None
-    result = await session.execute(select(User).where(User.id == UUID(identity['canonical_user_id'])))
-    return result.scalar_one_or_none()
+    result = await session.execute(select(User).where(User.id == link.canonical_user_id, User.is_active.is_(True)))
+    owner = result.scalar_one_or_none()
+    if not owner:
+        raise HTTPException(401, 'Inactive linked identity')
+    return owner
 
 
 async def _member_profile_public(member: WebsiteUser, session: AsyncSession) -> UserPublic:

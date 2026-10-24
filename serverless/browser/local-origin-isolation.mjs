@@ -25,7 +25,7 @@ from models import User,Website,WebsiteUser,AccountIdentityLink
 async def main():
  async with SessionLocal() as s:
   site=(await s.execute(select(Website).where(Website.slug=='orgportal'))).scalar_one()
-  owner,member=uuid.uuid4(),uuid.uuid4();email='origin-'+owner.hex+'@example.test'
+  owner,member=uuid.uuid4(),uuid.uuid4();email='origin-'+owner.hex+'@example.com'
   s.add(User(id=owner,email=email,hashed_password='pbkdf2_sha256$210000$efQSdVLVMvIxidzzHSLpXA$4mwDckrnGHdzvix9cXdz7N5TBJ-N1JcfDceuLVPGCyE',identity_data={'email_verified':True}))
   await s.flush()
   s.add(WebsiteUser(id=member,website_id=site.id,email=email,hashed_password=None,identity_data={'email_verified':True}))
@@ -54,7 +54,11 @@ asyncio.run(main())
  assert.equal((await context.request.get('https://localhost:8443/pidp/auth/session')).status(),200);
  const portalCookie=(await context.cookies('https://localhost:8443')).find(c=>c.name==='pidp_token');assert.ok(portalCookie&&portalCookie.domain==='localhost');assert.notEqual(portalCookie.value,identityCookie.value);
  const claims=JSON.parse(Buffer.from(portalCookie.value.split('.')[1],'base64url'));assert.equal(claims.actor_type,'website_user');assert.equal(claims.sub,fixture.member);
- const report=process.env.IDENTITY_ORIGIN_REPORT;if(report){mkdirSync(report,{recursive:true});writeFileSync(report+'/browser.json',JSON.stringify({status:'passed',portal:'https://localhost:8443',identity:'https://id.localhost:8443',identity_cookie_host_only:true,portal_cookie_host_only:true,portal_cannot_read_identity:true,portal_cannot_proxy_account_pages:true,tenant_sso:true,tenant_subject_preserved:true},null,2));}
+ await page.waitForLoadState('networkidle');
+ const access=await context.request.get('https://localhost:8443/pidp/auth/session-token');assert.equal(access.status(),200);const apiToken=(await access.json()).access_token;
+ const role=await context.request.get('https://localhost:8443/api/org/admin/me',{headers:{Authorization:'Bearer '+apiToken}});assert.equal(role.status(),200);assert.equal((await role.json()).is_sysadmin,false);
+ assert.equal((await context.request.get('https://localhost:8443/api/org/admin/mcp/status',{headers:{Authorization:'Bearer '+apiToken}})).status(),403);
+ const report=process.env.IDENTITY_ORIGIN_REPORT;if(report){mkdirSync(report,{recursive:true});writeFileSync(report+'/browser.json',JSON.stringify({status:'passed',portal:'https://localhost:8443',identity:'https://id.localhost:8443',identity_cookie_host_only:true,portal_cookie_host_only:true,portal_cannot_read_identity:true,portal_cannot_proxy_account_pages:true,tenant_sso:true,tenant_subject_preserved:true,shared_primary_login:true,administrator_access_denied:true},null,2));}
  }finally{
  await browser?.close();
  if(fixture)python(`import asyncio

@@ -230,6 +230,23 @@ class ProfileSelfServiceTests(unittest.TestCase):
             response=asyncio.run(self.main._session_redirect(request,'org.arkavo.portal://auth/callback','fixture-session',None))
             self.assertIn('token=fixture-session',response.headers['location'])
 
+    def test_consolidated_matching_ids_update_primary_profile_only(self):
+        from models import AccountIdentityLink
+        self.db.add(AccountIdentityLink(subject=f'website:{self.site_id}:{self.member_id}',
+            canonical_user_id=self.member_id, website_id=self.site_id,
+            website_user_id=self.member_id, linked_at='now'))
+        self.db.commit()
+        response = self.client.put('/auth/me', headers={'Authorization': 'Bearer fixture'},
+            json={'full_name': 'Shared name', 'bio': 'Shared biography'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['full_name'], 'Shared name')
+        owner = self.db.get(self.User, self.member_id)
+        member = self.db.get(self.WebsiteUser, self.member_id)
+        self.assertEqual(owner.full_name, 'Shared name')
+        self.assertEqual(owner.identity_data['bio'], 'Shared biography')
+        self.assertEqual(member.full_name, 'Member')
+        self.assertEqual(member.identity_data['roles'], ['member'])
+
     def test_account_link_api_requires_proofs_and_a_one_use_preview(self):
         member = self.db.get(self.WebsiteUser, self.member_id)
         secondary_id = uuid4()
