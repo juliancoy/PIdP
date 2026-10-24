@@ -15,4 +15,3 @@ itsdangerous
 boto3
 jinja2
 mcp
--e ..

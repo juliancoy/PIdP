@@ -22,25 +22,53 @@ export async function migrateSharedCredentials(db, {
   return {app: appSlug, ...counts, applied: true};
 }
 
-// Local operator entrypoint. Remote bindings are deliberately disabled.
+// Offline local SQLite copy only: no network or runtime startup is involved.
 if (process.argv[1] && import.meta.url === (await import('node:url')).pathToFileURL(process.argv[1]).href) {
   const {parseArgs} = await import('node:util');
   const {resolve} = await import('node:path');
-  const {getPlatformProxy} = await import('wrangler');
+  const {existsSync} = await import('node:fs');
+  const {DatabaseSync, backup} = await import('node:sqlite');
+  const {stripJsoncComments} = await import('./deploy.mjs');
   const {values} = parseArgs({options: {
-    config: {type:'string'}, state: {type:'string'}, app: {type:'string'},
-    apply: {type:'boolean', default:false},
+    config: {type:'string'}, database: {type:'string'}, app: {type:'string'},
+    backup: {type:'string'}, apply: {type:'boolean', default:false},
     'writes-paused': {type:'boolean', default:false},
-    'backup-verified': {type:'boolean', default:false},
   }});
-  if (!values.config || !values.state || !values.app) throw new Error('Required: --config PATH --state PATH --app SLUG');
-  const proxy = await getPlatformProxy({configPath:resolve(values.config),
-    persist:{path:resolve(values.state)}, remoteBindings:false, envFiles:[]});
+  if (!values.config || !values.database || !values.app) throw new Error('Required: --config PATH --database PATH --app SLUG');
+  if (!existsSync(values.database)) throw new Error('Database must be an existing offline SQLite copy');
+  if (values.apply && (!values['writes-paused'] || !values.backup || existsSync(values.backup))) {
+    throw new Error('Apply requires --writes-paused and --backup NEW_PATH');
+  }
+  const config=JSON.parse(stripJsoncComments(readFileSync(values.config,'utf8')));
+  if (!values.app || values.app !== config.vars?.PORTAL_SSO_APP_SLUG || config.vars?.PORTAL_SHARED_IDENTITY !== 'false') {
+    throw new Error('Target must match the disabled shared-identity configuration');
+  }
+  const database=new DatabaseSync(resolve(values.database),{readOnly:!values.apply});
   try {
-    console.log(JSON.stringify(await migrateSharedCredentials(proxy.env.DB, {
-      appSlug:values.app, configuredAppSlug:proxy.env.PORTAL_SSO_APP_SLUG,
-      sharedIdentity:proxy.env.PORTAL_SHARED_IDENTITY === 'false' ? false : undefined,
-      apply:values.apply, writesPaused:values['writes-paused'], backupVerified:values['backup-verified'],
+    database.exec('PRAGMA foreign_keys=ON');
+    if (values.apply) {
+      const mask=process.umask(0o077);
+      try {await backup(database,resolve(values.backup));} finally {process.umask(mask);}
+    }
+    const db={prepare(query){
+      const numbered=query.includes('?1');
+      const statement=database.prepare(query.replaceAll('?1','?'));
+      return {bind(...args){
+        const params=numbered ? Array((query.match(/\?1/g)||[]).length).fill(args[0]) : args;
+        return {
+          async first(){return statement.get(...params)||null;},
+          async run(){return statement.all(...params);},
+        };
+      }};
+    },async batch(statements){
+      database.exec('BEGIN IMMEDIATE');
+      try {for(const statement of statements)await statement.run();database.exec('COMMIT');}
+      catch(error){database.exec('ROLLBACK');throw error;}
+    }};
+    console.log(JSON.stringify(await migrateSharedCredentials(db, {
+      appSlug:values.app, configuredAppSlug:config.vars.PORTAL_SSO_APP_SLUG,
+      sharedIdentity:false, apply:values.apply,
+      writesPaused:values['writes-paused'], backupVerified:Boolean(values.backup),
     })));
-  } finally { await proxy.dispose(); }
+  } finally {database.close();}
 }

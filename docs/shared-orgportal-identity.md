@@ -48,16 +48,20 @@ transactional `DB.batch`; any failed guard rolls back all statements. Do not run
 `docs/proposals/0012_shared_orgportal_credentials.sql` directly or split it into
 independent remote calls. The helper is operator-only and has no public endpoint.
 
-A local-only operator command is available from `serverless/`:
+An offline SQLite operator command is available from `serverless/` (Node 24+):
 
 ```sh
-node scripts/migrate-shared-credentials.mjs --config wrangler.jsonc --state /absolute/path/to/isolated-d1-state --app orgportal
-# Append --apply --writes-paused --backup-verified for an authorized isolated apply.
+node scripts/migrate-shared-credentials.mjs --config wrangler.jsonc --database /absolute/path/to/isolated.sqlite --app orgportal
+# Append --apply --writes-paused --backup /absolute/path/to/new-backup.sqlite for an isolated apply.
 ```
 
-The CLI disables remote bindings, requires explicit state/config paths, and does
-not read `.env` files. It never contacts production D1. Use an isolated state copy;
-it does not create a backup or place a running application into maintenance.
+The CLI opens only an existing offline SQLite copy, checks the explicit config,
+and creates a consistent private SQLite backup before apply. It performs no
+network requests and does not read `.env` files. Stop the local runtime before
+copying its SQLite database, including its WAL, or use a consistent SQLite backup.
+Never point it at a running runtime database. It does not place an application
+into maintenance; writes must remain paused through cutover. D1 bindings use the
+transactional batch helper above; this CLI rehearses exported/local SQLite copies.
 
 ## Cutover gates
 

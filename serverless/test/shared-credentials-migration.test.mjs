@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DatabaseSync} from 'node:sqlite';
+import {DatabaseSync, backup} from 'node:sqlite';
+import {mkdtempSync, writeFileSync, copyFileSync, rmSync, statSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {spawnSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 const migration=readFileSync(new URL('../../docs/proposals/0012_shared_orgportal_credentials.sql',import.meta.url),'utf8');
 function fixture(){
@@ -36,4 +41,27 @@ test('a primary account without provider metadata is still an email-only collisi
  db.exec("UPDATE users SET provider=NULL,provider_account_id=NULL WHERE id='primary'; INSERT INTO website_users(id,website_id,email,provider,provider_account_id) VALUES('collision','shared','same@test','google','subject')");
  assert.throws(()=>apply(db));assert.equal(db.prepare('SELECT count(*) n FROM account_identity_links').get().n,0);
  }finally{db.close()}
+});
+
+
+test('offline operator CLI creates a private restorable backup and rejects overwrites',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'identity-cli-'));const original=fixture();
+ try {
+  original.exec("INSERT INTO website_users(id,website_id,email,hashed_password) VALUES('new','shared','new@test','member-hash')");
+  const database=join(dir,'copy.sqlite'),saved=join(dir,'backup.sqlite'),config=join(dir,'config.json');
+  await backup(original,database);
+  writeFileSync(config,JSON.stringify({vars:{PORTAL_SHARED_IDENTITY:'false',PORTAL_SSO_APP_SLUG:'code-collective'}}));
+  const command=[fileURLToPath(new URL('../scripts/migrate-shared-credentials.mjs',import.meta.url)),'--config',config,'--database',database,'--app','code-collective'];
+  const call=(extra=[])=>spawnSync(process.execPath,[...command,...extra],{encoding:'utf8',timeout:15000});
+  const preview=call();assert.equal(preview.status,0,preview.stderr);assert.equal(JSON.parse(preview.stdout).applied,false);
+  const flags=['--apply','--writes-paused','--backup',saved];
+  const applied=call(flags);assert.equal(applied.status,0,applied.stderr);assert.equal(JSON.parse(applied.stdout).applied,true);
+  assert.equal(statSync(saved).mode&0o777,0o600);
+  const migrated=new DatabaseSync(database);
+  try {assert.equal(migrated.prepare("SELECT hashed_password FROM website_users WHERE id='new'").get().hashed_password,null);} finally {migrated.close();}
+  assert.notEqual(call(flags).status,0);
+  copyFileSync(saved,database);
+  const restored=new DatabaseSync(database);
+  try {assert.equal(restored.prepare("SELECT hashed_password FROM website_users WHERE id='new'").get().hashed_password,'member-hash');assert.equal(restored.prepare("SELECT id FROM users WHERE id='new'").get(),undefined);}finally{restored.close();}
+ } finally {original.close();rmSync(dir,{recursive:true,force:true});}
 });

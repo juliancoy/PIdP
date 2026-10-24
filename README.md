@@ -172,6 +172,10 @@ PIdP uses container-level environment separation:
 - `pidp-dev` serves development traffic (`dev.pidp.<domain>`) from local source with reload.
 - Both containers share the same Postgres auth/data model.
 
+The API runtime requirements are standalone. Host-side Docker launchers use the
+shared workspace package; install it separately with `python -m pip install -e ..`
+from this checkout. It is not an API-container dependency.
+
 ## Quickstart
 
 1. Create a virtual environment and install dependencies.
