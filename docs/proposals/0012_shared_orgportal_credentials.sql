@@ -1,22 +1,29 @@
 -- DRAFT for separate review and authorization; not an automatic release migration.
 -- Legacy subjects remain aliases.
 -- An email-only collision must never establish account ownership.
+-- Execute only through the atomic D1 batch helper; ?1 is the configured app slug.
+SELECT CASE WHEN (SELECT count(*) FROM websites WHERE slug=?1)<>1
+ OR EXISTS (SELECT lower(m.email) FROM website_users m JOIN websites w ON w.id=m.website_id
+ WHERE w.slug=?1 GROUP BY lower(m.email) HAVING count(*)>1)
+ OR EXISTS (SELECT lower(email) FROM users GROUP BY lower(email) HAVING count(*)>1)
+ THEN json('Missing application or ambiguous email') ELSE 1 END;
+
 SELECT CASE WHEN EXISTS (
  SELECT 1 FROM website_users m JOIN websites w ON w.id=m.website_id
  LEFT JOIN account_identity_links l ON l.website_user_id=m.id AND l.website_id=m.website_id
  LEFT JOIN users u ON lower(u.email)=lower(m.email)
- WHERE w.slug='code-collective' AND l.subject IS NULL AND u.id IS NOT NULL
+ WHERE w.slug=?1 AND l.subject IS NULL AND u.id IS NOT NULL
  AND NOT COALESCE(m.provider IS NOT NULL AND m.provider_account_id IS NOT NULL
    AND m.provider_account_id<>'' AND u.provider=m.provider AND u.provider_account_id=m.provider_account_id,0)
 ) OR EXISTS (
  SELECT 1 FROM website_users m JOIN websites w ON w.id=m.website_id
- JOIN users u ON u.id=m.id WHERE w.slug='code-collective' AND lower(u.email)<>lower(m.email)
+ JOIN users u ON u.id=m.id WHERE w.slug=?1 AND lower(u.email)<>lower(m.email)
 ) THEN json('Unverified legacy account collision') ELSE 1 END;
 
 INSERT INTO users(id,email,hashed_password,full_name,provider,provider_account_id,identity_data,is_active,created_at)
 SELECT m.id,m.email,m.hashed_password,m.full_name,m.provider,m.provider_account_id,m.identity_data,m.is_active,m.created_at
 FROM website_users m JOIN websites w ON w.id=m.website_id
-WHERE w.slug='code-collective'
+WHERE w.slug=?1
  AND NOT EXISTS(SELECT 1 FROM account_identity_links l WHERE l.website_user_id=m.id AND l.website_id=m.website_id)
  AND NOT EXISTS(SELECT 1 FROM users u WHERE lower(u.email)=lower(m.email));
 
@@ -25,20 +32,17 @@ SELECT 'website:'||m.website_id||':'||m.id,u.id,m.website_id,m.id,strftime('%Y-%
 FROM website_users m JOIN websites w ON w.id=m.website_id
 JOIN users u ON u.id=m.id OR (u.provider=m.provider AND u.provider_account_id=m.provider_account_id
  AND m.provider_account_id IS NOT NULL AND m.provider_account_id<>'' AND lower(u.email)=lower(m.email))
-WHERE w.slug='code-collective'
+WHERE w.slug=?1
  AND NOT EXISTS(SELECT 1 FROM account_identity_links l WHERE l.website_user_id=m.id AND l.website_id=m.website_id);
 
 SELECT CASE WHEN EXISTS (
  SELECT 1 FROM website_users m JOIN websites w ON w.id=m.website_id
  LEFT JOIN account_identity_links l ON l.website_user_id=m.id AND l.website_id=m.website_id
  LEFT JOIN users u ON u.id=l.canonical_user_id
- WHERE w.slug='code-collective' AND (u.id IS NULL OR
- (m.hashed_password IS NOT NULL AND u.hashed_password IS NOT NULL AND m.hashed_password<>u.hashed_password))
+ WHERE w.slug=?1 AND (u.id IS NULL OR
+ m.is_active<>u.is_active)
 ) THEN json('Legacy credential migration incomplete or conflicting') ELSE 1 END;
 
-UPDATE users SET hashed_password=COALESCE(hashed_password,(
- SELECT m.hashed_password FROM website_users m JOIN account_identity_links l ON l.website_user_id=m.id AND l.website_id=m.website_id
- JOIN websites w ON w.id=m.website_id WHERE w.slug='code-collective' AND l.canonical_user_id=users.id AND m.hashed_password IS NOT NULL LIMIT 1
-)) WHERE id IN (SELECT l.canonical_user_id FROM account_identity_links l JOIN websites w ON w.id=l.website_id WHERE w.slug='code-collective');
-
-UPDATE website_users SET hashed_password=NULL WHERE website_id IN (SELECT id FROM websites WHERE slug='code-collective');
+-- Existing primary credentials remain authoritative. Never add a member password
+-- to an existing primary account; new accounts already received their password.
+UPDATE website_users SET hashed_password=NULL WHERE website_id IN (SELECT id FROM websites WHERE slug=?1);

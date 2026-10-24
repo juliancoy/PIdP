@@ -10,7 +10,7 @@ function fixture(){
  INSERT INTO websites(id,owner_id,name,slug) VALUES('shared','operator','OrgPortal','code-collective'),('other','operator','Other','other');`);
  return db;
 }
-function apply(db){db.exec('BEGIN');try{db.exec(migration);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}}
+function apply(db){db.exec('BEGIN');try{db.exec(migration.replaceAll("?1", "'code-collective'"));db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}}
 test('migration preserves IDs and provider identities, moves passwords once and retains subject aliases',()=>{
  const db=fixture();try{
  db.exec(`INSERT INTO website_users(id,website_id,email,hashed_password,provider,provider_account_id) VALUES('new','shared','new@test','hash','github','new-subject'),('old','shared','same@test',NULL,'google','verified-provider-subject'),('unrelated','other','other@test','untouched',NULL,NULL);`);

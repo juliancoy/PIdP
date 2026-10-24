@@ -1,45 +1,90 @@
 # Proposed shared OrgPortal identity migration
 
-**Status: proposal only.** This migration has not been applied or enabled. The
-current production identity URL is `https://orgportal.cc/pidp`; the proposed
-`id.orgportal.cc` endpoint below is not the current deployment. The SQL is kept
-outside `serverless/migrations` so ordinary deployment cannot apply it. Review
-account ownership, collisions, runtime parity and rollback before authorizing it.
+**Status: disabled; not authorized for production application.** The checked-in
+configuration uses `PORTAL_SHARED_IDENTITY=false`, `PORTAL_SSO_APP_SLUG=orgportal`
+and `PUBLIC_BASE_URL=https://orgportal.cc/pidp`. This document describes a future
+cutover, not evidence of deployed settings or database state.
 
-The proposed design would let OrgPortal and its communities use one PIdP primary account and one sign-in screen
-at `https://id.orgportal.cc`. PIdP continues to own passwords, social provider
-credentials, recovery, sessions, profile and connected-app grants. Tenant sites
-start a validated browser-bound SSO handoff and receive their own host-only session;
-they do not run a separate credential registration or login screen.
+## Account consolidation
 
-Only after a separate migration review and authorization, enable `PORTAL_SHARED_IDENTITY=true` with `PORTAL_SSO_APP_SLUG=code-collective`.
-The historical slug is retained as an application/subject alias. It does not select
-a credential store. Shared-app password and social sign-in use primary accounts.
-Unrelated registered PIdP applications retain their own namespace behavior.
+Consolidation changes the credential store, not the login hostname. Keep the
+current public base URL, provider callback URLs, issuer, keys, database and tenant
+same-origin `/pidp` proxies throughout this migration. A later hostname move must
+have its own review and rollout; `id.orgportal.cc` is not required here.
 
-Draft SQL at `docs/proposals/0012_shared_orgportal_credentials.sql` would consolidate existing
-shared members. Python deployments use `python scripts/migrate_shared_credentials.py`
-for a count-only preview, then `--apply` in one transaction. New primary accounts
-retain the member ID. Existing verified links remain authoritative. An operator-run
-migration can reconcile an existing primary account when both records contain the
-same provider and immutable provider subject; an email-only collision aborts.
-Competing password hashes abort. Passwords move to `users`; member rows remain as
-subject aliases for active sessions and OAuth grants. No primary account is given
-an administrator designation by this migration.
+The target must equal the deployment's configured `PORTAL_SSO_APP_SLUG`. Never
+substitute a historical slug. A missing target aborts. Case-insensitive email
+collisions, duplicate emails, missing linked accounts, ID collisions and differing
+active states require operator resolution. Email alone never proves ownership;
+existing verified links or matching immutable provider identities establish links.
+Do not reactivate disabled accounts or infer administrator access.
 
-SSO emits an existing linked member subject when present, preserving its domain
-permissions and membership context. Otherwise a primary identity can enter the
-portal without creating a second account. Membership and administrator permission
-remain independently checked by OrgPortal. OAuth consent still requires approval.
+New primary accounts retain member IDs and credentials. Existing primary accounts
+keep their own credentials, including a missing password: a member password must
+not create an additional login method on an existing primary account. Differing
+password hashes do not establish differing passwords. Users with existing primary
+accounts use those credentials or PIdP's existing recovery flow. Member passwords
+are cleared on apply; member rows and subject aliases remain. Communicate the
+credential change to affected users before cutover.
 
-The original Worker, D1 database, keys and old OAuth issuer/endpoints remain in
-place for existing connected applications. `id.codecollective.us` remains a
-compatibility endpoint. Provider redirect URIs registered at Google/GitHub remain
-on that hostname; the validated callback is forwarded to the browser at
-`id.orgportal.cc` before its code is exchanged. Registering new provider callback
-URLs can retire that compatibility dependency in a later provider configuration
-change. Do not deploy a second database or copy signing/provider secrets.
+Python deployments run from the PIdP root with the deployment's configuration:
 
-Deploy PIdP and apply the identity migration before deploying the portal sign-in
-redirects. Preserve deployed bindings, including MCP resources and provider secrets.
-OrgPortal owns its frontend release; use the OrgPortal repository release workflow.
+```sh
+PYTHONPATH=. python scripts/migrate_shared_credentials.py --app orgportal
+# Only after the rollout gates below:
+PYTHONPATH=. python scripts/migrate_shared_credentials.py --app orgportal --apply --writes-paused --backup-verified
+```
+
+Python apply locks the identity tables and executes planning and writes in one
+PostgreSQL transaction. Preview performs no writes; it is not a concurrency lock.
+
+For D1, use `serverless/scripts/migrate-shared-credentials.mjs`'s exported
+`migrateSharedCredentials(db, options)` with the actual deployment D1 binding.
+Supply `appSlug`, `configuredAppSlug` and boolean `sharedIdentity` from verified
+configuration. Default behavior returns counts only, not a collision audit. Apply
+requires `apply: true`, `writesPaused: true` and `backupVerified: true`.
+The helper binds the target slug and submits the complete draft SQL through one
+transactional `DB.batch`; any failed guard rolls back all statements. Do not run
+`docs/proposals/0012_shared_orgportal_credentials.sql` directly or split it into
+independent remote calls. The helper is operator-only and has no public endpoint.
+
+A local-only operator command is available from `serverless/`:
+
+```sh
+node scripts/migrate-shared-credentials.mjs --config wrangler.jsonc --state /absolute/path/to/isolated-d1-state --app orgportal
+# Append --apply --writes-paused --backup-verified for an authorized isolated apply.
+```
+
+The CLI disables remote bindings, requires explicit state/config paths, and does
+not read `.env` files. It never contacts production D1. Use an isolated state copy;
+it does not create a backup or place a running application into maintenance.
+
+## Cutover gates
+
+1. Inventory the exact target, account links, case-insensitive collisions, disabled
+   accounts, affected primary credentials and outstanding grants. Resolve ambiguous
+   ownership using authenticated proof, not email matching.
+2. Verify a consistent backup and rehearse restoring it in isolation. Pause all
+   identity writes and keep login traffic in maintenance through apply and flag
+   activation; keep the same application slug in PIdP and OrgPortal.
+3. Apply to an isolated restored database first. With explicit test authorization,
+   check password/social login, recovery, disabled accounts, old sessions, OAuth
+   grants, tenant isolation and organization/admin permission denials in both
+   runtimes. Existing subjects must retain their permissions without escalation.
+4. After explicit production authorization, back up again, apply atomically while
+   writes are paused, and enable shared identity only after successful migration.
+   Resume traffic only after the authorized acceptance checks pass. A zero-member
+   inventory requires explanation; it does not prove migration success.
+
+## Rollback
+
+Turning the flag off is insufficient: member password hashes were removed.
+Before reopening traffic, restore the complete pre-cutover identity database and
+matching configuration while writes remain paused. A SQL failure inside the batch
+or Python transaction needs no data restore, but verify rollback before retrying.
+
+If writes have resumed, restoring the backup can lose registrations, password
+changes, revocations and links created after it. Re-enter maintenance and reconcile
+those changes before any restore; do not overwrite live identity state blindly.
+There is no automatic post-cutover reverse migration. Do not approve a rollout
+without an agreed maintenance window and recovery procedure.

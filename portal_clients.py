@@ -102,4 +102,4 @@ def browser_return(value, issuer, extra_origins=()):
 
 
 def shared_identity(app):
-    return settings.portal_shared_identity and (not app or app == settings.portal_sso_app_slug)
+    return settings.portal_shared_identity and app == settings.portal_sso_app_slug
