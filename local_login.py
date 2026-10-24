@@ -8,7 +8,7 @@ from config import settings
 
 
 def local_login_enabled(request):
-    loopback = {'localhost', '127.0.0.1', '::1'}
+    loopback = {'localhost', 'id.localhost', '127.0.0.1', '::1'}
     # Docker forwards host-local connections with its bridge gateway as source.
     if Path('/.dockerenv').exists():
         for line in Path('/proc/net/route').read_text().splitlines()[1:]:

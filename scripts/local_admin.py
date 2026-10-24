@@ -7,7 +7,7 @@ from models import User
 
 
 async def provision_local_admin(session):
-    if settings.env != 'dev' or urlsplit(settings.public_base_url or '').hostname not in {'localhost', '127.0.0.1', '::1'}:
+    if settings.env != 'dev' or urlsplit(settings.public_base_url or '').hostname not in {'localhost', 'id.localhost', '127.0.0.1', '::1'}:
         raise RuntimeError('Administrator provisioning requires a local development deployment.')
     owner_id = uuid5(NAMESPACE_URL, 'orgportal:local-developer-admin')
     if str(owner_id) not in settings.admin_user_ids_list:

@@ -23,7 +23,7 @@ from local_admin import provision_local_admin
 async def main():
     if os.environ.get('ORGPORTAL_LOCAL_DEVELOPER_SESSION') != '1':
         raise RuntimeError('Use the host-side local-login command.')
-    if urlsplit(settings.public_base_url or '').hostname not in {'localhost', '127.0.0.1', '::1'}:
+    if urlsplit(settings.public_base_url or '').hostname not in {'localhost', 'id.localhost', '127.0.0.1', '::1'}:
         raise RuntimeError('Developer sessions require a loopback identity deployment.')
     try:
         async with SessionLocal() as session:
