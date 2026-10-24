@@ -7,6 +7,7 @@ function adapter(sql) { return {prepare(q){return {bind(...v){return {async firs
 
 test('bounded temporary expiry preserves live rows, grants and replay evidence',async()=>{
  const sql=new DatabaseSync(':memory:');
+ sql.exec('CREATE TABLE oauth_live_statistics(day TEXT)');
  sql.exec('CREATE TABLE browser_sessions(id TEXT PRIMARY KEY, expires_at INTEGER)');
  const tables=['mcp_oauth_requests','mcp_oauth_codes','mcp_oauth_logins','oauth_states','portal_sso_requests','account_identity_link_previews','account_identity_link_requests'];
  for(const table of tables)sql.exec(`CREATE TABLE ${table}(id TEXT PRIMARY KEY,expires_at INTEGER)`);

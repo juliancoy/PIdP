@@ -5,6 +5,7 @@ import unittest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 import mcp_authorization
+import oauth_statistics
 from models import Base, BrowserSession
 from retention import run_retention
 
@@ -18,7 +19,7 @@ class RetentionTest(unittest.IsolatedAsyncioTestCase):
                 'mcp_oauth_requests', 'mcp_oauth_codes', 'mcp_oauth_logins',
                 'portal_sso_requests', 'account_identity_link_previews',
                 'account_identity_link_requests', 'portal_sso_limits',
-                'mcp_oauth_registration_limits')]
+                'mcp_oauth_registration_limits','oauth_live_statistics')]
             await connection.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
             await connection.execute(text('CREATE TABLE browser_sessions(id_hash TEXT PRIMARY KEY, expires_at INTEGER)'))
         async with AsyncSession(engine) as session:

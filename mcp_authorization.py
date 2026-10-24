@@ -589,6 +589,8 @@ async def handle(request, endpoint, db):
         rows = await query(db, 'DELETE FROM mcp_oauth_requests WHERE id = :id AND session_hash = :hash AND subject = :subject AND expires_at >= :now RETURNING *',
             id=digest(p.get('request', '')), hash=actor['hash'], subject=actor['subject'], now=now)
         if not rows:
+            if 'text/html' in request.headers.get('accept',''):
+                return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Permissions review expired or invalid</title><main><h1>Permissions review expired or invalid</h1><p>This permissions review can no longer be used. Return to your MCP client and start a new connection.</p></main></html>',status_code=400,headers=HEADERS)
             raise OAuthError('invalid_request')
         row = rows[0]
         client = await get_client(db, cfg, row['client_id'])

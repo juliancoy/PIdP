@@ -48,7 +48,9 @@
     "GOOGLE_CALENDAR_REDIRECT_URI": "",
     "MICROSOFT_REDIRECT_URI": "",
     "MICROSOFT_CALENDAR_REDIRECT_URI": "",
-    "GITHUB_REDIRECT_URI": "https://orgportal.cc/pidp/auth/github/callback"
+    "GITHUB_REDIRECT_URI": "https://orgportal.cc/pidp/auth/github/callback",
+    "EMAIL_FROM": "verification@notify.orgportal.cc",
+    "EMAIL_VERIFICATION_REQUIRED": "true"
   },
   "d1_databases": [
     {
@@ -61,6 +63,14 @@
     {
       "binding": "AVATARS",
       "bucket_name": "pidp-avatars"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": [
+        "verification@notify.orgportal.cc"
+      ]
     }
   ]
 }

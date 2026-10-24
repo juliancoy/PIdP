@@ -69,6 +69,13 @@
             <div class="status error">{{ app_lookup_error }}</div>
         {% endif %}
 
+        {% if local_login_enabled %}
+        <form method="post" action="{{ ui_base }}/session/local-admin" class="stack">
+            <input type="hidden" name="next" value="{{ login_next or '/' }}">
+            <button class="primary-button" type="submit">Continue as local administrator</button>
+        </form>
+        <a class="secondary-button" href="/">Continue as guest</a>
+        {% else %}
         <form method="post" action="{{ ui_base }}/session/login" class="stack">
             <input type="hidden" name="next" value="{{ login_next }}">
             <input type="hidden" name="app" value="{{ login_app_slug or '' }}">
@@ -86,6 +93,17 @@
             </div>
         </form>
 
+        <details>
+            <summary>Resend verification email</summary>
+            <form method="post" action="{{ ui_base }}/auth/resend-verification" class="stack">
+                <input type="hidden" name="next" value="{{ login_next or '/profile' }}">
+                <input type="hidden" name="app" value="{{ login_app_slug or '' }}">
+                <label>Email <input name="email" type="email" autocomplete="email" required></label>
+                <button type="submit">Send verification email</button>
+            </form>
+            <p>Check your spam folder. If the link expired, request a new email.</p>
+        </details>
+        {% endif %}
         {% if configuration.google_enabled or configuration.github_enabled %}
             <div class="muted">or continue with</div>
             <div class="social-login-row">

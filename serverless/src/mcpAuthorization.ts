@@ -464,7 +464,10 @@ mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   if (!actor) throw new OAuthError('login_required', 401); if (!['allow', 'deny'].includes(p.get('decision') || '')) throw new OAuthError('invalid_request');
   const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE id = ? AND session_hash = ? AND subject = ? AND expires_at >= ? RETURNING *')
     .bind(await sha256Hex(p.get('request') || ''), actor.hash, actor.subject, now()).first<Pending>();
-  if (!row) throw new OAuthError('invalid_request');
+  if (!row) {
+    if((c.req.header('accept')||'').includes('text/html')){c.status(400);return bridgePage(c,'Permissions review expired or invalid','<p>This permissions review can no longer be used. Return to your MCP client and start a new connection.</p>')}
+    throw new OAuthError('invalid_request');
+  }
   const client = await getClient(c.env, cfg, row.client_id);
   if (!client || !redirectAllowed(client, row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_request');
   const redirect = new URL(row.redirect_uri); redirect.searchParams.set('state', row.state);

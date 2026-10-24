@@ -11,6 +11,9 @@ export interface Env {
   MCP_OAUTH_RESOURCE_ADDITIONS_JSON?: string;
   MCP_OAUTH_RESOURCE_CONFIG_JSON?: string;
   MCP_OAUTH_PORTALS_JSON?: string;
+  EMAIL?: SendEmail;
+  EMAIL_FROM?: string;
+  EMAIL_VERIFICATION_REQUIRED?: string;
   DB: D1Database;
   CF_VERSION_METADATA?: { id: string };
   AVATARS?: R2Bucket;

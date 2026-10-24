@@ -337,3 +337,9 @@ preserving portal scopes, resource restrictions and preview/apply receipts.
 The normative separation and rollout checklist is
 [Portal identity boundaries](PORTAL_IDENTITY_BOUNDARIES.md). Account namespaces,
 portal products, hostnames, and deployment owners are separate concepts.
+
+## Anonymous live statistics
+
+Both runtimes instrument fixed OAuth/provider endpoint stages and expose private aggregate counts at `/admin/oauth-statistics?days=1|7|30` to a live primary system administrator. Stored rows contain only UTC date, allowlisted stage/outcome, count, summed duration and maximum duration. No account/client IDs, emails, IP addresses, raw redirects, secrets, authorization codes, arguments, responses or token material are retained. Consent denials and redirects are distinct from successful responses and errors; token exchanges/refreshes are combined. These are operational request counts, not proof of end-to-end success or unique users.
+
+`oauth_live_statistics` expires after 30 UTC dates through bounded retention; reads exclude dates outside the requested window. Reapply retention before serving restored backups. The store is private and must not be added to public exports or identity-linked history. Telemetry failures preserve the original auth response and emit only a sanitized availability warning. Python Base metadata registers the table; serverless migration 0014 creates the matching D1 schema. OrgPortal displays this endpoint alongside its own MCP counters. Each repository requires its own reviewed schema change and release. No tests, migrations or deployment were run for this addition under the user's current instruction.

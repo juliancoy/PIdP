@@ -2,6 +2,7 @@ from __future__ import annotations
 from browser_sessions import browser_session, validate_browser_session, revoke_browser_session
 from html import escape
 from browser_pages import identity_document, PORTAL_BRANDS
+from local_login import local_login_enabled
 
 from portal_clients import login_portal, browser_return, shared_identity
 
@@ -35,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse, parse_qs
 
 from config import settings
 from db import SessionLocal, engine, get_session
@@ -128,7 +129,29 @@ SYSTEM_SCHEMA_FIELDS = {
 }
 
 
+import oauth_statistics
+
 app = FastAPI(title=settings.app_name)
+@app.middleware('http')
+async def oauth_statistics_middleware(request: Request, call_next):
+    import time
+    from oauth_statistics import STAGES, record_oauth_statistics
+    stage=STAGES.get(request.url.path) if request.method in ('GET','POST') else None
+    if request.url.path=='/oauth/mcp/authorize' and request.method=='POST':
+        stage='consent'
+    started=time.monotonic()
+    response=None
+    try:
+        response=await call_next(request)
+        return response
+    finally:
+        if stage:
+            try:
+                await record_oauth_statistics(stage,response.status_code if response is not None else 500,response.headers.get('location') if response is not None else None,(time.monotonic()-started)*1000)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning('pidp.oauth.statistics unavailable')
+
 @app.middleware('http')
 async def mounted_identity(request: Request, call_next):
     # The trusted frontend strips /pidp before forwarding and supplies the mount.
@@ -1050,13 +1073,14 @@ def _is_email_verified(user: User | WebsiteUser) -> bool:
     return bool(identity.get("email_verified") or identity.get("email_verified_at"))
 
 
-def _prepare_email_verification(user: User | WebsiteUser, request: Request, app_slug: str | None = None) -> str:
+def _prepare_email_verification(user: User | WebsiteUser, request: Request, app_slug: str | None = None, next_url: str | None = None) -> str:
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=settings.email_verification_token_minutes)
     identity = dict(getattr(user, "identity_data", None) or {})
     identity["email_verified"] = False
     identity["email_verification"] = {
         "token_hash": _verification_token_hash(token),
+        "next": next_url or "/profile",
         "sent_at": datetime.utcnow().isoformat(),
         "expires_at": expires_at.isoformat(),
     }
@@ -1200,7 +1224,7 @@ def _send_email_message_sync(
     delivery_config = _email_delivery_config(delivery_overrides)
     delivery = str(delivery_config["delivery"] or "log")
     if delivery not in {"smtp", "google_workspace"}:
-        LOG.warning("Email verification link for %s: %s", to_email, body)
+        LOG.warning("Email delivery disabled; configure SMTP to deliver account verification messages")
         return
     host = str(delivery_config["host"] or "")
     port = int(delivery_config["port"] or 587)
@@ -1387,6 +1411,12 @@ async def _ensure_runtime_schema() -> None:
         async with engine.begin() as conn:
             await conn.execute(
                 text(
+                    "ALTER TABLE portal_sso_requests "
+                    "ADD COLUMN IF NOT EXISTS auth_time INTEGER"
+                )
+            )
+            await conn.execute(
+                text(
                     "ALTER TABLE websites "
                     "ADD COLUMN IF NOT EXISTS login_hosts JSONB NOT NULL DEFAULT '[]'::jsonb"
                 )
@@ -1497,6 +1527,33 @@ async def frontend_login_alias(request: Request) -> RedirectResponse:
         encoded = quote(next_url, safe="")
         return RedirectResponse(url=f"/?next={encoded}", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/session/local-admin", include_in_schema=False)
+async def frontend_local_admin_login(request: Request, session: AsyncSession = Depends(get_session)):
+    if not local_login_enabled(request):
+        raise HTTPException(404, 'Not found')
+    from scripts.local_admin import provision_local_admin
+    form = await request.form()
+    target = _resolve_frontend_redirect_target(request, str(form.get('next') or '/'))
+    if not target:
+        raise HTTPException(400, 'Invalid return destination')
+    # The local admin uses the portal's shared HttpOnly identity cookie directly.
+    # Resume the requested page without the separate website-account linking flow.
+    parsed = urlparse(target)
+    if parsed.path == urlparse(settings.public_base_url).path.rstrip('/') + '/auth/sso/authorize':
+        from models import PortalSsoRequest
+        from portal_clients import sso_return
+        ticket = parse_qs(parsed.query).get('request', [''])[0]
+        row = await session.get(PortalSsoRequest, ticket)
+        if not row or row.expires_at < int(time.time()) or row.code_hash or not sso_return(row.origin, row.app, row.next):
+            raise HTTPException(400, 'Expired local sign-in request')
+        target = parse_qs(urlparse(row.next).query).get('next', ['/'])[0]
+        await session.delete(row)
+        await session.commit()
+    owner = await provision_local_admin(session)
+    token = create_access_token(str(owner.id), owner.email, {'is_sysadmin': True})
+    return await _session_redirect(request, target, token, session)
 
 
 @app.get("/app/login", include_in_schema=False)
@@ -1610,6 +1667,7 @@ async def frontend_app_login(
             "login_next": resolved_next or "",
             "login_app_slug": website.slug if website else branding_app if portal else "",
             "login_force_owner": explicit_owner,
+            "local_login_enabled": local_login_enabled(request),
             "login_lifetech_label": login_label if portal and portal["name"] == "LifeTech" else "",
             "login_app_name": portal["name"] if portal else website.name if website else "",
             "login_app_description": website.description if website else "",
@@ -1723,7 +1781,11 @@ async def frontend_register(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    result = await session.execute(select(User).where(User.email == email))
+    account_model = WebsiteUser if app_website and not force_owner_login else User
+    account_query = select(account_model).where(account_model.email == email)
+    if account_model is WebsiteUser:
+        account_query = account_query.where(WebsiteUser.website_id == app_website.id)
+    result = await session.execute(account_query)
     if result.scalar_one_or_none():
         return RedirectResponse(
             url=_frontend_login_path(
@@ -1734,14 +1796,15 @@ async def frontend_register(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    user = User(
+    user = account_model(
+        **({"website_id": app_website.id} if account_model is WebsiteUser else {}),
         email=email,
         full_name=full_name,
         hashed_password=hash_password(password),
     )
     session.add(user)
     await session.flush()
-    verification_url = _prepare_email_verification(user, request, app_slug or requested_app or None)
+    verification_url = _prepare_email_verification(user, request, app_slug or requested_app or None, next_url)
     await _send_verification_email(user, verification_url, await _stored_email_delivery_settings(session))
     await session.commit()
     await session.refresh(user)
@@ -2297,6 +2360,33 @@ async def configuration(request: Request) -> dict:
     }
 
 
+@app.post("/auth/resend-verification", include_in_schema=False)
+async def resend_email_verification(request: Request, session: AsyncSession = Depends(get_session)):
+    form = await request.form()
+    email = str(form.get("email") or "").strip().lower()
+    app_slug = str(form.get("app") or "").strip()
+    website = await _resolve_login_website(session, app_slug) if app_slug and not shared_identity(app_slug) else None
+    next_url = str(form.get("next") or "/profile")
+    if not _resolve_frontend_redirect_for_website(request, next_url, website):
+        raise HTTPException(status_code=400, detail="Invalid return destination")
+    user = None
+    if website:
+        result = await session.execute(select(WebsiteUser).where(WebsiteUser.website_id == website.id, WebsiteUser.email == email).with_for_update())
+        user = result.scalar_one_or_none()
+    elif not app_slug or shared_identity(app_slug):
+        result = await session.execute(select(User).where(User.email == email).with_for_update())
+        user = result.scalar_one_or_none()
+    if user and user.is_active and not _is_email_verified(user):
+        pending = dict((user.identity_data or {}).get("email_verification") or {})
+        sent_at = _verification_timestamp(pending.get("sent_at"))
+        if not sent_at or sent_at <= datetime.utcnow() - timedelta(seconds=60):
+            verification_url = _prepare_email_verification(user, request, app_slug or None, next_url)
+            await _send_verification_email(user, verification_url, await _stored_email_delivery_settings(session))
+            await session.commit()
+    return RedirectResponse(url=_frontend_login_path(app_slug=app_slug or None, next_url=next_url,
+        message="If this account needs verification, an email has been sent. Check your inbox and spam folder."), status_code=303)
+
+
 @app.get("/auth/verify-email", include_in_schema=False)
 async def verify_email(
     request: Request,
@@ -2311,17 +2401,18 @@ async def verify_email(
         website = website_result.scalar_one_or_none()
         if website:
             website_user_result = await session.execute(
-                select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == email))
+                select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == email)).with_for_update()
             )
             user = website_user_result.scalar_one_or_none()
-    if not user:
-        result = await session.execute(select(User).where(User.email == email))
+    if not app or shared_identity(app):
+        result = await session.execute(select(User).where(User.email == email).with_for_update())
         user = result.scalar_one_or_none()
 
     if not user:
         return RedirectResponse(
             url=_frontend_login_path(app_slug=app, error="Verification link is invalid."),
             status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
 
     verification = dict((user.identity_data or {}).get("email_verification") or {})
@@ -2336,14 +2427,16 @@ async def verify_email(
         return RedirectResponse(
             url=_frontend_login_path(app_slug=app, error="Verification link is invalid or expired."),
             status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
 
     user.identity_data = _verified_identity(user.identity_data)
     await session.commit()
     LOG.info("Verified email for %s", user.email)
     return RedirectResponse(
-        url=_frontend_login_path(app_slug=app, message="Email verified. You can sign in now."),
+        url=_frontend_login_path(app_slug=app, next_url=verification.get("next"), message="Email verified. You can sign in now."),
         status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
 
 
@@ -3383,3 +3476,14 @@ async def stop_retention() -> None:
             await task
         except asyncio.CancelledError:
             pass
+
+
+@app.get('/admin/oauth-statistics')
+async def oauth_live_statistics(request: Request, days: int = 7, session: AsyncSession = Depends(get_session)):
+    from oauth_statistics import read_oauth_statistics
+    owner=await _get_current_owner(_required_request_token(request),session)
+    if not _is_pidp_sysadmin(owner):
+        raise HTTPException(status_code=403,detail='Admin access required')
+    if days not in (1,7,30):
+        raise HTTPException(status_code=400,detail='Choose 1, 7 or 30 days')
+    return JSONResponse(await read_oauth_statistics(session,days),headers={'Cache-Control':'no-store'})

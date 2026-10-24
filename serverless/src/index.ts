@@ -1,3 +1,5 @@
+import { emailVerified, requireVerifiedEmail, sendVerification, consumeVerification } from './emailVerification';
+import { oauthStatisticsStage,recordOauthStatistics,oauthStatistics } from './oauthStatistics';
 import {browserSession,revokeBrowserSession} from './browserSessions';
 import { portalLoginBrand } from './identityPage';
 import { providerEnabled } from './oauthProviders';
@@ -47,6 +49,10 @@ import {
 const app = new Hono<{ Bindings: Env }>();
 // Retire old user-facing identity entry points; existing OAuth clients and
 // registered provider callbacks continue to use their original endpoints.
+app.use('*',async(c,next)=>{
+ const stage=oauthStatisticsStage(c.req.path,c.req.method),started=Date.now();let completed=false;
+ try{await next();completed=true}finally{if(stage){try{await recordOauthStatistics(c.env.DB,stage,completed?c.res.status:500,completed?c.res.headers.get('location'):null,Date.now()-started)}catch{console.warn(JSON.stringify({event:'pidp.oauth.statistics',outcome:'unavailable'}))}}}
+});
 app.use('*',async(c,next)=>{
   const url=new URL(c.req.url);
   if(c.env.PUBLIC_BASE_URL
@@ -308,7 +314,7 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
   });
 }
 
-function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; centralLogin?: boolean; registration?: boolean; shared?: boolean }) {
+function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; message?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; centralLogin?: boolean; registration?: boolean; shared?: boolean }) {
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
@@ -338,6 +344,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
     <h1>${escapeHtml(title)}</h1>
     ${lifeTechLabel ? `<p>${params.centralLogin ? "orgportal.cc" : "lifetech.fyi"}</p>` : params.portalName ? `<p>Authentication provided by PIdP.</p>` : ""}
     ${error}
+    ${params.message ? `<p role="status">${escapeHtml(params.message)}</p>` : ""}
     ${params.socialLinks.map(link => `<a class="social-login" href="${escapeHtml(link.href)}">Continue with ${escapeHtml(link.label)}</a>`).join("\n")}
     <form method="post" action="${params.registration ? "/app/register" : "/app/login"}">
       ${appField}
@@ -347,6 +354,7 @@ function renderAppLoginPage(params: { appName: string; appSlug: string; next: st
       <label>Password <input name="password" type="password" autocomplete="${params.registration ? "new-password" : "current-password"}" ${params.registration ? 'minlength="8"' : ""} required></label>
       <button type="submit">${params.registration ? "Create account" : "Sign in"}</button>
     </form>
+    ${!params.registration ? `<details><summary>Resend verification email</summary><form method="post" action="/auth/resend-verification">${appField}${ownerField}<input type="hidden" name="next" value="${escapeHtml(params.next)}"><label>Email <input name="email" type="email" autocomplete="email" required></label><button type="submit">Send verification email</button></form><p>Check your spam folder. Links expire after 24 hours.</p></details>` : ""}
     ${params.appSlug && !params.ownerMode && !params.shared ? `<details><summary>Other sign-in options</summary><p>Have a separate ${lifeTechLabel ? "OrgPortal" : "PIdP"} account? Sign in to link it to your portal account.</p><p><a href="/app/login?${escapeHtml(new URLSearchParams({owner:"1",next:params.next}).toString())}">Sign in with ${lifeTechLabel ? "an OrgPortal" : "a PIdP"} account</a></p></details>` : ""}
     ${params.shared ? `<p><a href="/app/login?${escapeHtml(new URLSearchParams({next:params.next,...(params.registration ? {} : {register:"1"})}).toString())}">${params.registration ? "Already have an account? Sign in" : "Create an account"}</a></p><p>One OrgPortal account for all communities.</p>` : ""}
   </main>
@@ -617,6 +625,30 @@ app.on(["GET", "HEAD"], "/avatars/*", async (c) => {
   return new Response(c.req.method === "HEAD" ? null : (object as R2ObjectBody).body, { headers });
 });
 
+
+async function verificationAccount(c: Context<{ Bindings: Env }>, email: string, slug: string) {
+  if (slug && !sharedIdentity(c.env,slug)) {
+    const website = await websiteBySlug(c.env.DB,normalizeSlug(slug));
+    return website ? websiteUserByEmail(c.env.DB,website.id,email) : null;
+  }
+  return userByEmail(c.env.DB,email);
+}
+app.post('/auth/resend-verification',async c=>{
+  const form=await c.req.parseBody();
+  const slug=String(form.app || ''), next=String(form.next || '/profile');
+  if(!browserReturn(c.env,next)) fail(400,'Invalid return destination');
+  const user=await verificationAccount(c,String(form.email || '').trim().toLowerCase(),slug);
+  if(user?.is_active) await sendVerification(c.env,user,slug,next);
+  return c.redirect(identityUrl(c.env,'/app/login').toString()+'?'+new URLSearchParams({app:slug,next,...(form.owner ? {owner:'1'} : {}),message:'If this account needs verification, an email has been sent. Check your inbox and spam folder.'}),303);
+});
+app.get('/auth/verify-email',async c=>{
+  c.header('Cache-Control','no-store');c.header('Referrer-Policy','no-referrer');
+  const slug=c.req.query('app') || '';
+  const user=await verificationAccount(c,(c.req.query('email') || '').trim().toLowerCase(),slug);
+  const next=user?.is_active ? await consumeVerification(c.env,user,c.req.query('token') || '') : null;
+  return c.redirect(identityUrl(c.env,'/app/login').toString()+'?'+new URLSearchParams({app:slug,...(next ? {next,message:'Email verified. You can sign in now.'} : {error:'Verification link is invalid or expired. Request another email below.'})}),303);
+});
+
 app.post("/auth/register", async (c) => {
   const payload = await readJson<Record<string, unknown>>(c);
   const email = String(payload.email || "").trim().toLowerCase();
@@ -630,6 +662,7 @@ app.post("/auth/register", async (c) => {
     "INSERT INTO users (id, email, hashed_password, full_name, identity_data, is_active, created_at) VALUES (?, ?, ?, ?, '{}', 1, ?)",
   ).bind(id, email, hashedPassword, payload.full_name ? String(payload.full_name) : null, createdAt).run();
   const user = await userById(c.env.DB, id);
+  await sendVerification(c.env,user!);
   return c.json(userPublic(c.env, user!));
 });
 
@@ -637,6 +670,7 @@ app.post("/auth/token", async (c) => {
   const { username, password } = await formCredentials(c);
   const user = await userByEmail(c.env.DB, username);
   if (!user || !(await verifyPassword(password, user.hashed_password))) fail(401, "Invalid credentials");
+  requireVerifiedEmail(c.env,user);
   return c.json({ access_token: await createOwnerToken(c.env, user), token_type: "bearer" });
 });
 
@@ -675,7 +709,7 @@ app.get("/app/login", async (c) => {
     else if (appSlug) redirect.searchParams.set("app", appSlug);
     return c.redirect(redirect.toString(), 303);
   }
-  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
+  return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", registration:c.env.PORTAL_SHARED_IDENTITY === "true" && url.searchParams.get("register") === "1", error:url.searchParams.get("error") || undefined, message:url.searchParams.get("message") || undefined, socialLinks: socialLoginLinks(c, appSlug, next, ownerMode) }));
 });
 
 app.get("/app/login/", (c) => {
@@ -710,6 +744,7 @@ app.post("/app/login", async (c) => {
       if (!websiteUser.is_active) {
         return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "This account is inactive." }), 403);
       }
+      if (!emailVerified(c.env,websiteUser)) return c.redirect(identityUrl(c.env,'/app/login').toString() + '?' + new URLSearchParams({app:appSlug,next,...(ownerMode ? {owner:'1'} : {}),error:'Verify your email before signing in. Use Resend verification email if needed.'}),303);
       const token = await createWebsiteUserToken(c.env, websiteUser);
       const headers = new Headers();
       await setSessionCookie(headers, c.env, token);
@@ -721,6 +756,8 @@ app.post("/app/login", async (c) => {
   if (!user?.is_active || !(await verifyPassword(password, user.hashed_password))) {
     return c.html(renderAppLoginPage({ appName, appSlug, next, ownerMode, portalName, centralLogin: new URL(portalRequestOrigin(c) || c.req.url).hostname === "orgportal.cc", shared:c.env.PORTAL_SHARED_IDENTITY === "true", socialLinks: socialLoginLinks(c, appSlug, next, ownerMode), error: "Invalid credentials." }), 401);
   }
+  if (!emailVerified(c.env,user)) return c.redirect(identityUrl(c.env,'/app/login').toString() + '?' + new URLSearchParams({app:appSlug,next,...(ownerMode ? {owner:'1'} : {}),error:'Verify your email before signing in. Use Resend verification email if needed.'}),303);
+  requireVerifiedEmail(c.env,user);
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers();
   await setSessionCookie(headers, c.env, token);
@@ -743,11 +780,16 @@ app.post("/app/register", async c => {
   await c.env.DB.prepare("INSERT INTO users(id,email,hashed_password,identity_data,is_active,created_at) VALUES(?,?,?,'{}',1,?)")
     .bind(id,email,await hashPassword(password),nowIso()).run();
   const user=(await userById(c.env.DB,id))!;
-  const token=await createOwnerToken(c.env,user),headers=new Headers();
-  await setSessionCookie(headers,c.env,token);
-  return redirectWithSession(c.env,next,token,headers);
+  await sendVerification(c.env,user,'',next);
+  return c.redirect(identityUrl(c.env,'/app/login').toString()+'?'+new URLSearchParams({next,message:'Check your email to verify your account before signing in.'}),303);
 });
 
+app.get('/admin/oauth-statistics',async c=>{
+ c.header('Cache-Control','no-store');const owner=await currentOwner(c.env,bearerToken(c));
+ if(!isSysadmin(c.env,owner))return c.json({error:'Admin access required'},403);
+ const days=Number(c.req.query('days')||7);if(![1,7,30].includes(days))return c.json({error:'Choose 1, 7 or 30 days'},400);
+ return c.json(await oauthStatistics(c.env.DB,days));
+});
 app.get("/auth/me", async (c) => {
   const token = bearerToken(c);
   const payload = await verifyJwt(c.env, token);
@@ -974,6 +1016,7 @@ app.post("/auth/session/login", async (c) => {
   const { username, password } = await formCredentials(c);
   const user = await userByEmail(c.env.DB, username);
   if (!user || !(await verifyPassword(password, user.hashed_password))) fail(401, "Invalid credentials");
+  requireVerifiedEmail(c.env,user);
   const token = await createOwnerToken(c.env, user);
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
   await setSessionCookie(headers, c.env, token);
@@ -1376,6 +1419,7 @@ app.post("/websites/:websiteSlug/auth/register", async (c) => {
   await c.env.DB.prepare(
     "INSERT INTO website_users (id, website_id, email, hashed_password, full_name, identity_data, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
   ).bind(id, website.id, email, await hashPassword(String(payload.password)), payload.full_name ? String(payload.full_name) : null, json(validateIdentityData(payload.identity_data, schemaWithSystemFields(parseJson(website.user_schema, SYSTEM_SCHEMA_FIELDS)))), nowIso()).run();
+  await sendVerification(c.env,(await websiteUserById(c.env.DB,website.id,id))!,website.slug);
   return c.json(websiteUserPublic((await websiteUserById(c.env.DB, website.id, id))!));
 });
 
@@ -1386,6 +1430,7 @@ app.post("/websites/:websiteSlug/auth/token", async (c) => {
   const websiteUser = await websiteUserByEmail(c.env.DB, website.id, String(payload.email || "").trim().toLowerCase());
   if (!websiteUser || !(await verifyPassword(String(payload.password || ""), websiteUser.hashed_password))) fail(401, "Invalid credentials");
   if (!websiteUser.is_active) fail(403, "Website user is inactive");
+  requireVerifiedEmail(c.env,websiteUser);
   return c.json({ access_token: await createWebsiteUserToken(c.env, websiteUser), token_type: "bearer" });
 });
 

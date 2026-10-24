@@ -23,6 +23,8 @@ export async function runRetention(db: D1Database, now = Date.now(), dryRun = fa
       counts[table] = result.meta.changes;
     }
   }
+  if(dryRun){const row=await db.prepare('SELECT COUNT(*) n FROM oauth_live_statistics WHERE day<?').bind(new Date(now-29*86400_000).toISOString().slice(0,10)).first<{n:number}>();counts.oauth_live_statistics=row?.n||0}
+  else{const result=await db.prepare('DELETE FROM oauth_live_statistics WHERE rowid IN (SELECT rowid FROM oauth_live_statistics WHERE day<? LIMIT 500)').bind(new Date(now-29*86400_000).toISOString().slice(0,10)).run();counts.oauth_live_statistics=result.meta.changes}
   // Refresh replay detection depends on used token hashes. Keep grants/refreshes
   // together; never delete a used refresh token while its grant can still be used.
   return counts;

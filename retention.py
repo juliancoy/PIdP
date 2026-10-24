@@ -17,9 +17,18 @@ async def run_retention(session, now=None, limit=500):
         'account_identity_link_requests')]
     rules += [('browser_sessions', 'expires_at', int(time.time() if now is None else now)), ('portal_sso_limits', 'window_start', cutoff // 60),
               ('mcp_oauth_registration_limits', 'window_start', cutoff // 3600)]
+    from datetime import datetime, timezone, timedelta
+    rules += [('oauth_live_statistics','day',(datetime.fromtimestamp(int(time.time() if now is None else now),timezone.utc)-timedelta(days=29)).date().isoformat())]
     counts = {}
     for name, column, value in rules:
         table = Base.metadata.tables[name]
+        if name == 'oauth_live_statistics':
+            from sqlalchemy import tuple_
+            keys=list(table.primary_key.columns)
+            selected=select(*keys).where(table.c[column]<value).order_by(*keys).limit(limit)
+            result=await session.execute(delete(table).where(tuple_(*keys).in_(selected)))
+            counts[name]=result.rowcount
+            continue
         key = list(table.primary_key.columns)[0]
         selected = select(key).where(table.c[column] < value).order_by(key).limit(limit)
         result = await session.execute(delete(table).where(key.in_(selected)))

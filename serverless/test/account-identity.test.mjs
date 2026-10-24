@@ -119,12 +119,13 @@ test('switching accounts requires the browser origin and discards the earlier co
  }finally{f.sql.close()}
 });
 
-test('shared registration creates only a primary credential and signs in through the same page',async()=>{
+test('shared registration creates only a primary credential and requires email verification',async()=>{
  const f=fixture();try{
- Object.assign(f.env,{PORTAL_SHARED_IDENTITY:'true',PUBLIC_BASE_URL:'https://id.orgportal.cc',APP_NAME:'OrgPortal'});
+ const mail=[];
+ Object.assign(f.env,{PORTAL_SHARED_IDENTITY:'true',PUBLIC_BASE_URL:'https://id.orgportal.cc',APP_NAME:'OrgPortal',EMAIL_FROM:'identity@example.test',EMAIL:{async send(message){mail.push(message)}}});
  const request=body=>app.request('https://id.orgportal.cc/app/register',{method:'POST',headers:{origin:'https://id.orgportal.cc'},body:new URLSearchParams(body)},f.env);
  const created=await request({email:'new@example.test',password:'correct-horse-battery',next:'/profile'});
- assert.equal(created.status,303);assert.equal(created.headers.get('location'),'/profile');assert.match(created.headers.get('set-cookie'),/HttpOnly/);
+ assert.equal(created.status,303);assert.match(created.headers.get('location'),/Check\+your\+email/);assert.equal(created.headers.get('set-cookie'),null);assert.equal(mail.length,1);
  const person=f.sql.prepare("SELECT * FROM users WHERE email='new@example.test'").get();assert.ok(person.hashed_password);assert.equal(f.sql.prepare("SELECT count(*) n FROM website_users WHERE email='new@example.test'").get().n,0);
  assert.equal((await request({email:'new@example.test',password:'another-password',next:'/profile'})).status,409);
  assert.equal((await request({email:'bad@example.test',password:'short',next:'/profile'})).status,400);
