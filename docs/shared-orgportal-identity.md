@@ -23,7 +23,9 @@ New primary accounts retain member IDs and credentials. Existing primary account
 keep their own credentials, including a missing password: a member password must
 not create an additional login method on an existing primary account. Differing
 password hashes do not establish differing passwords. Users with existing primary
-accounts use those credentials or PIdP's existing recovery flow. Member passwords
+accounts must demonstrate primary sign-in before cutover. This migration does not
+establish a password-reset flow; resolve access failures while member credentials
+still exist rather than assuming recovery is available. Member passwords
 are cleared on apply; member rows and subject aliases remain. Communicate the
 credential change to affected users before cutover.
 
@@ -72,7 +74,7 @@ transactional batch helper above; this CLI rehearses exported/local SQLite copie
    identity writes and keep login traffic in maintenance through apply and flag
    activation; keep the same application slug in PIdP and OrgPortal.
 3. Apply to an isolated restored database first. With explicit test authorization,
-   check password/social login, recovery, disabled accounts, old sessions, OAuth
+   check password/social login, expired-handoff recovery, disabled accounts, old sessions, OAuth
    grants, tenant isolation and organization/admin permission denials in both
    runtimes. Existing subjects must retain their permissions without escalation.
 4. After explicit production authorization, back up again, apply atomically while
