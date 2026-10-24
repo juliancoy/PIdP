@@ -141,3 +141,20 @@ test('account email belongs to the selected subject even after linking a differe
  assert.equal((await resolveAccountIdentity(f.env,'website:site:member')).email,undefined);
  }finally{f.sql.close()}
 });
+
+
+test('consolidated matching IDs edit the primary profile and preserve tenant roles',async()=>{
+ const f=fixture();try{
+  f.sql.exec(`UPDATE website_users SET id='person',identity_data='{"roles":["member"]}';
+   INSERT INTO account_identity_links(subject,canonical_user_id,website_id,website_user_id,linked_at)
+   VALUES('website:site:person','person','site','person','now');`);
+  const token=await signJwt(f.env,{sub:'person',actor_type:'website_user',website_id:'site'});
+  const response=await app.request('https://id.example/auth/me',{method:'PUT',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+   body:JSON.stringify({full_name:'Shared name',bio:'Shared biography'})},f.env);
+  assert.equal(response.status,200);assert.equal((await response.json()).full_name,'Shared name');
+  const owner=f.sql.prepare("SELECT full_name,identity_data FROM users WHERE id='person'").get();
+  const member=f.sql.prepare("SELECT full_name,identity_data FROM website_users WHERE id='person'").get();
+  assert.equal(owner.full_name,'Shared name');assert.equal(JSON.parse(owner.identity_data).bio,'Shared biography');
+  assert.equal(member.full_name,'Member');assert.deepEqual(JSON.parse(member.identity_data).roles,['member']);
+ }finally{f.sql.close()}
+});

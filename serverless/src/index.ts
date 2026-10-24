@@ -416,8 +416,12 @@ const PERSONAL_PROFILE_FIELDS = ["display_name", "bio", "avatar_url", "avatar_ob
 
 // Email and editable identity_data cannot establish an account relationship.
 async function linkedPersonalOwner(env: Env, member: WebsiteUserRow): Promise<UserRow | null> {
-  const identity=await resolveAccountIdentity(env,`website:${member.website_id}:${member.id}`);
-  return identity.canonical_user_id===member.id ? null : userById(env.DB,identity.canonical_user_id);
+  const subject = `website:${member.website_id}:${member.id}`;
+  const link = await first<{canonical_user_id: string}>(env.DB.prepare(
+    'SELECT canonical_user_id FROM account_identity_links WHERE subject=?').bind(subject));
+  if (!link) return null;
+  const identity = await resolveAccountIdentity(env, subject);
+  return userById(env.DB, identity.canonical_user_id);
 }
 
 function personalProfile(identity: Record<string, unknown>) {
