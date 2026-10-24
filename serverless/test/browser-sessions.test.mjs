@@ -74,3 +74,13 @@ test('logout surfaces storage failure so the browser can retry revocation',async
   await revokeBrowserSession(f.env,remembered.token);
  }finally{f.sql.close()}
 });
+
+
+test('a portal-origin logout cannot revoke the separate identity session',async()=>{
+ const f=fixture();try {
+  const remembered=await browserSession(f.env,await signJwt(f.env,{sub:'owner'}));
+  const result=await app.request('https://id.example/auth/session/logout',{method:'POST',headers:{cookie:'pidp_session='+remembered.token,origin:'https://portal.example'}},f.env);
+  assert.equal(result.status,403);
+  assert.equal((await verifyJwt(f.env,remembered.token)).sub,'owner');
+ }finally{f.sql.close();}
+});

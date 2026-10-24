@@ -1025,6 +1025,9 @@ app.post("/auth/session/login", async (c) => {
 });
 
 app.post("/auth/session/logout", async (c) => {
+  const origin=c.req.header('origin');
+  const expected=portalRequestOrigin(c) || new URL(c.env.PUBLIC_BASE_URL || c.req.url).origin;
+  if(origin && origin !== expected) fail(403,'Untrusted logout origin');
   await revokeBrowserSession(c.env,cookieValue(c,SESSION_COOKIE)||'');
   const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
   clearSessionCookie(headers, c.env);

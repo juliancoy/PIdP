@@ -36,11 +36,13 @@ asyncio.run(main())
  const identityCookies=await context.cookies('https://id.localhost:8443');const identityCookie=identityCookies.find(c=>c.name==='pidp_token');
  assert.ok(identityCookie&&identityCookie.domain==='id.localhost'&&identityCookie.httpOnly&&identityCookie.secure);
  assert.equal((await context.request.get('https://id.localhost:8443/auth/session')).status(),200);
+ assert.equal((await context.request.post('https://id.localhost:8443/auth/session/logout',{headers:{Origin:'https://localhost:8443'}})).status(),403);
+ assert.equal((await context.request.get('https://id.localhost:8443/auth/session')).status(),200,'Rejected cross-origin logout must not revoke the identity session');
  await page.goto('https://localhost:8443/pidp/health');
  const blocked=await page.evaluate(async()=>{try{await fetch('https://id.localhost:8443/auth/session',{credentials:'include'});return false;}catch{return true;}});assert.equal(blocked,true,'Portal must not read an authenticated identity response');
  const pageBlocked=await page.evaluate(async()=>{try{await fetch('/pidp/profile',{credentials:'include'});return false;}catch{return true;}});assert.equal(pageBlocked,true,'Account pages must not be proxied on the portal origin');
  const start='https://localhost:8443/pidp/auth/sso/start?app=orgportal&next='+encodeURIComponent('https://localhost:8443/auth/callback?next=/');
- await page.goto(start);await page.waitForFunction(()=>location.hostname==='localhost'&&!location.pathname.startsWith('/pidp/auth/sso'));
+ await page.goto(start);await page.waitForFunction(()=>location.hostname==='localhost'&&!location.pathname.startsWith('/pidp/auth/sso')).catch(async error=>{throw new Error(JSON.stringify({url:new URL(page.url()).origin+new URL(page.url()).pathname,body:(await page.locator('body').innerText()).slice(0,1500)}),{cause:error});});
  assert.equal((await context.request.get('https://localhost:8443/pidp/auth/session')).status(),200);
  const portalCookie=(await context.cookies('https://localhost:8443')).find(c=>c.name==='pidp_token');assert.ok(portalCookie&&portalCookie.domain==='localhost');assert.notEqual(portalCookie.value,identityCookie.value);
  const claims=JSON.parse(Buffer.from(portalCookie.value.split('.')[1],'base64url'));assert.equal(claims.actor_type,'website_user');assert.equal(claims.sub,fixture.member);

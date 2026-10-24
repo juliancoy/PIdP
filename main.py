@@ -2502,8 +2502,8 @@ async def login_for_session_cookie(
 
 @app.post("/auth/session/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout_session_cookie(request: Request, session: AsyncSession = Depends(get_session)) -> Response:
-    await revoke_browser_session(session, request.cookies.get(SESSION_COOKIE_NAME,''))
     _require_trusted_browser_origin(request)
+    await revoke_browser_session(session, request.cookies.get(SESSION_COOKIE_NAME,''))
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_session_cookie(response)
     return response
