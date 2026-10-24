@@ -149,45 +149,13 @@ def _docker_image_exists(image_ref: str) -> bool:
 
 
 def _ensure_prod_image_available(requested_image: str) -> tuple[str, str]:
-    skip_pull = _env_truthy("PIDP_SKIP_PROD_PULL", default=False)
-    fallback_build = _env_truthy("PIDP_ALLOW_LOCAL_PROD_BUILD", default=True)
-
-    if not skip_pull:
-        pull_proc = subprocess.run(["docker", "pull", requested_image])
-        if pull_proc.returncode == 0:
-            return requested_image, "pulled"
-        print(f"Warning: failed to pull prod image {requested_image}")
-    else:
-        print("Skipping prod image pull because PIDP_SKIP_PROD_PULL is enabled")
-
-    if _docker_image_exists(requested_image):
-        print(f"Using cached local prod image: {requested_image}")
-        return requested_image, "local-cache"
-
-    if fallback_build:
-        local_tag = os.getenv("PIDP_PROD_LOCAL_IMAGE", "pidp-prod:local")
-        print(
-            "Prod image is unavailable via registry/local cache; "
-            f"building local fallback image as {local_tag}"
-        )
-        subprocess.check_call(
-            [
-                "docker",
-                "build",
-                "-f",
-                str(current_dir / "Dockerfile"),
-                "-t",
-                local_tag,
-                str(current_dir),
-            ]
-        )
-        return local_tag, "local-build-fallback"
-
-    raise RuntimeError(
-        "Unable to start prod container: registry pull failed and no local image exists. "
-        "Either make GHCR package readable, run `docker login ghcr.io`, set PIDP_PROD_IMAGE "
-        "to an accessible image, or enable PIDP_ALLOW_LOCAL_PROD_BUILD=true."
-    )
+    try:
+        return docker_utils.ensure_image(requested_image), 'lan-first'
+    except RuntimeError:
+        if not _env_truthy("PIDP_ALLOW_LOCAL_PROD_BUILD", default=True):raise
+        local_tag=os.getenv('PIDP_PROD_LOCAL_IMAGE','pidp-prod:local')
+        docker_utils.build_image(local_tag,current_dir)
+        return local_tag,'local-build-fallback'
 
 
 def _common_env(pidp_editme, db_url: str) -> dict:
@@ -334,7 +302,13 @@ def _append_native_allowed_origins(value: str | None) -> str:
 
 def run(prefix, network_name):
     _file_values, selected_env_path = _apply_pidp_defaults()
-    docker_utils.initializeFiles(current_dir)
+    for example in current_dir.glob('*editme.example.py'):
+        destination=example.with_name(example.name.replace('.example',''))
+        if not destination.exists():
+            import shutil
+            shutil.copyfile(example,destination)
+            if os.getenv('GITHUB_ACTIONS')!='true':
+                raise RuntimeError('Created '+str(destination)+'; configure it and rerun the launcher')
     import pidp_editme
 
     service_prefix = "lifetech-" if prefix == "bmoremedtech-" else prefix
