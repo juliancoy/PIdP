@@ -343,3 +343,35 @@ portal products, hostnames, and deployment owners are separate concepts.
 Both runtimes instrument fixed OAuth/provider endpoint stages and expose private aggregate counts at `/admin/oauth-statistics?days=1|7|30` to a live primary system administrator. Stored rows contain only UTC date, allowlisted stage/outcome, count, summed duration and maximum duration. No account/client IDs, emails, IP addresses, raw redirects, secrets, authorization codes, arguments, responses or token material are retained. Consent denials and redirects are distinct from successful responses and errors; token exchanges/refreshes are combined. These are operational request counts, not proof of end-to-end success or unique users.
 
 `oauth_live_statistics` expires after 30 UTC dates through bounded retention; reads exclude dates outside the requested window. Reapply retention before serving restored backups. The store is private and must not be added to public exports or identity-linked history. Telemetry failures preserve the original auth response and emit only a sanitized availability warning. Python Base metadata registers the table; serverless migration 0014 creates the matching D1 schema. OrgPortal displays this endpoint alongside its own MCP counters. Each repository requires its own reviewed schema change and release. No tests, migrations or deployment were run for this addition under the user's current instruction.
+
+## Native desktop browser sign-in
+
+Portal SSO supports an external-browser handoff without changing account namespaces
+or granting organization permissions. A registered portal calls `/auth/sso/start`
+with its existing `app` and validated `next`, plus `redirect_uri`,
+`code_challenge_method=S256`, a 43-character SHA-256 base64url `code_challenge`,
+and a 43–128-character base64url `state`. The callback must be exactly
+`http://127.0.0.1:PORT/callback`, with no credentials, query or fragment.
+
+PIdP keeps the initiating app's HTTP-only browser cookie and returns JSON containing
+`authorization_url`, `request`, and `expires_in`. The app opens that authorization
+URL in the system browser. After normal PIdP password or social authentication,
+PIdP sends a two-minute, one-use code and the original state to the loopback listener.
+The listener checks its state and request ID, then the initiating app posts JSON
+`request`, `code`, and `code_verifier` to its portal's `/pidp/auth/sso/complete`.
+PIdP checks S256 PKCE, the initiating cookie, registered origin and active account,
+then returns JSON `next` and sets the normal remembered-session cookie. GET
+redemption cannot consume native codes, including after proof metadata expires.
+The external browser receives neither the app's cookie nor API tokens.
+
+`portal_desktop_requests` holds only callback URL, challenge, state, opaque request
+ID and expiry. Requests expire after ten minutes; successful redemption removes
+both handoff records. Each new SSO start removes expired records. Abandoned rows
+are therefore physically deleted on the next SSO start, not by a background timer.
+The verifier and credentials are never persisted in this table or emitted to logs.
+Backup copies retain expired metadata only; expired or consumed proofs cannot be
+redeemed. Do not include this transient table in application-data exports.
+
+Python local deployments with `AUTO_CREATE_TABLES` create this new table at startup.
+Worker releases require migration `0015_portal_desktop_auth.sql` first. Do not
+advertise this capability as deployed until the owning PIdP release is verified.

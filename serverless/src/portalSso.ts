@@ -2,6 +2,7 @@ import {browserSession} from './browserSessions';
 import { identityUrl } from './identityUrls';
 import {identityDocument, portalLoginBrand} from './identityPage';
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import { websiteBySlug, websiteUserById, userById } from './db';
@@ -145,7 +146,7 @@ export function portalSso(issue: (env: Env, subject: string, authTime?: number) 
   const complete=new URL('/pidp/auth/sso/complete',row.origin);complete.searchParams.set('request',row.id);complete.searchParams.set('code',code);
   return c.redirect(complete.toString(),303);
  });
- app.on(['GET','POST'],'/auth/sso/complete', async c => {
+ app.on(['GET','POST'],'/auth/sso/complete', bodyLimit({maxSize:4096,onError:c=>c.json({error:'invalid_request'},400)}), async c => {
   let params:Record<string,string>=Object.fromEntries(new URL(c.req.url).searchParams);
   if(c.req.method==='POST'){
    const body=await c.req.text();if(body.length>4096)return c.json({error:'invalid_request'},400);
@@ -164,7 +165,7 @@ export function portalSso(issue: (env: Env, subject: string, authTime?: number) 
   const remembered=await browserSession(c.env,token);
   setCookie(c,'pidp_session',remembered.token,{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:remembered.maxAge});
   setCookie(c,browserCookie,'',{secure:true,httpOnly:true,sameSite:'Lax',path:'/',maxAge:0});
-  return c.redirect(row.next,303);
+  return native?c.json({next:row.next}):c.redirect(row.next,303);
  });
  return app;
 }

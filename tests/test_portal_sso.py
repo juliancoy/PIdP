@@ -66,7 +66,7 @@ class SsoTests(unittest.TestCase):
         self.assertEqual(self.client.post('/auth/sso/complete',json=proof).status_code,400)
         self.client.cookies.set(sso.BROWSER,cookie,domain='one.example',path='/')
         finished=self.client.post('/auth/sso/complete',json=proof)
-        self.assertEqual(finished.status_code,303)
+        self.assertEqual(finished.status_code,200)
         self.assertIn('HttpOnly',finished.headers['set-cookie'])
         self.assertEqual(self.client.post('/auth/sso/complete',json=proof).status_code,400)
         self.assertEqual(self.db.query(PortalDesktopRequest).count(),0)

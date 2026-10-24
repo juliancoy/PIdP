@@ -3,6 +3,7 @@ from browser_sessions import browser_session, browser_claims
 import re
 import base64
 import hmac
+import json
 import hashlib
 import secrets
 import time
@@ -225,10 +226,13 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
     unique_query(request)
     params = request.query_params
     if request.method == 'POST':
-        if int(request.headers.get('content-length', '0')) > 4096:
-            raise HTTPException(400, 'invalid_request')
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                raise HTTPException(400, 'invalid_request')
         try:
-            params = await request.json()
+            params = json.loads(body)
         except ValueError:
             raise HTTPException(400, 'invalid_request')
         if not isinstance(params, dict) or any(not isinstance(v, str) for v in params.values()):
@@ -267,7 +271,7 @@ async def complete(request: Request, session: AsyncSession = Depends(get_session
         raise HTTPException(401, 'inactive_account')
     claims['auth_time'] = row.auth_time or int(time.time())
     token = create_access_token(subject=str(user.id),email=user.email,extra_claims=claims)
-    response = redirect(row.next)
+    response = JSONResponse({'next':row.next}, headers={'Cache-Control':'no-store'}) if native else redirect(row.next)
     remembered,max_age = await browser_session(session,token)
     response.set_cookie('pidp_token',remembered,max_age=max_age,secure=True,httponly=True,samesite='lax',path='/')
     response.set_cookie(BROWSER,'',max_age=0,secure=True,httponly=True,samesite='lax',path='/')

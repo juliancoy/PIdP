@@ -386,7 +386,7 @@ test('native browser login binds PKCE, initiating cookie, portal origin and one-
   assert.equal((await redeem('one.example',{...proof,code_verifier:'x'.repeat(64)})).status,400);
   assert.equal((await redeem('two.example',proof)).status,400);
   assert.equal((await redeem('one.example',proof,'')).status,400);
-  const complete=await redeem('one.example',proof);assert.equal(complete.status,303);assert.match(complete.headers.get('set-cookie'),/HttpOnly/);
+  const complete=await redeem('one.example',proof);assert.equal(complete.status,200);assert.match(complete.headers.get('set-cookie'),/HttpOnly/);
   assert.equal((await redeem('one.example',proof)).status,400);
   assert.equal(f.sql.prepare('SELECT count(*) n FROM portal_desktop_requests').get().n,0);
  }finally{f.sql.close()}

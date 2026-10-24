@@ -32,6 +32,16 @@ class LocalLoginTests(unittest.TestCase):
         self.config.start()
         self.addCleanup(self.config.stop)
 
+    def test_local_admin_entry_keeps_the_member_password_form_available(self):
+        from jinja2 import Environment
+        for channel in ('frontend/templates','frontend/stable/templates'):
+            source=(Path(__file__).parents[1]/channel/'home.html').read_text()
+            fragment=source[source.index('{% if local_login_enabled %}'):source.index('{% if configuration.google_enabled')]
+            html=Environment().from_string(fragment).render(local_login_enabled=True,ui_base='',login_next='/auth/callback',login_app_slug='orgportal',login_force_owner=False,branding={})
+            self.assertIn('Continue as local administrator',html)
+            self.assertIn('id="login-email"',html)
+            self.assertIn('id="login-password"',html)
+
     def test_local_origin_with_proxy_prefix(self):
         self.assertTrue(local_login_enabled(request()))
 
