@@ -42,3 +42,18 @@ class OrgPortalLoginMigrationTests(unittest.TestCase):
                                  [('member-id', 'shared-id')])
         finally:
             database.dispose()
+
+
+class AdministratorLoginBrandingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_orgportal_owner_login_preserves_brand_and_authentication_lane(self):
+        import main
+        from starlette.requests import Request
+        request = Request({'type':'http','method':'GET','path':'/app/login','query_string':b'owner=1','headers':[(b'host',b'orgportal.cc')],'scheme':'https','server':('orgportal.cc',443)})
+        with patch.object(main, '_render_template', return_value='rendered') as render:
+            await main.frontend_app_login(request, AsyncMock())
+        context = render.call_args.args[2]
+        self.assertEqual(context['page_title'], 'Sign in to OrgPortal')
+        self.assertEqual(context['login_app_name'], 'OrgPortal')
+        self.assertTrue(context['login_force_owner'])
+        self.assertEqual(context['login_app_slug'], '')
+        self.assertEqual(context['login_branding']['logo_url'], 'https://orgportal.cc/orgportal.svg')

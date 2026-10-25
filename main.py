@@ -1585,7 +1585,8 @@ async def frontend_app_login(
             login_label = 'LifeTech on OrgPortal' if login_host == 'orgportal.cc' else 'LifeTech'
         branding = _normalize_website_branding({**PORTAL_BRANDS.get(portal_brand_name, {}), 'hero_title': 'Sign in to '+login_label})
     elif force_owner_login:
-        branding = {'hero_title': 'Sign in to OrgPortal' if settings.portal_shared_identity else 'Sign in to PIdP'}
+        login_host = (request.headers.get('x-forwarded-host') or request.url.hostname or '').split(':')[0].lower()
+        branding = _normalize_website_branding({**PORTAL_BRANDS['OrgPortal'], 'hero_title': 'Sign in to OrgPortal'}) if login_host == 'orgportal.cc' or settings.portal_shared_identity else {'hero_title': 'Sign in to PIdP'}
     if app_slug and not website:
         return _render_template(
             request,
@@ -1655,14 +1656,14 @@ async def frontend_app_login(
         request,
         "home.html",
         {
-            "page_title": branding["hero_title"] if portal else f"Sign in to {website.name}" if website else "PIdP Console",
+            "page_title": branding.get("hero_title") or (f"Sign in to {website.name}" if website else "PIdP Console"),
             "active_page": "home",
             "login_next": resolved_next or "",
             "login_app_slug": website.slug if website else branding_app if portal else "",
             "login_force_owner": explicit_owner,
             "local_login_enabled": local_login_enabled(request),
             "login_lifetech_label": login_label if portal and portal["name"] == "LifeTech" else "",
-            "login_app_name": login_label if portal else website.name if website else "",
+            "login_app_name": login_label if portal else website.name if website else "OrgPortal" if branding.get("hero_title") == "Sign in to OrgPortal" else "",
             "login_app_description": website.description if website else "",
             "login_branding": branding,
             "configuration": {

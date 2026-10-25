@@ -315,13 +315,14 @@ function socialLoginLinks(c: Context<{ Bindings: Env }>, appSlug: string, next: 
 }
 
 function renderAppLoginPage(params: { appName: string; appSlug: string; next: string; error?: string; message?: string; ownerMode: boolean; socialLinks: { label: string; href: string }[]; portalName?: string; centralLogin?: boolean; registration?: boolean; shared?: boolean }) {
+  if (params.ownerMode && params.centralLogin && !params.portalName) params = { ...params, portalName: 'OrgPortal', appName: 'OrgPortal' };
   if (params.portalName === 'Local OrgPortal') params = { ...params, portalName: 'OrgPortal', appName: 'OrgPortal' };
   const appField = params.appSlug ? `<input type="hidden" name="app" value="${escapeHtml(params.appSlug)}">` : "";
   const ownerField = params.ownerMode ? `<input type="hidden" name="owner" value="1">` : "";
   const error = params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : "";
   const brand = portalLoginBrand(params.portalName);
   const lifeTechLabel = params.portalName === "LifeTech" ? (params.centralLogin ? "LifeTech on OrgPortal" : "LifeTech") : undefined;
-  const title = lifeTechLabel ? `Sign in to ${lifeTechLabel}` : params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.portalName || params.appName}` : params.ownerMode ? `Sign in to PIdP` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
+  const title = lifeTechLabel ? `Sign in to ${lifeTechLabel}` : params.registration ? `Create your ${params.appName} account` : params.shared ? `Sign in to ${params.portalName || params.appName}` : params.ownerMode ? `Sign in to ${params.portalName || "PIdP"}` : params.portalName ? `Sign in to ${params.portalName}` : `Sign in to ${params.appName}`;
   return `<!doctype html>
 <html lang="en">
 <head>

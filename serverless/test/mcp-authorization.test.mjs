@@ -657,3 +657,13 @@ test('Swarm Control has a dedicated audience and scope without a tenant login br
     }
   } finally {f.sql.close();}
 });
+
+ test('OrgPortal administrator login keeps OrgPortal identity while preserving owner authentication', async()=>{
+ const f=await fixture();try{
+  const next='/oauth/mcp/authorize?account=system_admin';
+  const response=await fullApp.request('https://orgportal.cc/app/login?owner=1&next='+encodeURIComponent(next),{},f.env);
+  assert.equal(response.status,200);const html=await response.text();
+  assert.match(html,/<title>Sign in to OrgPortal<\/title>/);assert.match(html,/OrgPortal logo/);assert.match(html,/Powered by PIdP/);
+  assert.match(html,/name="owner" value="1"/);assert.ok(html.includes('value="'+next+'"'));assert.doesNotMatch(html,/Sign in to PIdP/);
+ }finally{f.sql.close()}
+});
