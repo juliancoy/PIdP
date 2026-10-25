@@ -8,6 +8,9 @@ export async function renderConsentPage(input: {
 }) {
   const otherBrowser = new URL(input.changeAccount, 'https://identity.invalid');
   otherBrowser.searchParams.set('browser', 'other');
+  const adminLogin = new URL(input.changeAccount, 'https://identity.invalid');
+  adminLogin.searchParams.set('account', 'system_admin');
+  adminLogin.searchParams.delete('browser');
   const portalUrl = new URL(input.portal?.loginUrl || input.resource).origin;
   const portalHost = new URL(portalUrl).host;
   const brand = page.brands[portalHost as keyof typeof page.brands];
@@ -19,6 +22,7 @@ export async function renderConsentPage(input: {
     portalUrl: escape(portalUrl), portalHost: escape(portalHost), resource: escape(input.resource), callback: escape(input.callback),
     accountMode: input.systemAdminLogin ? '<input type="hidden" name="account" value="system_admin">' : '',
     otherBrowser: input.portal && !input.systemAdminLogin ? `<p><a href="${escape(otherBrowser.pathname + otherBrowser.search)}">Use another browser</a></p>` : '',
+    systemAdmin: !input.systemAdminLogin ? `<p><a href="${escape(adminLogin.pathname + adminLogin.search)}">Sign in as a system administrator</a></p>` : '<p>System administrator access. Group membership is not required to manage group profiles.</p>',
     request: escape(input.request), changeAccount: escape(input.changeAccount), css,
     logo: brand ? `<img src="${escape(brand.logo)}" alt="${escape(brand.name)} logo" width="52" height="52">` : '',
     permissions: input.requested.map(scope => {

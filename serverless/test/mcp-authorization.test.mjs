@@ -535,6 +535,17 @@ test('portal-only DCR and authorization preserve least-privilege scopes', async 
 test('explicit system-admin consent preserves primary identity and introspects live authority', async () => {
   const f=await fixture();try{
     f.env.ADMIN_USER_IDS='alice';f.env.MCP_OAUTH_PORTALS_JSON=JSON.stringify({[f.resource]:{name:'Portal',loginUrl:'https://portal.example/users/mcp-connect'}});
+    const {renderConsentPage}=await import('../src/consentPage.ts');
+    const {html:markup}=await renderConsentPage({client:'App',account:'alice',resource:f.resource,callback:f.params.redirect_uri,request:'nonce',changeAccount:'/oauth/mcp/authorize?'+new URLSearchParams({...f.params,prompt:'login'}),requested:['org:portal.read'],dynamic:false});
+    // Switching account mode must preserve the original OAuth request and require a fresh login.
+    {
+      const href=markup.match(/href="([^"]+)">Sign in as a system administrator/)[1].replaceAll('&amp;','&');
+      const link=new URL(href,f.issuer);
+      assert.equal(link.searchParams.get('account'),'system_admin');
+      assert.equal(link.searchParams.get('prompt'),'login');
+      assert.equal(link.searchParams.get('state'),f.params.state);
+      assert.equal(link.searchParams.get('code_challenge'),f.params.code_challenge);
+    }
     const params=new URLSearchParams({...f.params,account:'system_admin'});
     const absent=await f.request('/oauth/mcp/authorize?'+params);assert.equal(absent.status,303);assert.equal(new URL(absent.headers.get('location')).searchParams.get('owner'),'1');
     assert.equal((await f.request('/oauth/mcp/authorize?'+params,{headers:{cookie:f.bobCookie}})).status,403);

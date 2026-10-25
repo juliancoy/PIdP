@@ -26,6 +26,12 @@ def render_consent_page(*, client, account, resource, callback, request, change_
     other_browser = urlunsplit(('', '', other_url.path, urlencode(other_params), ''))
     values['otherBrowser'] = f'<p><a href="{html.escape(other_browser)}">Use another browser</a></p>' if portal and not system_admin_login else ''
     values['accountMode'] = '<input type="hidden" name="account" value="system_admin">' if system_admin_login else ''
+    admin_params = dict(parse_qsl(other_url.query))
+    admin_params['account'] = 'system_admin'
+    admin_params.pop('browser', None)
+    admin_login = urlunsplit(('', '', other_url.path, urlencode(admin_params), ''))
+    values['systemAdmin'] = ('<p>System administrator access. Group membership is not required to manage group profiles.</p>'
+                            if system_admin_login else f'<p><a href="{html.escape(admin_login)}">Sign in as a system administrator</a></p>')
     values['css'] = css
     values['logo'] = f'<img src="{html.escape(brand["logo"])}" alt="{html.escape(brand["name"])} logo" width="52" height="52">' if brand else ''
     values['permissions'] = ''.join(

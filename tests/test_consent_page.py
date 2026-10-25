@@ -28,6 +28,22 @@ class ConsentPageTests(unittest.TestCase):
         self.assertIn("style-src 'sha256-" + digest + "'", policy)
         self.assertNotIn('unsafe-inline', policy)
 
+    def test_admin_switch_preserves_oauth_request_without_granting_authority(self):
+        from urllib.parse import urlsplit, parse_qs
+        args = dict(client='App', account='member', resource='https://portal.example/mcp',
+                    callback='https://app.example/callback', request='consent-test',
+                    change_account='/oauth/mcp/authorize?state=original&code_challenge=proof&prompt=login&browser=other',
+                    requested=['org:portal.read'], dynamic=False)
+        markup, _ = render_consent_page(**args)
+        import html
+        href = html.unescape(re.search(r'href="([^"]+)">Sign in as a system administrator', markup)[1])
+        params = parse_qs(urlsplit(href).query)
+        self.assertEqual(params, dict(state=['original'], code_challenge=['proof'], prompt=['login'], account=['system_admin']))
+        self.assertNotIn('name="account" value="system_admin"', markup)
+        admin, _ = render_consent_page(**args, system_admin_login=True)
+        self.assertIn('name="account" value="system_admin"', admin)
+        self.assertNotIn('>Sign in as a system administrator</a>', admin)
+
     def test_other_portals_do_not_receive_medtech_branding(self):
         markup, policy = render_consent_page(client='App', account='member', resource='https://portal.example/mcp',
             callback='https://app.example/callback', request='consent-test', change_account='/oauth/mcp/authorize',
