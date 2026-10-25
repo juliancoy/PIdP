@@ -82,6 +82,14 @@ class OAuthTests(unittest.TestCase):
             self.assertNotIn(resource, cfg['portals'])
             self.assertEqual(oauth.resource_scopes(cfg, resource), ['swarm:control'])
             self.assertNotIn('swarm:control', oauth.resource_scopes(cfg, self.resource))
+            client={**self.client_config,'resources':[resource]}
+            with patch.object(oauth.settings,'mcp_oauth_clients_json',json.dumps({'native':client})), patch.object(oauth,'session',AsyncMock(return_value=None)):
+                response=self.client.get('/oauth/mcp/authorize',params={**self.params,'resource':resource,'scope':'swarm:control'},follow_redirects=False)
+            self.assertEqual(response.status_code,303)
+            login=urlsplit(response.headers['location'])
+            self.assertEqual(login.path,'/app/login')
+            self.assertEqual(parse_qs(login.query)['owner'],['1'])
+            self.assertNotIn('app',parse_qs(login.query))
 
     def test_separate_resource_configuration_and_branding(self):
         resource = 'https://lifetech.fyi/api/org/mcp'

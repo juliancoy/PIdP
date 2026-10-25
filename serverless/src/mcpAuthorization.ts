@@ -356,7 +356,7 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
     p.delete('prompt');
     p.delete('browser');
     if (!adminLogin && cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search, changeAccountRequested);
-    return c.redirect(`${cfg.issuer}/app/login?${adminLogin ? "owner=1&" : ""}next=${encodeURIComponent(u.pathname + u.search)}`, 303);
+    return c.redirect(`${cfg.issuer}/app/login?owner=1&next=${encodeURIComponent(u.pathname + u.search)}`, 303);
   }
   // Bound persisted pending requests per session; expired records are cheap to remove.
   await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE expires_at < ?').bind(now()).run();

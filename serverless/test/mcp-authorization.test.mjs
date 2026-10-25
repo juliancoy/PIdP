@@ -614,6 +614,12 @@ test('Swarm Control has a dedicated audience and scope without a tenant login br
     const cfg = authorizationConfig(f.env);
     assert.equal(cfg.portals[swarm], undefined);
     const request = {...f.params, resource: swarm, scope: 'swarm:control'};
+    const anonymous = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(request));
+    const login = new URL(anonymous.headers.get('location'));
+    assert.equal(anonymous.status,303);
+    assert.equal(login.pathname,'/app/login');
+    assert.equal(login.searchParams.get('owner'),'1');
+    assert.equal(login.searchParams.has('app'),false);
     const page = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(request), {headers:{cookie:f.cookie}});
     assert.equal(page.status, 200);
     const html = await page.text();
