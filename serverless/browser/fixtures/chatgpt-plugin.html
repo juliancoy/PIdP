@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OrgPortal4 · Local ChatGPT mock</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101010;color:#eee;font:14px/1.6 system-ui}main{max-width:780px;margin:60px auto;padding:24px}header,.row{display:flex;align-items:center;gap:16px;flex-wrap:wrap}h1{font-size:20px;margin:0}h2{font-size:16px;margin-top:32px}p{color:#bbb}button,a{font:inherit}button,.button{border:1px solid #555;border-radius:20px;padding:8px 16px;background:#222;color:#fff;cursor:pointer;text-decoration:none;display:inline-block}button:focus-visible,a:focus-visible{outline:3px solid #61d9c2;outline-offset:4px}a{color:#9acbff}header .actions{margin-left:auto;display:flex;gap:8px}.app{display:block;width:100%;text-align:left;border-radius:0;border-width:1px 0;padding:20px 8px}.badge{background:#183b33;color:#b0f4de;padding:8px 12px;border-radius:8px}.note{font-size:12px;color:#aaa;border-left:3px solid #555;padding-left:12px}dialog{background:#222;color:#fff;border:1px solid #555;border-radius:16px;width:min(480px,92vw);max-height:80vh;padding:24px}dialog::backdrop{background:#0009}.close{float:right}dl{display:grid;grid-template-columns:100px 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}[hidden]{display:none!important}#status{margin-top:24px}#error{border:1px solid #b77575;border-radius:10px;padding:16px}#account{border:1px solid #555;border-radius:12px;padding:20px}summary{cursor:pointer;padding:12px}
+</style><main>
+<p class="note">Local ChatGPT mock. Plugin detail and tool-list layout follow supplied screenshots. Account controls below are inferred test fixtures, not verified ChatGPT behavior.</p>
+<header><span aria-hidden="true">📄</span><div><h1>OrgPortal4</h1><small>By Julian Loiacono · Manages organizations</small></div><div class="actions"><button id="manage">Manage</button><button id="try">Try in chat</button></div></header>
+<h2>Apps 1</h2><button class="app" id="tools">OrgPortal4 <small>· Manages organizations</small></button>
+<section id="account" hidden aria-labelledby="account-title"><h2 id="account-title">Connected account</h2><p>member@example.com · Standard account</p><p>Group profile edits require membership or a verified system administrator connection.</p><button id="reconnect">Reconnect account</button></section>
+<section id="error" hidden role="alert"><strong>Connection interrupted</strong><p>Your current connection is unchanged. Try again to sign in and review access.</p><a class="button" href="__AUTHORIZE__">Try again</a><button id="cancel">Cancel reconnect</button></section>
+<section id="status" role="status" hidden><span class="badge">Connected as system administrator</span><p>administrator@example.test · Anchor profile edit can now be retried.</p></section>
+<h2>Information</h2><dl><dt>Developer</dt><dd>Julian Loiacono</dd><dt>Category</dt><dd>Other</dd><dt>Version</dt><dd>1.0.0</dd></dl>
+<dialog aria-labelledby="tool-title"><button class="close" aria-label="Close tool list">×</button><h2 id="tool-title">OrgPortal4 App</h2><details><summary>Write 20</summary><p>apply_organization_profile</p></details><details open><summary>Read 31</summary><p>get_event — Read a managed event before proposing changes.</p><p>get_organization_profile — Read an organization profile.</p></details><p class="note">This lists capabilities. Account connection controls are under Manage.</p></dialog>
+</main><script>
+const $=id=>document.getElementById(id),dialog=document.querySelector('dialog');
+$('tools').onclick=()=>dialog.showModal();document.querySelector('.close').onclick=()=>dialog.close();dialog.onclose=()=>$('tools').focus();
+$('manage').onclick=()=>{$('account').hidden=false;$('reconnect').focus()};
+$('reconnect').onclick=()=>{$('error').hidden=false;document.querySelector('#error a').focus()};
+$('cancel').onclick=()=>{$('error').hidden=true;$('reconnect').focus()};
+$('try').onclick=()=>{$('account').hidden=false;$('account').scrollIntoView()};
+if(new URLSearchParams(location.search).get('verified')==='1'){$('status').hidden=false;document.querySelector('#account p').textContent='administrator@example.test · System administrator'}
+// Standalone prototype only. The browser harness replaces this with real fixture OAuth.
+document.querySelector('#error a').onclick=event=>{if(event.currentTarget.getAttribute('href')==='__AUTHORIZE__'){event.preventDefault();$('error').hidden=true;$('status').hidden=false;document.querySelector('#status p').textContent='Prototype demonstration only — no account was authenticated.'}};
+</script></html>

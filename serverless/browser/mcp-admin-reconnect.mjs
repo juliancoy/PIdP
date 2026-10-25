@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { chromium } from '@playwright/test';
 import { generateKeyPair, exportJWK } from 'jose';
@@ -66,8 +66,37 @@ test('administrator reconnect follows the visible account switch and verifies li
     });
     const verifier = 'v'.repeat(43);
     const challenge = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))).toString('base64url');
-    await page.goto(issuer + '/oauth/mcp/authorize?' + new URLSearchParams({ response_type: 'code', client_id: 'client',
-      redirect_uri: callback, resource, scope: scopes.join(' '), code_challenge_method: 'S256', code_challenge: challenge, state: 'state' }));
+    const authorize = issuer + '/oauth/mcp/authorize?' + new URLSearchParams({ response_type: 'code', client_id: 'client',
+      redirect_uri: callback, resource, scope: scopes.join(' '), code_challenge_method: 'S256', code_challenge: challenge, state: 'state' });
+    const artifactDir=process.env.MCP_MOCK_ARTIFACTS || '/tmp/chatgpt-mock-review';
+    mkdirSync(artifactDir,{recursive:true});
+    const mock=readFileSync(new URL('./fixtures/chatgpt-plugin.html',import.meta.url),'utf8').replaceAll('__AUTHORIZE__',authorize.replaceAll('&','&amp;'));
+    let verifiedConnection=false;
+    await context.route('https://chatgpt.test/**',route=>{
+      if(new URL(route.request().url()).searchParams.has('verified'))assert.equal(verifiedConnection,true);
+      return route.fulfill({contentType:'text/html',body:mock});
+    });
+    await page.goto('https://chatgpt.test/plugins/orgportal4');
+    for(const width of [1440,390]){
+      await page.setViewportSize({width,height:900});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await page.screenshot({path:artifactDir+'/plugin-'+width+'.png',fullPage:true});
+    }
+    await page.getByRole('button',{name:'OrgPortal4 · Manages organizations',exact:true}).click();
+    await page.getByRole('dialog').waitFor();
+    assert.equal(await page.getByRole('button',{name:'Reconnect account',exact:true}).isVisible(),false);
+    await page.screenshot({path:artifactDir+'/tool-list.png',fullPage:true});
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#tools').evaluate(el=>el===document.activeElement),true);
+    await page.getByRole('button',{name:'Manage',exact:true}).click();
+    await page.getByRole('heading',{name:'Connected account',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Reconnect account',exact:true}).click();
+    await page.getByRole('alert').waitFor();
+    await page.getByRole('button',{name:'Cancel reconnect',exact:true}).click();
+    assert.equal(await page.getByRole('alert').isVisible(),false);
+    await page.getByRole('button',{name:'Reconnect account',exact:true}).click();
+    await page.screenshot({path:artifactDir+'/reconnect-recovery.png',fullPage:true});
+    await page.getByRole('link',{name:'Try again',exact:true}).click();
     await page.getByRole('heading', { name: 'Connect Codex to MedTech' }).waitFor();
     await page.waitForFunction(() => document.querySelector('.brand img')?.naturalWidth > 0);
     assert.equal(await page.locator('.allow').evaluate(button => getComputedStyle(button).backgroundColor), 'rgb(8, 124, 137)');
@@ -108,6 +137,14 @@ test('administrator reconnect follows the visible account switch and verifies li
     assert.equal(identity.active,true);
     assert.equal(identity.sub,'owner:alice');
     assert.equal(identity.is_sysadmin,true);
+    verifiedConnection=true;
+    await page.goto('https://chatgpt.test/plugins/orgportal4?verified=1');
+    await page.getByRole('status').getByText('Connected as system administrator',{exact:true}).waitFor();
+    await page.screenshot({path:artifactDir+'/connected.png',fullPage:true});
+    const mockTask=userModel.tasks.find(task=>task.id==='chatgpt-plugin-reconnect');
+    const mockOutcome=assessOutcome(mockTask,['plugin identity visible','tool-list detour recoverable','account controls discoverable','connection error recoverable','OAuth request retained','live administrator identity','connected identity visible']);
+    assert.equal(mockOutcome.status,'verified');
+    writeFileSync(artifactDir+'/user-heuristics.json',JSON.stringify({task:mockTask.id,outcome:mockOutcome,mode:'synthetic-chatgpt-interface',humanReview:'pending',limitations:'ChatGPT controls inferred beyond supplied screenshots; login is synthetic; no production writes.'},null,2));
     env.ADMIN_USER_IDS = '';
     assert.equal((await(await introspect()).json()).is_sysadmin,false);
     const denied=await mcpAuthorization.request(issuer+'/oauth/mcp/authorize?'+new URLSearchParams({response_type:'code',client_id:'client',redirect_uri:callback,resource,scope:scopes.join(' '),code_challenge_method:'S256',code_challenge:challenge,account:'system_admin'}),{headers:{cookie:'pidp_session='+await signJwt(env,{sub:'alice'})}},env);
