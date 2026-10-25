@@ -36,6 +36,7 @@ test('administrator reconnect follows the visible account switch and verifies li
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext();
+    await context.route('https://medtech.social/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52"><rect width="52" height="52" fill="teal"/></svg>'}));
     await context.addCookies([{ name: 'pidp_session', value: await signJwt(env, { sub: 'alice', email: 'member@example.com' }), url: issuer, httpOnly: true, secure: true, sameSite: 'Lax' }]);
     const page = await context.newPage();
     const browserErrors = [];
@@ -45,9 +46,13 @@ test('administrator reconnect follows the visible account switch and verifies li
     let loginVisited = false;
     await context.route(issuer + '/**', async route => {
       const request = route.request();
-      if (new URL(request.url()).pathname === '/app/login') {
+      if (request.method() === 'POST') postOrigins.push(request.headers().origin);
+      const response = await mcpAuthorization.request(request.url(), {
+        method: request.method(), headers: request.headers(), body: request.postDataBuffer() || undefined,
+      }, env);
+      if (response.status === 303 && new URL(response.headers.get('location'),issuer).pathname === '/app/login') {
         // Authentication itself is a fixture; the OAuth handler and consent are real.
-        const login = new URL(request.url());
+        const login = new URL(response.headers.get('location'),issuer);
         assert.equal(login.searchParams.get('owner'), '1');
         const next = login.searchParams.get('next');
         const target = new URL(next, issuer);
@@ -57,10 +62,6 @@ test('administrator reconnect follows the visible account switch and verifies li
         loginVisited = true;
         return route.fulfill({contentType:'text/html',body:'<a href="'+next.replaceAll('&','&amp;').replaceAll('"','&quot;')+'">Continue as test administrator</a>'});
       }
-      if (request.method() === 'POST') postOrigins.push(request.headers().origin);
-      const response = await mcpAuthorization.request(request.url(), {
-        method: request.method(), headers: request.headers(), body: request.postDataBuffer() || undefined,
-      }, env);
       await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() });
     });
     const verifier = 'v'.repeat(43);
