@@ -83,11 +83,11 @@ class OAuthTests(unittest.TestCase):
             self.assertEqual(oauth.resource_scopes(cfg, resource), ['swarm:control'])
             self.assertNotIn('swarm:control', oauth.resource_scopes(cfg, self.resource))
             client={**self.client_config,'resources':[resource]}
-            with patch.object(oauth.settings,'mcp_oauth_clients_json',json.dumps({'native':client})), patch.object(oauth,'session',AsyncMock(return_value=None)):
+            with patch.object(oauth.settings,'mcp_oauth_clients_json',json.dumps({'native':client})), patch.object(oauth.settings,'public_base_url',self.issuer+'/pidp'), patch.object(oauth,'session',AsyncMock(return_value=None)):
                 response=self.client.get('/oauth/mcp/authorize',params={**self.params,'resource':resource,'scope':'swarm:control'},follow_redirects=False)
             self.assertEqual(response.status_code,303)
             login=urlsplit(response.headers['location'])
-            self.assertEqual(login.path,'/app/login')
+            self.assertEqual(login.path,'/pidp/app/login')
             self.assertEqual(parse_qs(login.query)['owner'],['1'])
             self.assertNotIn('app',parse_qs(login.query))
 

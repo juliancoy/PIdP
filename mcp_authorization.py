@@ -559,7 +559,7 @@ async def handle(request, endpoint, db):
                 if not resource and len(cfg['portals']) == 1:
                     resource = next(iter(cfg['portals']))
                 return await start_login(request, db, cfg, resource, return_path)
-            return RedirectResponse(issuer + '/app/login?owner=1&next=' + quote(return_path, safe=''), status_code=303, headers=HEADERS)
+            return RedirectResponse((settings.public_base_url or issuer).rstrip('/') + '/app/login?owner=1&next=' + quote(return_path, safe=''), status_code=303, headers=HEADERS)
         if request.method == 'POST':
             if request.headers.get('origin') != issuer:
                 raise OAuthError('invalid_request', 403)

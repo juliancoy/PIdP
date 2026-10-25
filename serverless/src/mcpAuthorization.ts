@@ -5,6 +5,7 @@ import { importJWK, SignJWT, jwtVerify, type JWK } from 'jose';
 import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import type { Env } from './types';
 import { renderConsentPage } from './consentPage';
+import { identityUrl } from './identityUrls';
 
 const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control'];
 const now = () => Math.floor(Date.now() / 1000);
@@ -356,7 +357,9 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
     p.delete('prompt');
     p.delete('browser');
     if (!adminLogin && cfg.portals[resource]) return startLogin(c, cfg, resource, u.pathname + u.search, changeAccountRequested);
-    return c.redirect(`${cfg.issuer}/app/login?owner=1&next=${encodeURIComponent(u.pathname + u.search)}`, 303);
+    const login = identityUrl(c.env, '/app/login', cfg.issuer);
+    login.search = new URLSearchParams({owner:'1',next:u.pathname + u.search}).toString();
+    return c.redirect(login.toString(), 303);
   }
   // Bound persisted pending requests per session; expired records are cheap to remove.
   await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE expires_at < ?').bind(now()).run();
