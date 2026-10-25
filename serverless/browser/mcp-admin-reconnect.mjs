@@ -11,7 +11,7 @@ import { assessOutcome, userModel } from '../../../OrgPortal/web/scripts/user-mo
 
 test('administrator reconnect follows the visible account switch and verifies live authority', async () => {
   const sql = new DatabaseSync(':memory:');
-  sql.exec("CREATE TABLE users(id TEXT, is_active INTEGER); INSERT INTO users VALUES ('alice',1)");
+  sql.exec("CREATE TABLE users(id TEXT, is_active INTEGER); INSERT INTO users VALUES ('alice',1),('bob',1)");
   sql.exec(readFileSync(new URL('../migrations/0006_mcp_authorization.sql', import.meta.url), 'utf8'));
   const db = { prepare(query) { const stmt = sql.prepare(query); return { bind(...params) { return {
     async first() { return stmt.get(...params) ?? null; },
@@ -37,7 +37,7 @@ test('administrator reconnect follows the visible account switch and verifies li
   try {
     const context = await browser.newContext();
     await context.route('https://medtech.social/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52"><rect width="52" height="52" fill="teal"/></svg>'}));
-    await context.addCookies([{ name: 'pidp_session', value: await signJwt(env, { sub: 'alice', email: 'member@example.com' }), url: issuer, httpOnly: true, secure: true, sameSite: 'Lax' }]);
+    await context.addCookies([{ name: 'pidp_session', value: await signJwt(env, { sub: 'bob', email: 'member@example.com' }), url: issuer, httpOnly: true, secure: true, sameSite: 'Lax' }]);
     const page = await context.newPage();
     const browserErrors = [];
     page.on('requestfailed', request => browserErrors.push(`${request.url()}: ${request.failure()?.errorText}`));
@@ -81,7 +81,10 @@ test('administrator reconnect follows the visible account switch and verifies li
     assert.equal(await admin.isVisible(),true);
     await admin.focus();
     await page.keyboard.press('Enter');
+    await page.getByRole('link',{name:'Continue as test administrator',exact:true}).waitFor();
+    await context.addCookies([{name:'pidp_session',value:await signJwt(env,{sub:'alice',email:'administrator@example.test'}),url:issuer,httpOnly:true,secure:true,sameSite:'Lax'}]);
     await page.getByRole('link',{name:'Continue as test administrator',exact:true}).click();
+    await page.getByText('administrator@example.test',{exact:true}).waitFor();
     assert.equal(loginVisited,true);
     await page.getByText('System administrator access.',{exact:false}).waitFor();
     assert.equal(await page.locator('input[name="account"]').inputValue(),'system_admin');
