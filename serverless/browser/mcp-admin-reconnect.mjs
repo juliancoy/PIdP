@@ -1,13 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { chromium } from '@playwright/test';
 import { generateKeyPair, exportJWK } from 'jose';
 import { mcpAuthorization } from '../src/mcpAuthorization.ts';
 import { sha256Hex, signJwt } from '../src/crypto.ts';
-import { assessOutcome, userModel } from '../../../OrgPortal/web/scripts/user-model/review.mjs';
+import { assessOutcome, userModel } from './fixtures/user-model/review.mjs';
+
+// Keep the bundled fixture synchronized whenever both checkouts are present.
+for(const name of ['model.json','review.mjs']){
+ const canonical=new URL('../../../OrgPortal/web/scripts/user-model/'+name,import.meta.url);
+ if(existsSync(canonical))assert.equal(readFileSync(new URL('./fixtures/user-model/'+name,import.meta.url),'utf8'),readFileSync(canonical,'utf8'),'Refresh the bundled heuristic model: '+name);
+}
 
 test('administrator reconnect follows the visible account switch and verifies live authority', async () => {
   const sql = new DatabaseSync(':memory:');

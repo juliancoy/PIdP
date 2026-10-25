@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "purpose": "Evaluate goal-directed clickthroughs, not simulated human psychology or aesthetic certification.",
+  "personas": [
+    {"id":"visitor","goal":"Understand the event, time and place before deciding what to do","knowledge":"No knowledge of portal terminology"},
+    {"id":"organization-applicant","goal":"Apply to present with an organization","knowledge":"Knows the organization, may not be signed in"},
+    {"id":"guest-applicant","goal":"Apply without an existing organization account","knowledge":"Does not know registration requirements"},
+    {"id":"returning-member","goal":"Resume a task after sign-in without losing the event context","knowledge":"Recognizes the service, not its internal identity provider"},
+    {"id":"manager","goal":"Configure applications without confusing configuration with applying","knowledge":"Has event-management permission"},
+    {"id":"system-administrator","goal":"Reconnect the assistant as an administrator and manage a group without joining it","knowledge":"Knows their primary account; expects an explicit choice of administrator access"},
+    {"id":"keyboard-user","goal":"Reach actions and switch sections using the keyboard","knowledge":"Uses visible focus and accessible names"}
+  ],
+  "conditions": ["desktop", "narrow-viewport", "light-theme", "dark-theme", "slow-network", "signed-out", "authorized-member", "authorized-manager"],
+  "principles": [
+    {"id":"orientation","question":"Can the user identify the event and practical details before acting?","verification":"human"},
+    {"id":"information-scent","question":"Do visible action names describe the user's goal?","verification":"automatic-and-human"},
+    {"id":"hierarchy","question":"Do title, details, actions, navigation and content have distinct emphasis?","verification":"human"},
+    {"id":"grouping","question":"Do spacing and boundaries communicate genuine task relationships?","verification":"human"},
+    {"id":"continuity","question":"Does authentication preserve tenant, event and intended destination?","verification":"journey"},
+    {"id":"feedback","question":"Is the resulting state visible and understandable, including delay and failure?","verification":"journey-and-human"},
+    {"id":"recovery","question":"Can the user return, retry or correct a mistake without losing work?","verification":"journey"},
+    {"id":"keyboard","question":"Can the task be completed with visible focus and standard keyboard behavior?","verification":"journey"}
+  ],
+  "tasks": [
+    {"id":"understand-event","persona":"visitor","success":"Identify the event, date, time and location","requiredEvidence":["event identity", "date/time", "location"],"humanPrinciples":["orientation","hierarchy"]},
+    {"id":"apply-organization","persona":"organization-applicant","success":"Reach the correct event application form or contextual sign-in handoff","scope":".event-apply-actions","action":{"role":"link","name":"Apply with an organization","destination":"/events/{eventSlug}/apply"},"requiredEvidence":["application form or contextual sign-in", "correct event", "tenant retained"],"humanPrinciples":["information-scent","hierarchy","grouping"]},
+    {"id":"apply-guest","persona":"guest-applicant","success":"Reach the guest application form for this event","scope":".event-apply-actions","action":{"role":"link","name":"Apply as a guest","destination":"/events/{eventSlug}/apply/guest"},"requiredEvidence":["guest application form", "correct event"],"humanPrinciples":["information-scent","hierarchy","grouping"]},
+    {"id":"resume-after-login","persona":"returning-member","success":"Return to the same tenant and intended event task after signing in","requiredEvidence":["tenant retained", "event retained", "intended task restored"],"humanPrinciples":["feedback"]},
+    {"id":"configure-applications","persona":"manager","success":"Change the event setting with visible confirmation and permission enforcement","requiredEvidence":["authorized setting", "saved state", "permission denial for visitor"],"humanPrinciples":["grouping","feedback"]},
+    {"id":"chatgpt-plugin-reconnect","persona":"system-administrator","success":"Find connection controls, recover from the tool-list detour and connection failure, and confirm the reconnected identity","requiredEvidence":["plugin identity visible","tool-list detour recoverable","account controls discoverable","connection error recoverable","OAuth request retained","live administrator identity","connected identity visible"],"humanPrinciples":["information-scent","hierarchy","feedback","recovery","keyboard"]},
+    {"id":"mcp-admin-reconnect","persona":"system-administrator","success":"Choose administrator sign-in, preserve the OAuth request and confirm live administrator identity","requiredEvidence":["visible administrator sign-in","OAuth request retained","administrator consent visible","live administrator identity","ordinary account denied"],"humanPrinciples":["information-scent","continuity","feedback","recovery"]},
+    {"id":"keyboard-sections","persona":"keyboard-user","success":"Reach tabs and switch panels using arrows, Home and End","requiredEvidence":["visible focus", "selected tab", "matching visible panel", "focus retained"],"humanPrinciples":["hierarchy"]}
+  ],
+  "reporting": {"aggregateScore":false,"unobserved":"not-assessed","missingOutcomeEvidence":"destination-unverified","humanReviewDefault":"pending","severity":["blocker: task cannot proceed","major: wrong or ambiguous action or context loss","minor: extra effort with a clear recovery"]}
+}
