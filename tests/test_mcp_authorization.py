@@ -91,6 +91,21 @@ class OAuthTests(unittest.TestCase):
             self.assertEqual(parse_qs(login.query)['owner'],['1'])
             self.assertNotIn('app',parse_qs(login.query))
 
+    def test_swarm_consent_uses_persisted_resource_session_namespace(self):
+        resource='https://compai.lifetech.fyi/api/swarm'
+        addition={resource:dict(secretHash='a'*64,scopes=['swarm:control'])}
+        portals={self.resource:dict(name='LifeTech',loginUrl='https://portal.example/users/mcp-connect')}
+        actor=dict(subject='owner:alice',display='alice',hash='session-hash')
+        async def scoped_session(request,db,resource=None):
+            return actor if resource=='https://compai.lifetech.fyi/api/swarm' else None
+        with patch.object(oauth.settings,'mcp_oauth_resource_config_json',json.dumps(addition)), patch.object(oauth.settings,'mcp_oauth_portals_json',json.dumps(portals)), patch.object(oauth.settings,'mcp_oauth_clients_json',json.dumps({'native':{**self.client_config,'resources':[resource]}})), patch.object(oauth,'session',AsyncMock(side_effect=scoped_session)):
+            page=self.client.get('/oauth/mcp/authorize',params={**self.params,'resource':resource,'scope':'swarm:control'})
+            self.assertEqual(page.status_code,200)
+            nonce=re.search(r'name="request" value="([^"]+)"',page.text).group(1)
+            response=self.client.post('/oauth/mcp/authorize',data=dict(request=nonce,decision='allow',resource=self.resource),headers={'Origin':self.issuer},follow_redirects=False)
+            self.assertEqual(response.status_code,303)
+            self.assertIn('code',parse_qs(urlsplit(response.headers['location']).query))
+
     def test_separate_resource_configuration_and_branding(self):
         resource = 'https://lifetech.fyi/api/org/mcp'
         addition = {resource: dict(secretHash=oauth.digest('lifetech-resource-secret-at-least-32-chars'),

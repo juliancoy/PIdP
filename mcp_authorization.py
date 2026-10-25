@@ -546,6 +546,8 @@ async def handle(request, endpoint, db):
             if 'account' in p and p['account'] != 'system_admin':
                 raise OAuthError('invalid_request')
             admin_login = p.get('account') == 'system_admin'
+            pending = await query(db, 'SELECT resource FROM mcp_oauth_requests WHERE id = :id', id=digest(p.get('request', '')))
+            resource = pending[0]['resource'] if pending else None
         actor = None if resource and p.get('prompt') == 'login' else await system_admin_session(request, db) if admin_login else await session(request, db, resource)
         if request.method == 'GET' and not actor:
             params = dict(request.query_params)

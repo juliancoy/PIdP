@@ -467,10 +467,13 @@ mcpAuthorization.post('/oauth/mcp/authorize', async c => {
   if (c.req.header('origin') !== cfg.issuer) throw new OAuthError('invalid_request', 403);
   const p = await form(c);
   if (p.has('account') && p.get('account') !== 'system_admin') throw new OAuthError('invalid_request');
-  const actor = p.get('account') === 'system_admin' ? await systemAdminSession(c) : await session(c);
+  const requestId = await sha256Hex(p.get('request') || '');
+  const pending = await c.env.DB.prepare('SELECT resource FROM mcp_oauth_requests WHERE id = ?').bind(requestId).first<{resource:string}>();
+  // Select the session namespace from persisted consent, never browser input.
+  const actor = p.get('account') === 'system_admin' ? await systemAdminSession(c) : await session(c,pending?.resource);
   if (!actor) throw new OAuthError('login_required', 401); if (!['allow', 'deny'].includes(p.get('decision') || '')) throw new OAuthError('invalid_request');
   const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_requests WHERE id = ? AND session_hash = ? AND subject = ? AND expires_at >= ? RETURNING *')
-    .bind(await sha256Hex(p.get('request') || ''), actor.hash, actor.subject, now()).first<Pending>();
+    .bind(requestId, actor.hash, actor.subject, now()).first<Pending>();
   if (!row) {
     if((c.req.header('accept')||'').includes('text/html')){c.status(400);return bridgePage(c,'Permissions review expired or invalid','<p>This permissions review can no longer be used. Return to your MCP client and start a new connection.</p>')}
     throw new OAuthError('invalid_request');

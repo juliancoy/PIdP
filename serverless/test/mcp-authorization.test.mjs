@@ -608,6 +608,7 @@ test('Swarm Control has a dedicated audience and scope without a tenant login br
   try {
     const swarm = 'https://compai.lifetech.fyi/api/swarm';
     f.env.MCP_OAUTH_RESOURCE_CONFIG_JSON = JSON.stringify({[swarm]: {secretHash: 'a'.repeat(64), scopes: ['swarm:control']}});
+    f.env.MCP_OAUTH_PORTALS_JSON=JSON.stringify({[f.resource]:{name:'LifeTech',loginUrl:'https://portal.example/users/mcp-connect'}});
     const clients = JSON.parse(f.env.MCP_OAUTH_CLIENTS_JSON);
     clients.chatgpt.resources.push(swarm); clients.chatgpt.scopes.push('swarm:control');
     f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify(clients);
@@ -632,6 +633,7 @@ test('Swarm Control has a dedicated audience and scope without a tenant login br
     assert.ok(html.includes('Swarm Control')); assert.ok(!html.includes('LifeTech'));
     const nonce = html.match(/name="request" value="([^"]+)"/)[1];
     const consent = await f.post('/oauth/mcp/authorize', {request:nonce,decision:'allow'}, {cookie:f.cookie,origin:f.issuer});
+    assert.equal(consent.status,303);
     const location = new URL(consent.headers.get('location'));
     assert.equal(location.searchParams.get('iss'), f.issuer);
     const tokenReply = await f.exchange(location.searchParams.get('code'), {resource:swarm});
