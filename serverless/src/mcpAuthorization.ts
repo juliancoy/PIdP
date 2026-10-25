@@ -6,11 +6,14 @@ import { randomToken, sha256Hex, verifyJwt } from './crypto';
 import type { Env } from './types';
 import { renderConsentPage } from './consentPage';
 
-const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'];
+const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control'];
 const now = () => Math.floor(Date.now() / 1000);
 type Client = { name: string; redirectUris: string[]; resources: string[]; scopes: string[]; secretHash?: string; tokenEndpointAuthMethod?: 'none' | 'client_secret_basic' | 'client_secret_post'; dynamic?: boolean };
 type Portal = { name: string; loginUrl: string };
-type Config = { issuer: string; key: JWK; keys: JWK[]; clients: Record<string, Client>; resources: Record<string, { secretHash: string }>; portals: Record<string, Portal> };
+type Config = { issuer: string; key: JWK; keys: JWK[]; clients: Record<string, Client>; resources: Record<string, { secretHash: string; scopes?: string[] }>; portals: Record<string, Portal> };
+function resourceScopes(config: Config, resource: string): string[] {
+  return config.resources[resource]?.scopes ?? scopes.filter(scope => scope.startsWith('org:'));
+}
 type Login = { id: string; browser_hash: string; resource: string; return_path: string; subject: string | null; display: string | null; code_hash: string | null; expires_at: number };
 const browserCookie = '__Host-pidp_mcp_browser';
 const sessionCookie = '__Host-pidp_mcp_session';
@@ -58,10 +61,10 @@ export function authorizationConfig(env: Env): Config {
       if (Object.hasOwn(additions, resource)) throw new Error();
       additions[resource] = addition;
     }
-    for (const [resource, addition] of Object.entries(additions) as [string, { secretHash: string; portal: Portal }][]) {
+    for (const [resource, addition] of Object.entries(additions) as [string, { secretHash: string; portal?: Portal; scopes?: string[] }][]) {
       if (Object.hasOwn(resources, resource) || Object.hasOwn(portals, resource)) throw new Error();
-      resources[resource] = { secretHash: addition.secretHash };
-      portals[resource] = addition.portal;
+      resources[resource] = { secretHash: addition.secretHash, ...(addition.scopes ? { scopes: addition.scopes } : {}) };
+      if (addition.portal) portals[resource] = addition.portal;
     }
     for (const [resource, portal] of Object.entries(portals) as [string, Portal][]) {
       if (!Object.hasOwn(resources, resource) || typeof portal.name !== 'string' || !portal.name.trim() || portal.name.length > 120) throw new Error();
@@ -69,8 +72,9 @@ export function authorizationConfig(env: Env): Config {
       if (url.search || !url.pathname.endsWith('/users/mcp-connect')) throw new Error();
     }
     if (!Object.keys(clients).length || !Object.keys(resources).length) throw new Error();
-    for (const [url, resource] of Object.entries(resources) as [string, { secretHash: string }][]) {
+    for (const [url, resource] of Object.entries(resources) as [string, { secretHash: string; scopes?: string[] }][]) {
       https(url); if (!/^[a-f0-9]{64}$/.test(resource.secretHash)) throw new Error();
+      if (resource.scopes !== undefined && (!Array.isArray(resource.scopes) || !resource.scopes.length || resource.scopes.some(scope => !scopes.includes(scope)))) throw new Error();
     }
     for (const client of Object.values(clients) as Client[]) {
       if (!client.name || !client.redirectUris?.length || !client.resources?.length || !client.scopes?.length) throw new Error();
@@ -211,7 +215,7 @@ async function validateGrant(env: Env, config: Config, grant: Grant) {
   return !grant.revoked && client
     && (grant.expires_at > now() || (grant.expires_at === 0 && client.tokenEndpointAuthMethod === 'none'))
     && client.resources.includes(grant.resource)
-    && grant.scope.split(' ').every(s => client.scopes.includes(s));
+    && grant.scope.split(' ').every(s => client.scopes.includes(s) && resourceScopes(config, grant.resource).includes(s));
 }
 async function tokens(env: Env, config: Config, grant: Grant) {
   const issued = now();
@@ -284,7 +288,7 @@ mcpAuthorization.post('/oauth/mcp/register', async c => {
   const name = p.client_name ?? 'MCP client';
   if (typeof name !== 'string' || !name.trim() || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) throw new OAuthError('invalid_client_metadata');
   if (p.scope !== undefined && (typeof p.scope !== 'string' || p.scope.length > 1000)) throw new OAuthError('invalid_client_metadata');
-  const requested = p.scope === undefined ? scopes : [...new Set((p.scope as string).split(' ').filter(Boolean))];
+  const requested = p.scope === undefined ? scopes.filter(scope => scope.startsWith('org:')) : [...new Set((p.scope as string).split(' ').filter(Boolean))];
   if (!requested.length || requested.some(s => !scopes.includes(s))) throw new OAuthError('invalid_client_metadata');
   const id = randomToken('mcp_dynamic_');
   const secret = method === 'none' ? undefined : randomToken('mcp_client_');
@@ -341,7 +345,7 @@ mcpAuthorization.get('/oauth/mcp/authorize', async c => {
   const resource = p.get('resource') ?? (client?.resources.length === 1 ? client.resources[0] : '');
   if (!client || !redirectAllowed(client, redirect) || !client.resources.includes(resource)) throw new OAuthError('invalid_request');
   const requested = [...new Set((p.get('scope') || '').split(' ').filter(Boolean))];
-  if (!requested.length || requested.some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_scope');
+  if (!requested.length || requested.some(s => !client.scopes.includes(s) || !resourceScopes(cfg, resource).includes(s))) throw new OAuthError('invalid_scope');
   const challenge = p.get('code_challenge') || '';
   if (p.get('response_type') !== 'code' || p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new OAuthError('invalid_request');
   const changeAccountRequested = p.get('prompt') === 'login';
@@ -469,7 +473,7 @@ mcpAuthorization.post('/oauth/mcp/authorize', async c => {
     throw new OAuthError('invalid_request');
   }
   const client = await getClient(c.env, cfg, row.client_id);
-  if (!client || !redirectAllowed(client, row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s))) throw new OAuthError('invalid_request');
+  if (!client || !redirectAllowed(client, row.redirect_uri) || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s) || !resourceScopes(cfg, row.resource).includes(s))) throw new OAuthError('invalid_request');
   const redirect = new URL(row.redirect_uri); redirect.searchParams.set('state', row.state);
   c.header('Content-Security-Policy', `default-src 'none'; form-action 'self' ${redirect.origin}; frame-ancestors 'none'; base-uri 'none'`);
   if (p.get('decision') === 'deny') redirect.searchParams.set('error', 'access_denied');
@@ -491,7 +495,7 @@ mcpAuthorization.post('/oauth/mcp/token', async c => {
     const challenge = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
     const row = await c.env.DB.prepare('DELETE FROM mcp_oauth_codes WHERE hash = ? AND client_id = ? AND redirect_uri = ? AND (? IS NULL OR resource = ?) AND challenge = ? AND expires_at >= ? RETURNING *')
       .bind(await sha256Hex(p.get('code') || ''), id, p.get('redirect_uri') || '', p.get('resource'), p.get('resource'), challenge, now()).first<Pending>();
-    if (!row || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s)) || !await activeSubject(c.env, row.subject)) throw new OAuthError('invalid_grant');
+    if (!row || !client.resources.includes(row.resource) || row.scope.split(' ').some(s => !client.scopes.includes(s) || !resourceScopes(cfg, row.resource).includes(s)) || !await activeSubject(c.env, row.subject)) throw new OAuthError('invalid_grant');
     const grant: Grant = { id: crypto.randomUUID(), subject: row.subject, client_id: id, resource: row.resource, scope: row.scope, expires_at: client.tokenEndpointAuthMethod === 'none' ? 0 : now() + 2592000, revoked: 0 };
     await c.env.DB.prepare('INSERT INTO mcp_oauth_grants VALUES (?, ?, ?, ?, ?, ?, 0)').bind(grant.id, grant.subject, id, grant.resource, grant.scope, grant.expires_at).run();
     return c.json(await tokens(c.env, cfg, grant));

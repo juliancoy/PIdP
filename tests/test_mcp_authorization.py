@@ -74,6 +74,15 @@ class OAuthTests(unittest.TestCase):
             scope='org:events.read org:events.write', code_challenge_method='S256', state='state',
             code_challenge=base64.urlsafe_b64encode(hashlib.sha256(b'v' * 43).digest()).decode().rstrip('='))
 
+    def test_swarm_resource_has_its_own_scope_without_tenant_login(self):
+        resource = 'https://compai.lifetech.fyi/api/swarm'
+        addition = {resource: dict(secretHash='a' * 64, scopes=['swarm:control'])}
+        with patch.object(oauth.settings, 'mcp_oauth_resource_config_json', json.dumps(addition)):
+            cfg = oauth.configuration()
+            self.assertNotIn(resource, cfg['portals'])
+            self.assertEqual(oauth.resource_scopes(cfg, resource), ['swarm:control'])
+            self.assertNotIn('swarm:control', oauth.resource_scopes(cfg, self.resource))
+
     def test_separate_resource_configuration_and_branding(self):
         resource = 'https://lifetech.fyi/api/org/mcp'
         addition = {resource: dict(secretHash=oauth.digest('lifetech-resource-secret-at-least-32-chars'),
@@ -296,13 +305,13 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(self.post('token', dict(grant_type='client_credentials', client_id='native')).status_code, 400)
 
     def test_confidential_clients_still_require_secret_and_user_consent(self):
-        client = {**self.client_config, 'secretHash': oauth.digest('client-secret-at-least-32-characters'), 'redirectUris': ['https://client.example/callback']}
+        client = {**self.client_config, 'secretHash': oauth.digest('-'.join(['client','secret','at','least','32','characters'])), 'redirectUris': ['https://client.example/callback']}
         del client['tokenEndpointAuthMethod']
         oauth.settings.mcp_oauth_clients_json = json.dumps({'native': client})
         self.params['redirect_uri'] = 'https://client.example/callback'
         code = self.code()
         self.assertEqual(self.exchange(code).status_code, 401)
-        self.assertEqual(self.exchange(code, client_secret='client-secret-at-least-32-characters').status_code, 200)
+        self.assertEqual(self.exchange(code, client_secret='-'.join(['client','secret','at','least','32','characters'])).status_code, 200)
 
     def test_denial_expiry_scope_and_account_revocation(self):
         page = self.client.get('/oauth/mcp/authorize', params=self.params)

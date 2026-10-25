@@ -3,27 +3,49 @@
     "medtech.social": {
       "name": "Baltimore MedTech",
       "shortName": "MedTech",
-      "tagline": "HEALTH × MEDICINE × BIOTECH",
+      "tagline": "HEALTH \u00d7 MEDICINE \u00d7 BIOTECH",
       "logo": "https://medtech.social/images/baltimore-medtech-logo-square.jpg"
     },
     "lifetech.fyi": {
       "name": "LifeTech",
       "shortName": "LifeTech",
-      "tagline": "HEALTH × MEDICINE × BIOTECH",
+      "tagline": "HEALTH \u00d7 MEDICINE \u00d7 BIOTECH",
       "logo": "https://lifetech.fyi/assets/images/lifetech-logo.png"
     },
     "orgportal.cc": {
       "name": "OrgPortal",
       "shortName": "OrgPortal",
-      "tagline": "ORGANIZATIONS × EVENTS × COMMUNITIES",
+      "tagline": "ORGANIZATIONS \u00d7 EVENTS \u00d7 COMMUNITIES",
       "logo": "https://orgportal.cc/orgportal.svg"
+    },
+    "compai.lifetech.fyi": {
+      "name": "Swarm Control",
+      "shortName": "Swarm Control",
+      "tagline": "MACHINES \u00d7 JOBS \u00d7 REMOTE CONTROL",
+      "logo": "https://compai.lifetech.fyi/swarm-control.svg"
     }
   },
   "permissions": {
-    "org:events.read": ["View events", "Read events in organizations you manage."],
-    "org:events.write": ["Manage events and photos", "Change events, upload event photos, and invite collaborators in organizations you manage."],
-    "org:portal.read": ["View your organizations", "Read your organization memberships, members, governance, support records, and portal settings where your permissions allow."],
-    "org:portal.write": ["Manage organizations", "Create organizations and manage memberships, governance, support records, member tasks, and portal settings where your permissions allow."]
+    "org:events.read": [
+      "View events",
+      "Read events in organizations you manage."
+    ],
+    "org:events.write": [
+      "Manage events and photos",
+      "Change events, upload event photos, and invite collaborators in organizations you manage."
+    ],
+    "org:portal.read": [
+      "View your organizations",
+      "Read your organization memberships, members, governance, support records, and portal settings where your permissions allow."
+    ],
+    "org:portal.write": [
+      "Manage organizations",
+      "Create organizations and manage memberships, governance, support records, member tasks, and portal settings where your permissions allow."
+    ],
+    "swarm:control": [
+      "Control your swarm",
+      "Access your authorized Swarm Control controller, machines, and jobs."
+    ]
   },
   "css": [
     "*{box-sizing:border-box}html{color-scheme:light}body{margin:0;background:#fff;color:#192d38;font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;letter-spacing:0}a{color:#086c7b;text-underline-offset:3px}a:hover{text-decoration-thickness:2px}a:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid #0b8f9e;outline-offset:4px}button,a,summary{-webkit-tap-highlight-color:transparent}",

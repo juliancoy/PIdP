@@ -30,7 +30,7 @@
   },
   "vars": {
     "APP_NAME": "OrgPortal",
-    "MCP_OAUTH_RESOURCE_CONFIG_JSON": "{\"https://orgportal.cc/mcp\": {\"secretHash\": \"cf5146c0d9d32987d59204ddd8c4082c1ae7605c3e9b5d0b89d53ab0ab15e2bd\", \"portal\": {\"name\": \"OrgPortal\", \"loginUrl\": \"https://orgportal.cc/users/mcp-connect\"}}}",
+    "MCP_OAUTH_RESOURCE_CONFIG_JSON": "{\"https://orgportal.cc/mcp\":{\"secretHash\":\"cf5146c0d9d32987d59204ddd8c4082c1ae7605c3e9b5d0b89d53ab0ab15e2bd\",\"portal\":{\"name\":\"OrgPortal\",\"loginUrl\":\"https://orgportal.cc/users/mcp-connect\"}},\"https://compai.lifetech.fyi/api/swarm\":{\"secretHash\":\"d46341d871823f4c9be698d265da1c758c4061cd6e0365a3a64aaba3081f89b5\",\"scopes\":[\"swarm:control\"]}}",
     "ENV": "production",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
     "ALLOWED_ORIGINS": "https://codecollective.us,https://www.codecollective.us",

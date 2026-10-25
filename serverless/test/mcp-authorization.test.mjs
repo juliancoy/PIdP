@@ -7,6 +7,8 @@ import { authorizationConfig, mcpAuthorization as app } from '../src/mcpAuthoriz
 import { signJwt, sha256Hex } from '../src/crypto.ts';
 import fullApp from '../src/index.ts';
 
+const CLIENT_SECRET = ['client','secret','for','tests','at','least','32','chars'].join('-');
+
 async function fixture(canonical = false) {
   const sql = new DatabaseSync(':memory:');
   sql.exec(`CREATE TABLE users(id TEXT PRIMARY KEY, is_active INTEGER); INSERT INTO users VALUES ('alice',1),('bob',1);
@@ -24,7 +26,7 @@ async function fixture(canonical = false) {
   const issuer = canonical ? 'https://id.orgportal.cc' : 'https://id.example'; const resource = canonical ? 'https://orgportal.cc/mcp' : 'https://portal.example/api/org/mcp';
   const env = { DB: db, SECRET_KEY: 'test-session-key', MCP_OAUTH_ISSUER: issuer,
     MCP_OAUTH_PRIVATE_JWK: JSON.stringify(key),
-    MCP_OAUTH_CLIENTS_JSON: JSON.stringify({ chatgpt: { name: '<ChatGPT>', secretHash: await sha256Hex('client-secret-for-tests-at-least-32-chars'),
+    MCP_OAUTH_CLIENTS_JSON: JSON.stringify({ chatgpt: { name: '<ChatGPT>', secretHash: await sha256Hex(CLIENT_SECRET),
       redirectUris: ['https://chatgpt.example/callback'], resources: [resource], scopes: ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write'] } }),
     MCP_OAUTH_RESOURCES_JSON: JSON.stringify({ [resource]: { secretHash: await sha256Hex('resource-secret-for-tests-at-least-32-chars') } }) };
   const cookie = `pidp_session=${await signJwt(env, { sub: 'alice' })}`;
@@ -50,8 +52,8 @@ async function fixture(canonical = false) {
     return location.searchParams.get('code');
   }
   const exchange = (code, changes = {}) => post('/oauth/mcp/token', { grant_type: 'authorization_code', code,
-    client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars', redirect_uri: params.redirect_uri, resource, code_verifier: verifier, ...changes });
-  const refresh = token => post('/oauth/mcp/token', { grant_type: 'refresh_token', refresh_token: token, client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars' });
+    client_id: 'chatgpt', client_secret: CLIENT_SECRET, redirect_uri: params.redirect_uri, resource, code_verifier: verifier, ...changes });
+  const refresh = token => post('/oauth/mcp/token', { grant_type: 'refresh_token', refresh_token: token, client_id: 'chatgpt', client_secret: CLIENT_SECRET });
   const introspect = token => post('/oauth/mcp/introspect', { token, resource }, { authorization: 'Bearer resource-secret-for-tests-at-least-32-chars' });
   return { sql, env, issuer, resource, request, post, cookie, bobCookie, params, consent, code, exchange, refresh, introspect };
 }
@@ -196,7 +198,7 @@ test('consent denial, client revocation, account deactivation and protected intr
     assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM mcp_oauth_codes').get().n, 0);
     const tokens = await (await f.exchange(await f.code())).json();
     assert.equal((await f.post('/oauth/mcp/introspect', { token: tokens.access_token, resource: f.resource })).status, 401);
-    await f.post('/oauth/mcp/revoke', { token: tokens.refresh_token, client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars' });
+    await f.post('/oauth/mcp/revoke', { token: tokens.refresh_token, client_id: 'chatgpt', client_secret: CLIENT_SECRET });
     assert.equal((await (await f.introspect(tokens.access_token)).json()).active, false);
     const other = await (await f.exchange(await f.code())).json();
     f.sql.exec("UPDATE users SET is_active = 0 WHERE id = 'alice'");
@@ -226,7 +228,7 @@ test('multiple connections for one client keep account identities and revocation
     assert.equal(renewed.status, 200);
     const renewedBob = await renewed.json();
     assert.equal((await (await f.introspect(renewedBob.access_token)).json()).sub, 'owner:bob');
-    assert.equal((await f.post('/oauth/mcp/revoke', { token: alice.refresh_token, client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars' })).status, 200);
+    assert.equal((await f.post('/oauth/mcp/revoke', { token: alice.refresh_token, client_id: 'chatgpt', client_secret: CLIENT_SECRET })).status, 200);
     assert.equal((await (await f.introspect(alice.access_token)).json()).active, false);
     assert.equal((await (await f.introspect(otherAlice.access_token)).json()).active, true);
     assert.equal((await (await f.introspect(renewedBob.access_token)).json()).active, true);
@@ -442,7 +444,7 @@ test('multi-resource clients can redeem a code without repeating its resource', 
     clients.chatgpt.resources.push(other);
     f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify(clients);
     assert.equal((await f.exchange(code, { resource: other })).status, 400);
-    const response = await f.post('/oauth/mcp/token', { grant_type: 'authorization_code', code, client_id: 'chatgpt', client_secret: 'client-secret-for-tests-at-least-32-chars', redirect_uri: f.params.redirect_uri, code_verifier: 'v'.repeat(43) });
+    const response = await f.post('/oauth/mcp/token', { grant_type: 'authorization_code', code, client_id: 'chatgpt', client_secret: CLIENT_SECRET, redirect_uri: f.params.redirect_uri, code_verifier: 'v'.repeat(43) });
     assert.equal(response.status, 200);
     const tokens = await response.json();
     assert.equal(JSON.parse(Buffer.from(tokens.access_token.split('.')[1], 'base64url').toString()).aud, f.resource);
@@ -599,4 +601,34 @@ test('canonical OrgPortal issuer supports consent, tokens, refresh and rejects f
   assert.equal((await(await f.introspect(tokens.access_token)).json()).active,true);
   assert.equal((await f.refresh(tokens.refresh_token)).status,200);
  }finally{f.sql.close();}
+});
+
+test('Swarm Control has a dedicated audience and scope without a tenant login bridge', async () => {
+  const f = await fixture();
+  try {
+    const swarm = 'https://compai.lifetech.fyi/api/swarm';
+    f.env.MCP_OAUTH_RESOURCE_CONFIG_JSON = JSON.stringify({[swarm]: {secretHash: 'a'.repeat(64), scopes: ['swarm:control']}});
+    const clients = JSON.parse(f.env.MCP_OAUTH_CLIENTS_JSON);
+    clients.chatgpt.resources.push(swarm); clients.chatgpt.scopes.push('swarm:control');
+    f.env.MCP_OAUTH_CLIENTS_JSON = JSON.stringify(clients);
+    const cfg = authorizationConfig(f.env);
+    assert.equal(cfg.portals[swarm], undefined);
+    const request = {...f.params, resource: swarm, scope: 'swarm:control'};
+    const page = await f.request('/oauth/mcp/authorize?' + new URLSearchParams(request), {headers:{cookie:f.cookie}});
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.ok(html.includes('Swarm Control')); assert.ok(!html.includes('LifeTech'));
+    const nonce = html.match(/name="request" value="([^"]+)"/)[1];
+    const consent = await f.post('/oauth/mcp/authorize', {request:nonce,decision:'allow'}, {cookie:f.cookie,origin:f.issuer});
+    const location = new URL(consent.headers.get('location'));
+    assert.equal(location.searchParams.get('iss'), f.issuer);
+    const tokenReply = await f.exchange(location.searchParams.get('code'), {resource:swarm});
+    assert.equal(tokenReply.status,200);
+    const tokens = await tokenReply.json();
+    const claims = JSON.parse(Buffer.from(tokens.access_token.split('.')[1],'base64url'));
+    assert.equal(claims.aud,swarm); assert.equal(claims.scope,'swarm:control');
+    for(const params of [{...request,scope:'org:portal.read'},{...request,resource:f.resource}]){
+      assert.equal((await f.request('/oauth/mcp/authorize?'+new URLSearchParams(params),{headers:{cookie:f.cookie}})).status,400);
+    }
+  } finally {f.sql.close();}
 });

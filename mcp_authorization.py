@@ -24,7 +24,7 @@ from account_identity import resolve_account_identity
 from security import safe_decode_token
 from consent_page import render_consent_page
 
-SCOPES = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write']
+SCOPES = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control']
 # no-referrer makes browser form POSTs send Origin: null, breaking origin-bound CSRF checks.
 HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'same-origin',
            'X-Content-Type-Options': 'nosniff',
@@ -132,7 +132,10 @@ def configuration():
             if resource in resources or resource in portals:
                 raise ValueError()
             resources[resource] = dict(secretHash=addition['secretHash'])
-            portals[resource] = addition['portal']
+            if 'scopes' in addition:
+                resources[resource]['scopes'] = addition['scopes']
+            if addition.get('portal'):
+                portals[resource] = addition['portal']
         for resource, portal in portals.items():
             if resource not in resources or not isinstance(portal['name'], str) or not portal['name'].strip() or len(portal['name']) > 120:
                 raise ValueError()
@@ -143,6 +146,8 @@ def configuration():
             raise ValueError()
         for resource, binding in resources.items():
             https(resource)
+            if 'scopes' in binding and (not isinstance(binding['scopes'], list) or not binding['scopes'] or any(scope not in SCOPES for scope in binding['scopes'])):
+                raise ValueError()
             if not re.fullmatch('[a-f0-9]{64}', binding['secretHash']):
                 raise ValueError()
         for client in clients.values():
@@ -391,7 +396,7 @@ async def register_client(request, db, cfg):
         raise OAuthError('invalid_client_metadata')
     if 'scope' in p and (not isinstance(p['scope'], str) or len(p['scope']) > 1000):
         raise OAuthError('invalid_client_metadata')
-    requested = list(dict.fromkeys(p['scope'].split(' '))) if 'scope' in p else SCOPES
+    requested = list(dict.fromkeys(p['scope'].split(' '))) if 'scope' in p else [scope for scope in SCOPES if scope.startswith('org:')]
     requested = [s for s in requested if s]
     if not requested or any(s not in SCOPES for s in requested):
         raise OAuthError('invalid_client_metadata')
@@ -440,12 +445,16 @@ async def authenticate_client(request, p, cfg, db):
     return client_id, client
 
 
+def resource_scopes(cfg, resource):
+    return cfg['resources'][resource].get('scopes', [scope for scope in SCOPES if scope.startswith('org:')])
+
+
 async def valid_grant(cfg, grant, db):
     client = await get_client(db, cfg, grant['client_id'])
     return (not grant['revoked'] and client
             and (grant['expires_at'] > int(time.time())
                  or (grant['expires_at'] == 0 and client.get('tokenEndpointAuthMethod') == 'none'))
-            and grant['resource'] in client['resources'] and all(s in client['scopes'] for s in grant['scope'].split()))
+            and grant['resource'] in client['resources'] and all(s in client['scopes'] and s in resource_scopes(cfg, grant['resource']) for s in grant['scope'].split()))
 
 
 async def tokens(db, cfg, grant):
@@ -472,7 +481,7 @@ async def authorization_request(request, cfg, db):
     if not client or not redirect_allowed(client, p.get('redirect_uri', '')) or p.get('resource') not in client['resources']:
         raise OAuthError('invalid_request')
     requested = list(dict.fromkeys(p.get('scope', '').split()))
-    if not requested or any(s not in client['scopes'] for s in requested):
+    if not requested or any(s not in client['scopes'] or s not in resource_scopes(cfg, p['resource']) for s in requested):
         raise OAuthError('invalid_scope')
     if p.get('response_type') != 'code' or p.get('code_challenge_method') != 'S256' or not re.fullmatch('[A-Za-z0-9_-]{43}', p.get('code_challenge', '')):
         raise OAuthError('invalid_request')
@@ -594,7 +603,7 @@ async def handle(request, endpoint, db):
             raise OAuthError('invalid_request')
         row = rows[0]
         client = await get_client(db, cfg, row['client_id'])
-        if not client or not redirect_allowed(client, row['redirect_uri']) or row['resource'] not in client['resources'] or any(s not in client['scopes'] for s in row['scope'].split()):
+        if not client or not redirect_allowed(client, row['redirect_uri']) or row['resource'] not in client['resources'] or any(s not in client['scopes'] or s not in resource_scopes(cfg, row['resource']) for s in row['scope'].split()):
             raise OAuthError('invalid_request')
         target = urlsplit(row['redirect_uri'])
         params = dict(parse_qsl(target.query))
@@ -652,7 +661,7 @@ async def handle(request, endpoint, db):
         if not rows:
             raise OAuthError('invalid_grant')
         row = rows[0]
-        if row['resource'] not in client['resources'] or any(s not in client['scopes'] for s in row['scope'].split()) or not await active_subject(db, row['subject']):
+        if row['resource'] not in client['resources'] or any(s not in client['scopes'] or s not in resource_scopes(cfg, row['resource']) for s in row['scope'].split()) or not await active_subject(db, row['subject']):
             raise OAuthError('invalid_grant')
         grant = dict(id=str(uuid4()), subject=row['subject'], client_id=client_id, resource=row['resource'], scope=row['scope'], expires_at=0 if client.get('tokenEndpointAuthMethod') == 'none' else now + 2592000, revoked=0)
         await query(db, 'INSERT INTO mcp_oauth_grants VALUES (:id, :subject, :client_id, :resource, :scope, :expires_at, :revoked)', **grant)
