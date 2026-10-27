@@ -14,10 +14,15 @@ def render_consent_page(*, client, account, resource, callback, request, change_
     url = urlsplit(portal['loginUrl'] if portal else resource)
     origin = url.scheme + '://' + url.netloc
     brand = PAGE['brands'].get(url.netloc)
+    short_name = brand['shortName'] if brand else (portal['name'] if portal else 'OrgPortal')
+    same_service = not dynamic and client == short_name and urlsplit(callback).scheme + '://' + urlsplit(callback).netloc == origin
+    heading = f'Continue to {short_name}' if same_service else f'Connect {client} to {short_name}'
+    intro = (f'You are signing in to {short_name} with your PIdP account. Review the requested permissions before continuing.'
+             if same_service else 'Confirm your account and review the requested permissions below. Allow access to connect, or deny to cancel.')
     css = '\n'.join(PAGE['css'])
     style_hash = base64.b64encode(hashlib.sha256(css.encode()).digest()).decode()
     values = {key: html.escape(value) for key, value in dict(
-        client=client, account=account, shortName=brand['shortName'] if brand else (portal['name'] if portal else 'OrgPortal'),
+        heading=heading, intro=intro, client=client, account=account, shortName=brand['shortName'] if brand else (portal['name'] if portal else 'OrgPortal'),
         brandName=brand['name'] if brand else (portal['name'] if portal else 'OrgPortal'),
         tagline=brand['tagline'] if brand else 'ACCOUNT AUTHORIZATION', portalUrl=origin, portalHost=url.netloc,
         resource=resource, callback=callback, request=request, changeAccount=change_account).items()}

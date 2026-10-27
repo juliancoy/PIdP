@@ -51,3 +51,18 @@ class ConsentPageTests(unittest.TestCase):
         self.assertIn('Community Portal', markup)
         self.assertNotIn('Baltimore MedTech', markup)
         self.assertIn("img-src 'none'", policy)
+
+
+    def test_same_service_sign_in_has_clear_heading_and_keeps_consent(self):
+        args = dict(client='Swarm Control', account='member', resource='https://compai.lifetech.fyi/api/swarm',
+                    callback='https://compai.lifetech.fyi/auth/callback', request='consent-test',
+                    change_account='/oauth/mcp/authorize', requested=['swarm:control'], dynamic=False)
+        markup, _ = render_consent_page(**args)
+        self.assertIn('<h1>Continue to Swarm Control</h1>', markup)
+        self.assertIn('with your PIdP account', markup)
+        self.assertIn('Control your swarm', markup)
+        self.assertIn('Allow access', markup)
+        self.assertIn('>Deny<', markup)
+        for changed in (dict(dynamic=True), dict(callback='https://other.example/callback')):
+            other, _ = render_consent_page(**{**args, **changed})
+            self.assertIn('<h1>Connect Swarm Control to Swarm Control</h1>', other)

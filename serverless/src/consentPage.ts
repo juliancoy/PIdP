@@ -14,10 +14,14 @@ export async function renderConsentPage(input: {
   const portalUrl = new URL(input.portal?.loginUrl || input.resource).origin;
   const portalHost = new URL(portalUrl).host;
   const brand = page.brands[portalHost as keyof typeof page.brands];
+  const shortName = brand?.shortName || input.portal?.name || 'OrgPortal';
+  const sameService = !input.dynamic && input.client === shortName && new URL(input.callback).origin === portalUrl;
+  const heading = sameService ? `Continue to ${shortName}` : `Connect ${input.client} to ${shortName}`;
+  const intro = sameService ? `You are signing in to ${shortName} with your PIdP account. Review the requested permissions before continuing.` : 'Confirm your account and review the requested permissions below. Allow access to connect, or deny to cancel.';
   const css = page.css.join('\n');
   const hash = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(css)))));
   const values: Record<string, string> = {
-    client: escape(input.client), account: escape(input.account), shortName: escape(brand?.shortName || input.portal?.name || 'OrgPortal'),
+    heading: escape(heading), intro: escape(intro), client: escape(input.client), account: escape(input.account), shortName: escape(brand?.shortName || input.portal?.name || 'OrgPortal'),
     brandName: escape(brand?.name || input.portal?.name || 'OrgPortal'), tagline: escape(brand?.tagline || 'ACCOUNT AUTHORIZATION'),
     portalUrl: escape(portalUrl), portalHost: escape(portalHost), resource: escape(input.resource), callback: escape(input.callback),
     accountMode: input.systemAdminLogin ? '<input type="hidden" name="account" value="system_admin">' : '',
