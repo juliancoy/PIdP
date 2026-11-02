@@ -56,7 +56,7 @@ test('website members save only their own profile and retain the account namespa
     assert.equal(data.is_sysadmin, false);
     assert.equal(data.email, 'same@example.test');
     assert.equal(data.is_active, true);
-    assert.deepEqual(data.identity_data, { bio: 'Keep me', roles: ['member'], display_name: 'New Name', avatar_url: 'https://example.test/avatar.png' });
+    assert.deepEqual(data.identity_data, { bio: 'Keep me', roles: ['member'], display_name: 'New Name', avatar_url: 'https://example.test/avatar.png', email_verified: false });
     assert.equal(f.sql.prepare('SELECT full_name FROM users').get().full_name, 'Owner');
     assert.equal(f.sql.prepare("SELECT full_name FROM website_users WHERE website_id = 'other'").get().full_name, 'Other tenant');
     assert.equal((await f.request({ sub: 'member', actor_type: 'website_user', website_id: 'site' }, {}, '/websites/site/auth-config')).status, 403);

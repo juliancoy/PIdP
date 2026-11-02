@@ -20,6 +20,29 @@ function fixture(){
  const request=async(path,body,claims={sub:'person'})=>app.request(`https://id.example${path}`,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${await credential(claims)}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)},env);
  return {sql,env,request};
 }
+test('auth/me exports account verification for existing social sessions without trusting login-policy bypass or linked profiles',async()=>{
+ const f=fixture();try{
+  const claims={sub:'member',actor_type:'website_user',website_id:'site'};
+  const profile=async()=>{const r=await f.request('/auth/me',undefined,claims);assert.equal(r.status,200);return r.json()};
+  f.env.EMAIL_VERIFICATION_REQUIRED='false';
+  assert.equal((await profile()).identity_data.email_verified,false);
+  for(const [provider,account,identity,expected] of [
+   ['google','google-sub','{}',true],
+   ['google',null,'{}',false],
+   [null,null,'{"email_verified":true}',true],
+   [null,null,'{"email_verified_at":"2026-11-02T00:00:00Z"}',true],
+   [null,null,'{"email_verified":"true"}',false],
+   [null,null,'{}',false],
+  ]){
+   f.sql.prepare('UPDATE website_users SET provider=?,provider_account_id=?,identity_data=? WHERE id=?').run(provider,account,identity,'member');
+   assert.equal((await profile()).identity_data.email_verified,expected);
+  }
+  f.sql.exec("UPDATE users SET provider='google',provider_account_id='owner-google' WHERE id='person'; INSERT INTO account_identity_links(subject,canonical_user_id,website_id,website_user_id,linked_at) VALUES('website:site:member','person','site','member','2026-11-02');");
+  assert.equal((await profile()).identity_data.email_verified,false);
+  assert.equal((await (await f.request('/auth/me')).json()).identity_data.email_verified,true);
+  assert.equal(f.sql.prepare("SELECT identity_data FROM website_users WHERE id='member'").get().identity_data,'{}');
+ }finally{f.sql.close()}
+});
 test('linking requires both account proofs, a bound one-use preview, and never derives identity from email',async()=>{
  const f=fixture();try{
   const subject='website:site:member';

@@ -63,6 +63,25 @@ class ProfileSelfServiceTests(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
+    def test_profile_exports_verification_for_existing_social_session(self):
+        member = self.db.get(self.WebsiteUser, self.member_id)
+        original = dict(member.identity_data)
+        with patch.object(self.main.settings, 'email_verification_required', False):
+            for provider, subject, identity, expected in [
+                ('google', 'google-sub', original, True),
+                ('google', None, original, False),
+                (None, None, {**original, 'email_verified': True}, True),
+                (None, None, {**original, 'email_verified_at': '2026-11-02'}, True),
+                (None, None, {**original, 'email_verified': 'true'}, False),
+                (None, None, original, False),
+            ]:
+                member.provider, member.provider_account_id, member.identity_data = provider, subject, identity
+                self.db.commit()
+                response = self.client.get('/auth/me', headers={'Authorization': 'Bearer existing-session'})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIs(response.json()['identity_data']['email_verified'], expected)
+                self.assertEqual(member.identity_data, identity)
+
     def test_fresh_sign_in_does_not_reuse_cookie_and_preserves_shared_tenant_brand(self):
         import time, json
         from models import PortalSsoRequest
@@ -302,7 +321,7 @@ class ProfileSelfServiceTests(unittest.TestCase):
         self.assertFalse(data['is_sysadmin'])
         self.assertTrue(data['is_active'])
         self.assertEqual(data['email'], 'same@example.com')
-        self.assertEqual(data['identity_data'], {'bio': 'Keep me', 'roles': ['member'], 'display_name': 'New Name', 'avatar_url': 'https://example.test/avatar.png'})
+        self.assertEqual(data['identity_data'], {'bio': 'Keep me', 'roles': ['member'], 'display_name': 'New Name', 'avatar_url': 'https://example.test/avatar.png', 'email_verified': False})
         self.assertEqual(self.db.get(self.User, self.member_id).full_name, 'Owner')
         denied = self.client.get('/websites', headers={'Authorization': 'Bearer local-test'})
         self.assertEqual(denied.status_code, 403)

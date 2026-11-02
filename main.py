@@ -823,13 +823,21 @@ def _is_pidp_sysadmin(user: User) -> bool:
     return bool(user_id and user_id in settings.admin_user_ids_list)
 
 
+def _authenticated_identity_data(user: User | WebsiteUser) -> dict:
+    identity = dict(user.identity_data or {})
+    identity['email_verified'] = bool(user.email and (
+        (user.provider and user.provider_account_id)
+        or identity.get('email_verified') is True or identity.get('email_verified_at')))
+    return identity
+
+
 def _to_user_public(user: User) -> UserPublic:
     return UserPublic(
         id=user.id,
         email=user.email,
         full_name=user.full_name,
         provider=user.provider,
-        identity_data=user.identity_data,
+        identity_data=_authenticated_identity_data(user),
         is_sysadmin=_is_pidp_sysadmin(user),
         is_active=user.is_active,
         created_at=user.created_at,
@@ -850,7 +858,7 @@ def _to_user_public_from_website_user(website_user: WebsiteUser) -> UserPublic:
         email=website_user.email,
         full_name=website_user.full_name,
         provider=website_user.provider,
-        identity_data=website_user.identity_data,
+        identity_data=_authenticated_identity_data(website_user),
         is_sysadmin=False,
         is_active=website_user.is_active,
         created_at=website_user.created_at,
@@ -885,7 +893,7 @@ async def _member_profile_public(member: WebsiteUser, session: AsyncSession) -> 
     public.canonical_user_id = public.id
     if owner:
         public.full_name = owner.full_name if owner.full_name is not None else member.full_name
-        identity = dict(member.identity_data or {})
+        identity = _authenticated_identity_data(member)
         identity.update({key: value for key, value in (owner.identity_data or {}).items()
                          if key in PERSONAL_PROFILE_FIELDS})
         public.identity_data = identity

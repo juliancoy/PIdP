@@ -4,6 +4,13 @@ import { HttpError } from './http';
 import { identityUrl } from './identityUrls';
 
 type Account = UserRow | WebsiteUserRow;
+// Public verification describes the authenticated account, even when the login
+// policy permits unverified accounts. Never persist this derived profile value.
+export function authenticatedIdentityData(user: Account): Record<string, unknown> {
+  const identity = JSON.parse(user.identity_data || '{}');
+  return { ...identity, email_verified: Boolean(user.email &&
+    ((user.provider && user.provider_account_id) || identity.email_verified === true || identity.email_verified_at)) };
+}
 export function emailVerified(env: Env, user: Account): boolean {
   if (env.EMAIL_VERIFICATION_REQUIRED === 'false') return true;
   const identity = JSON.parse(user.identity_data || '{}');

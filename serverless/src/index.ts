@@ -1,4 +1,4 @@
-import { emailVerified, requireVerifiedEmail, sendVerification, consumeVerification } from './emailVerification';
+import { authenticatedIdentityData, emailVerified, requireVerifiedEmail, sendVerification, consumeVerification } from './emailVerification';
 import { oauthStatisticsStage,recordOauthStatistics,oauthStatistics } from './oauthStatistics';
 import {browserSession,revokeBrowserSession} from './browserSessions';
 import { portalLoginBrand } from './identityPage';
@@ -376,7 +376,7 @@ function userPublic(env: Env, user: UserRow) {
     email: user.email,
     full_name: user.full_name,
     provider: user.provider,
-    identity_data: parseJson(user.identity_data, {}),
+    identity_data: authenticatedIdentityData(user),
     is_sysadmin: isSysadmin(env, user),
     is_active: Boolean(user.is_active),
     created_at: user.created_at,
@@ -433,7 +433,7 @@ function personalProfile(identity: Record<string, unknown>) {
 
 async function memberProfilePublic(env: Env, member: WebsiteUserRow) {
   const owner = await linkedPersonalOwner(env, member);
-  const identity = parseJson<Record<string, unknown>>(member.identity_data, {});
+  const identity = authenticatedIdentityData(member);
   if (owner) Object.assign(identity, personalProfile(parseJson(owner.identity_data, {})));
   return { ...userPublic(env, member), id: owner?.id || member.id, account_id:member.id,
     account_subject:`website:${member.website_id}:${member.id}`, canonical_user_id:owner?.id || member.id,
