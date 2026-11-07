@@ -24,7 +24,7 @@ from account_identity import resolve_account_identity
 from security import safe_decode_token
 from consent_page import render_consent_page
 
-SCOPES = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control']
+SCOPES = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control', 'genomics:data']
 # no-referrer makes browser form POSTs send Origin: null, breaking origin-bound CSRF checks.
 HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'same-origin',
            'X-Content-Type-Options': 'nosniff',

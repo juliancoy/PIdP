@@ -74,6 +74,15 @@ class OAuthTests(unittest.TestCase):
             scope='org:events.read org:events.write', code_challenge_method='S256', state='state',
             code_challenge=base64.urlsafe_b64encode(hashlib.sha256(b'v' * 43).digest()).decode().rstrip('='))
 
+    def test_genomic_resource_scope_does_not_widen_portal_permissions(self):
+        resource='https://compai.lifetech.fyi/api/genomics'
+        addition={resource:dict(secretHash='a'*64,scopes=['genomics:data'])}
+        with patch.object(oauth.settings,'mcp_oauth_resource_config_json',json.dumps(addition)):
+            cfg=oauth.configuration()
+            self.assertEqual(oauth.resource_scopes(cfg,resource),['genomics:data'])
+            self.assertNotIn('genomics:data',oauth.resource_scopes(cfg,self.resource))
+            self.assertIn('genomics:data',oauth.SCOPES)
+
     def test_swarm_resource_has_its_own_scope_without_tenant_login(self):
         resource = 'https://compai.lifetech.fyi/api/swarm'
         addition = {resource: dict(secretHash='a' * 64, scopes=['swarm:control'])}

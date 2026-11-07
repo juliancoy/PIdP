@@ -7,7 +7,7 @@ import type { Env } from './types';
 import { renderConsentPage } from './consentPage';
 import { identityUrl } from './identityUrls';
 
-const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control'];
+const scopes = ['org:events.read', 'org:events.write', 'org:portal.read', 'org:portal.write', 'swarm:control', 'genomics:data'];
 const now = () => Math.floor(Date.now() / 1000);
 type Client = { name: string; redirectUris: string[]; resources: string[]; scopes: string[]; secretHash?: string; tokenEndpointAuthMethod?: 'none' | 'client_secret_basic' | 'client_secret_post'; dynamic?: boolean };
 type Portal = { name: string; loginUrl: string };

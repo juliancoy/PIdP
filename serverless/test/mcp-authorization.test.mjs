@@ -667,3 +667,21 @@ test('Swarm Control has a dedicated audience and scope without a tenant login br
   assert.match(html,/name="owner" value="1"/);assert.ok(html.includes('value="'+next+'"'));assert.doesNotMatch(html,/Sign in to PIdP/);
  }finally{f.sql.close()}
 });
+
+test('genomic resource has an explicit scope without widening portal scopes', async () => {
+  const f = await fixture();
+  f.env.MCP_OAUTH_DYNAMIC_REGISTRATION = 'true';
+  const resource = 'https://compai.lifetech.fyi/api/genomics';
+  f.env.MCP_OAUTH_RESOURCE_CONFIG_JSON = JSON.stringify({ [resource]: { secretHash: 'a'.repeat(64), scopes: ['genomics:data'] } });
+  const config = authorizationConfig(f.env);
+  assert.deepEqual(config.resources[resource].scopes, ['genomics:data']);
+  const metadata = await f.request('/.well-known/oauth-authorization-server');
+  assert.equal(metadata.status, 200);
+  assert.ok((await metadata.json()).scopes_supported.includes('genomics:data'));
+  const response = await f.request('/oauth/mcp/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_name: 'Protected genomics test', token_endpoint_auth_method: 'none',
+      redirect_uris: ['http://127.0.0.1:8917/callback'], scope: 'genomics:data' }) });
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).scope, 'genomics:data');
+  f.sql.close();
+});
