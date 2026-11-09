@@ -1,5 +1,5 @@
 from __future__ import annotations
-from directory_identity import portal_directory_aliases, link_verified_portal_provider
+from directory_identity import portal_directory_aliases, portal_directory_people, link_verified_portal_provider
 from browser_sessions import browser_session, validate_browser_session, revoke_browser_session
 from html import escape
 from browser_pages import identity_document, PORTAL_BRANDS
@@ -2788,7 +2788,8 @@ async def directory_identities(request: Request, session: AsyncSession = Depends
         aliases = await portal_directory_aliases(session, owner.id, settings.portal_sso_app_slug)
     except PermissionError:
         raise HTTPException(403, 'Portal owner required')
-    return JSONResponse({'aliases': aliases}, headers={'Cache-Control': 'no-store'})
+    people = await portal_directory_people(session, owner.id, settings.portal_sso_app_slug)
+    return JSONResponse({'aliases': aliases, 'people': people}, headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/service/websites", response_model=list[WebsitePublic])

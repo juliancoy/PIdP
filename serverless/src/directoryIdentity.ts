@@ -24,3 +24,11 @@ export async function linkVerifiedPortalProvider(env:Env,provider:string,profile
     AND NOT EXISTS(SELECT 1 FROM account_identity_links l WHERE l.website_user_id=m.id)
   ON CONFLICT(subject) DO NOTHING`).bind(new Date().toISOString(),env.PORTAL_SSO_APP_SLUG||'orgportal',profile.provider_account_id,profile.email.trim().toLowerCase()).run();
 }
+
+/** Basic portal identity only; contact details and unrelated tenants stay private. */
+export async function portalDirectoryPeople(env:Env,ownerId:string) {
+ const rows=await env.DB.prepare(`SELECT m.id user_id,m.full_name user_name FROM website_users m
+  JOIN websites w ON w.id=m.website_id WHERE w.slug=? AND w.owner_id=? AND m.is_active=1 ORDER BY m.id`)
+  .bind(env.PORTAL_SSO_APP_SLUG||'orgportal',ownerId).all<{user_id:string;user_name:string|null}>();
+ return (rows.results||[]).map(row=>({user_id:row.user_id,user_name:row.user_name?.trim()&&!row.user_name.includes('@')?row.user_name.trim():'Portal member'}));
+}

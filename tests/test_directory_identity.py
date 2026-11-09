@@ -10,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from starlette.requests import Request
 from models import User, WebsiteUser
-from directory_identity import link_verified_portal_provider
+from directory_identity import link_verified_portal_provider, portal_directory_people
 
 class DirectoryIdentityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -23,7 +23,9 @@ class DirectoryIdentityTests(unittest.IsolatedAsyncioTestCase):
         INSERT INTO website_users(id,website_id,email,provider,provider_account_id)VALUES('member','site','owner@example.test','google','google-owner');""")
         db=self.db
         class Session:
-            async def execute(self,statement,params):return db.execute(str(statement),params)
+            async def execute(self,statement,params):
+                cursor=db.execute(str(statement),params)
+                return SimpleNamespace(all=cursor.fetchall)
         self.session=Session()
     def tearDown(self):self.db.close()
     async def test_verified_provider_link_parity(self):
@@ -44,14 +46,22 @@ class DirectoryIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(User(email=' Owner@Example.Test ').email,'owner@example.test')
         self.assertEqual(WebsiteUser(email=' Owner@Example.Test ').email,'owner@example.test')
         with self.assertRaises(sqlite3.IntegrityError):self.db.execute("INSERT INTO users(id,email)VALUES('duplicate',' OWNER@EXAMPLE.TEST ')")
+    async def test_registered_portal_people(self):
+        self.db.execute("UPDATE website_users SET full_name='Cornelius Example'")
+        self.assertEqual(await portal_directory_people(self.session,'owner','orgportal'),[dict(user_id='member',user_name='Cornelius Example')])
+        self.assertEqual(await portal_directory_people(self.session,'other','orgportal'),[])
+        self.assertEqual(await portal_directory_people(self.session,'owner','unrelated'),[])
+        self.db.execute("UPDATE website_users SET is_active=0")
+        self.assertEqual(await portal_directory_people(self.session,'owner','orgportal'),[])
     async def test_service_authorization_and_email_conflict(self):
         import main
         request=Request({'type':'http','headers':[(b'authorization',b'Bearer pidp_pat_fixture')]})
         owner=SimpleNamespace(id=uuid4(),is_active=True)
-        with patch.object(main,'_get_api_token_owner_and_record',AsyncMock(return_value=(owner,SimpleNamespace(scope='service')))),patch.object(main,'portal_directory_aliases',AsyncMock(return_value=[])):
+        with patch.object(main,'_get_api_token_owner_and_record',AsyncMock(return_value=(owner,SimpleNamespace(scope='service')))),patch.object(main,'portal_directory_aliases',AsyncMock(return_value=[])),patch.object(main,'portal_directory_people',AsyncMock(return_value=[{'user_id':'member','user_name':'Example'}])):
             response=await main.directory_identities(request,self.session)
             self.assertEqual(response.status_code,200)
             self.assertEqual(response.headers['cache-control'],'no-store')
+            self.assertIn(b'Example',response.body)
         with patch.object(main,'_get_api_token_owner_and_record',AsyncMock(return_value=(owner,SimpleNamespace(scope='org_mcp')))):
             with self.assertRaises(main.HTTPException) as caught:await main.directory_identities(request,self.session)
             self.assertEqual(caught.exception.status_code,403)

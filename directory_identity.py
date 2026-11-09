@@ -27,3 +27,11 @@ async def link_verified_portal_provider(session, provider, profile, app_slug):
         AND NOT EXISTS(SELECT 1 FROM account_identity_links l WHERE l.website_user_id=m.id)
       ON CONFLICT(subject) DO NOTHING"""), dict(at=datetime.now(timezone.utc).isoformat(), app=app_slug,
         provider_id=str(profile['provider_account_id']), email=profile['email'].strip().lower()))
+
+async def portal_directory_people(session, owner_id, app_slug):
+    """Basic active portal names only, scoped to its owner; no private contacts."""
+    rows = (await session.execute(text("""SELECT m.id user_id,m.full_name user_name
+        FROM website_users m JOIN websites w ON w.id=m.website_id
+        WHERE w.slug=:app AND w.owner_id=:owner AND m.is_active=true ORDER BY m.id"""),
+        dict(app=app_slug, owner=owner_id))).all()
+    return [dict(user_id=str(account), user_name=name.strip() if name and name.strip() and '@' not in name else 'Portal member') for account, name in rows]
