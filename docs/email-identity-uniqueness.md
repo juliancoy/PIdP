@@ -38,3 +38,32 @@ shared-identity credential cutover remains disabled.
 
 Focused test results and content fingerprints are adjacent to the serverless
 tests. Production rollout evidence is recorded separately after deployment.
+
+## Applied production result
+
+2026-11-09: both normalized unique indexes installed explicitly after the zero-
+collision audit. Added exactly two missing aliases with matching active Google
+subjects and normalized emails; no remaining eligible unlinked aliases. No
+credential deletions or organization role transfers. Shared identity remains
+false. PostgreSQL migration script is provided for deployments using that
+runtime; production here uses D1.
+
+PIdP tested/released source: b03b053931db275569527de0738b047dcff3713c.
+Previous version: 0983b6ee-24bc-4c7c-89bd-2390dad0333b.
+New version: 8c33e914-e3b2-4efc-9229-4a01ba233248.
+Code-only upload inherited all live bindings and runtime settings. A dedicated
+portal-owner service credential was bound as PIDP_DIRECTORY_TOKEN; the existing
+PIDP_SERVICE_TOKEN was preserved. The first secret edit was refused by Cloudflare
+because the latest uploaded version was not deployed; its credential was disabled.
+After the tested OrgPortal release, the dedicated credential was rotated and
+bound successfully. No credential value was written to logs or source.
+
+OrgPortal tested/released source: c5fdf11ea396dbbc3fe244d148a9b810d24f438c.
+Previous API version: 62580b3e-ec32-4361-a107-49e5dc66d4b4.
+Code release: 74ec8e1e-3db3-4a43-bc85-752f2f45f8c9.
+After the directory-secret binding: d943b6d1-2659-472d-b0dc-b001ba2fa9f8.
+Anonymous LifeTech directory, users HTML, referenced JS and API proxy checks pass.
+Linked aliases are grouped while distinct same-name accounts remain visible.
+No production authenticated browser tests were run. Focused tests and both
+TypeScript checks passed; earlier failed expectations and their corrections
+remain recorded in adjacent test logs. No gradual/canary rollout was performed.
