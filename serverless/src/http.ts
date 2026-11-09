@@ -17,6 +17,10 @@ export function jsonError(c: Context, error: unknown): Response {
   if (error instanceof HttpError) {
     return c.json({ detail: error.message }, error.status as never);
   }
+  const message = error instanceof Error ? error.message + ' ' + String(error.cause || '') : '';
+  if (/UNIQUE constraint failed/.test(message) && /uq_users_email_normalized|uq_website_users_email_normalized|users\.email|website_users\.website_id, website_users\.email/.test(message)) {
+    return c.json({ detail: 'Account already exists. Please log in.' }, 409);
+  }
   console.error(error);
   return c.json({ detail: "Internal server error" }, 500);
 }

@@ -1,3 +1,4 @@
+import { portalDirectoryAliases } from './directoryIdentity';
 import { authenticatedIdentityData, emailVerified, requireVerifiedEmail, sendVerification, consumeVerification } from './emailVerification';
 import { oauthStatisticsStage,recordOauthStatistics,oauthStatistics } from './oauthStatistics';
 import {browserSession,revokeBrowserSession} from './browserSessions';
@@ -1159,6 +1160,15 @@ app.get("/service/token-info", async (c) => {
   }
   const user = await currentOwner(c.env, token);
   return c.json({ token_kind: "jwt", actor_type: "owner", scope: "session", scope_grants: ["session:*"], owner: userPublic(c.env, user) });
+});
+
+app.post('/service/directory-identities', async c => {
+ const owner=await requireServicePat(c.env,bearerToken(c));
+ if(!owner.is_active)fail(401,'Inactive account');
+ const site=await websiteBySlug(c.env.DB,c.env.PORTAL_SSO_APP_SLUG||'orgportal');
+ if(!site||site.owner_id!==owner.id)fail(403,'Portal owner required');
+ c.header('Cache-Control','no-store');
+ return c.json({aliases:await portalDirectoryAliases(c.env,owner.id)});
 });
 
 app.get("/service/websites", async (c) => {

@@ -27,7 +27,7 @@ export async function userById(db: D1Database, id: string): Promise<UserRow | nu
 }
 
 export async function userByEmail(db: D1Database, email: string): Promise<UserRow | null> {
-  return first<UserRow>(db.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").bind(email));
+  return first<UserRow>(db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?))").bind(email));
 }
 
 export async function websiteById(db: D1Database, id: string): Promise<WebsiteRow | null> {
@@ -60,7 +60,7 @@ export async function activeApiTokenByHash(db: D1Database, tokenHash: string): P
 }
 
 export async function websiteUserByEmail(db: D1Database, websiteId: string, email: string): Promise<WebsiteUserRow | null> {
-  return first<WebsiteUserRow>(db.prepare("SELECT * FROM website_users WHERE website_id = ? AND lower(email) = lower(?)").bind(websiteId, email));
+  return first<WebsiteUserRow>(db.prepare("SELECT * FROM website_users WHERE website_id = ? AND lower(trim(email)) = lower(trim(?))").bind(websiteId, email));
 }
 
 export async function websiteUserById(db: D1Database, websiteId: string, id: string): Promise<WebsiteUserRow | null> {

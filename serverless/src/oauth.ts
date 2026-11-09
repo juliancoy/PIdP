@@ -1,3 +1,4 @@
+import { linkVerifiedPortalProvider } from './directoryIdentity';
 import {browserSession} from './browserSessions';
 import { providerEnabled } from './oauthProviders';
 import { identityUrl } from './identityUrls';
@@ -430,12 +431,13 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
   }
 
   if (loginWebsite) {
-    let websiteUser = await first<{ id: string; identity_data: string }>(c.env.DB.prepare(
+    let websiteUser = await first<{ id: string; identity_data: string; is_active?: number }>(c.env.DB.prepare(
       "SELECT * FROM website_users WHERE website_id = ? AND provider = ? AND provider_account_id = ?",
     ).bind(loginWebsite.id, provider, profile.provider_account_id));
     if (!websiteUser) {
-      websiteUser = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM website_users WHERE website_id = ? AND lower(email) = lower(?)").bind(loginWebsite.id, profile.email));
+      websiteUser = await first<{ id: string; identity_data: string; is_active?: number }>(c.env.DB.prepare("SELECT * FROM website_users WHERE website_id = ? AND lower(trim(email)) = lower(trim(?))").bind(loginWebsite.id, profile.email));
     }
+    if(websiteUser?.is_active===0)fail(403,'Inactive account');
     const schema = schemaWithSystemFields(parseJson<Record<string, WebsiteSchemaField>>(loginWebsite.user_schema, SYSTEM_SCHEMA_FIELDS));
     const identity = socialIdentityPayload(profile, schema);
     const id = websiteUser?.id || crypto.randomUUID();
@@ -461,13 +463,15 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
         "INSERT INTO website_users (id, website_id, email, full_name, provider, provider_account_id, identity_data, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
       ).bind(id, loginWebsite.id, profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), nowIso()).run();
     }
+    await linkVerifiedPortalProvider(c.env,provider,profile);
     const token = await signJwt(c.env, { sub: id, email: profile.email, actor_type: "website_user", website_id: loginWebsite.id });
     await setLoginSession(c, token);
     return c.redirect(redirectLocationForSession(c.env, resolveRedirectTarget(c.env, state.next, loginWebsite), token), 303);
   }
 
-  let user = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM users WHERE provider = ? AND provider_account_id = ?").bind(provider, profile.provider_account_id));
-  if (!user) user = await first<{ id: string; identity_data: string }>(c.env.DB.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").bind(profile.email));
+  let user = await first<{ id: string; identity_data: string; is_active?: number }>(c.env.DB.prepare("SELECT * FROM users WHERE provider = ? AND provider_account_id = ?").bind(provider, profile.provider_account_id));
+  if (!user) user = await first<{ id: string; identity_data: string; is_active?: number }>(c.env.DB.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?))").bind(profile.email));
+  if(user?.is_active===0)fail(403,'Inactive account');
   const id = user?.id || crypto.randomUUID();
   const existingIdentity = user ? parseJson<Record<string, unknown>>(user.identity_data, {}) : {};
   const existingAvatarUrl = typeof existingIdentity.avatar_url === "string" ? existingIdentity.avatar_url : "";
@@ -489,6 +493,7 @@ export async function oauthCallback(c: Context<{ Bindings: Env }>): Promise<Resp
       "INSERT INTO users (id, email, full_name, provider, provider_account_id, identity_data, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
     ).bind(id, profile.email, profile.full_name, provider, profile.provider_account_id, JSON.stringify(identity), nowIso()).run();
   }
+  await linkVerifiedPortalProvider(c.env,provider,profile);
   const token = await signJwt(c.env, { sub: id, email: profile.email });
   await setLoginSession(c, token);
   return c.redirect(redirectLocationForSession(c.env, resolveRedirectTarget(c.env, state.next, null), token), 303);

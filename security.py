@@ -12,7 +12,7 @@ import re
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -97,7 +97,7 @@ def create_access_token(subject: str, email: str | None = None, extra_claims: di
 
 
 async def authenticate_user(session: AsyncSession, email: str, password: str) -> User | None:
-    result = await session.execute(select(User).where(User.email == email))
+    result = await session.execute(select(User).where(func.lower(func.trim(User.email)) == email.strip().lower()))
     user = result.scalar_one_or_none()
     if not user or not user.hashed_password:
         return None

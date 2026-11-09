@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 
 from encrypted_json import EncryptedJSONB
 
@@ -14,8 +14,15 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(Base):
+class NormalizedEmail:
+    @validates('email')
+    def normalized_email(self, _key, value):
+        return value.strip().lower()
+
+
+class User(NormalizedEmail, Base):
     __tablename__ = "users"
+    __table_args__ = (Index("uq_users_email_normalized", text("lower(trim(email))"), unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
@@ -46,10 +53,11 @@ class Website(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
-class WebsiteUser(Base):
+class WebsiteUser(NormalizedEmail, Base):
     __tablename__ = "website_users"
     __table_args__ = (
         UniqueConstraint("website_id", "email", name="uq_website_users_website_email"),
+        Index("uq_website_users_email_normalized", "website_id", text("lower(trim(email))"), unique=True),
         UniqueConstraint(
             "website_id",
             "provider",
