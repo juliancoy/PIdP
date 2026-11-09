@@ -1,4 +1,5 @@
 from __future__ import annotations
+from directory_identity import portal_directory_aliases, link_verified_portal_provider
 from browser_sessions import browser_session, validate_browser_session, revoke_browser_session
 from html import escape
 from browser_pages import identity_document, PORTAL_BRANDS
@@ -1717,7 +1718,7 @@ async def frontend_login(
         )
     if app_website:
         user = (await session.execute(select(WebsiteUser).where(WebsiteUser.website_id == app_website.id,
-            WebsiteUser.email == email.strip().lower()))).scalar_one_or_none()
+            func.lower(func.trim(WebsiteUser.email)) == str(email.strip().lower()).strip().lower()))).scalar_one_or_none()
         if not user or not user.hashed_password or not verify_password(password,user.hashed_password):
             user = None
     else:
@@ -2373,10 +2374,10 @@ async def resend_email_verification(request: Request, session: AsyncSession = De
         raise HTTPException(status_code=400, detail="Invalid return destination")
     user = None
     if website:
-        result = await session.execute(select(WebsiteUser).where(WebsiteUser.website_id == website.id, WebsiteUser.email == email).with_for_update())
+        result = await session.execute(select(WebsiteUser).where(WebsiteUser.website_id == website.id, func.lower(func.trim(WebsiteUser.email)) == str(email).strip().lower()).with_for_update())
         user = result.scalar_one_or_none()
     elif not app_slug or shared_identity(app_slug):
-        result = await session.execute(select(User).where(User.email == email).with_for_update())
+        result = await session.execute(select(User).where(func.lower(func.trim(User.email)) == str(email).strip().lower()).with_for_update())
         user = result.scalar_one_or_none()
     if user and user.is_active and not _is_email_verified(user):
         pending = dict((user.identity_data or {}).get("email_verification") or {})
@@ -2403,11 +2404,11 @@ async def verify_email(
         website = website_result.scalar_one_or_none()
         if website:
             website_user_result = await session.execute(
-                select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == email)).with_for_update()
+                select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (func.lower(func.trim(WebsiteUser.email)) == str(email).strip().lower())).with_for_update()
             )
             user = website_user_result.scalar_one_or_none()
     if not app or shared_identity(app):
-        result = await session.execute(select(User).where(User.email == email).with_for_update())
+        result = await session.execute(select(User).where(func.lower(func.trim(User.email)) == str(email).strip().lower()).with_for_update())
         user = result.scalar_one_or_none()
 
     if not user:
@@ -2442,13 +2443,20 @@ async def verify_email(
     )
 
 
+@app.exception_handler(IntegrityError)
+async def duplicate_email_error(request: Request, error: IntegrityError):
+    if any(key in str(error.orig) for key in ('uq_users_email_normalized', 'uq_website_users_email_normalized', 'ix_users_email', 'uq_website_users_website_email')):
+        return JSONResponse({'detail': 'Account already exists. Please log in.'}, status_code=409)
+    raise error
+
+
 @app.post("/auth/register", response_model=UserPublic)
 async def register_user(
     payload: UserCreate,
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> UserPublic:
-    result = await session.execute(select(User).where(User.email == payload.email))
+    result = await session.execute(select(User).where(func.lower(func.trim(User.email)) == str(payload.email).strip().lower()))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -2764,6 +2772,23 @@ async def service_token_info(
         scope_grants=["session:*"],
         owner=_to_user_public(owner),
     )
+
+
+@app.post('/service/directory-identities')
+async def directory_identities(request: Request, session: AsyncSession = Depends(get_session)):
+    raw = _extract_bearer_token(request)
+    if not raw.startswith('pidp_pat_'):
+        raise HTTPException(403, 'Service token required')
+    owner, token = await _get_api_token_owner_and_record(raw, session)
+    if not owner.is_active:
+        raise HTTPException(401, 'Inactive account')
+    if token.scope != 'service':
+        raise HTTPException(403, 'PAT scope does not permit service access')
+    try:
+        aliases = await portal_directory_aliases(session, owner.id, settings.portal_sso_app_slug)
+    except PermissionError:
+        raise HTTPException(403, 'Portal owner required')
+    return JSONResponse({'aliases': aliases}, headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/service/websites", response_model=list[WebsitePublic])
@@ -3086,7 +3111,7 @@ async def create_website_user(
         )
 
     existing = await session.execute(
-        select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == payload.email))
+        select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (func.lower(func.trim(WebsiteUser.email)) == str(payload.email).strip().lower()))
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Website user already exists")
@@ -3156,7 +3181,7 @@ async def register_website_user(
         )
 
     existing = await session.execute(
-        select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == payload.email))
+        select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (func.lower(func.trim(WebsiteUser.email)) == str(payload.email).strip().lower()))
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Website user already exists")
@@ -3189,7 +3214,7 @@ async def login_website_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Website not found")
 
     result = await session.execute(
-        select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (WebsiteUser.email == payload.email))
+        select(WebsiteUser).where((WebsiteUser.website_id == website.id) & (func.lower(func.trim(WebsiteUser.email)) == str(payload.email).strip().lower()))
     )
     website_user = result.scalar_one_or_none()
     if not website_user or not website_user.hashed_password:
@@ -3385,11 +3410,13 @@ async def social_callback(
             result = await session.execute(
                 select(WebsiteUser).where(
                     (WebsiteUser.website_id == login_website.id)
-                    & (WebsiteUser.email.ilike(email))
+                    & (func.lower(func.trim(WebsiteUser.email)) == email.strip().lower())
                 )
             )
             website_user = result.scalar_one_or_none()
 
+        if website_user and not website_user.is_active:
+            raise HTTPException(403, "Inactive account")
         schema_fields = dict(login_website.user_schema or SYSTEM_SCHEMA_FIELDS)
         identity_data = _verified_identity(_social_website_identity_payload(profile, schema_fields))
         if not website_user:
@@ -3411,6 +3438,8 @@ async def social_callback(
             website_user.identity_data = identity_data
             website_user.is_active = True
 
+        await session.flush()
+        await link_verified_portal_provider(session, provider, profile, settings.portal_sso_app_slug)
         await session.commit()
         await session.refresh(website_user)
         token = _create_website_user_access_token(website_user)
@@ -3425,9 +3454,11 @@ async def social_callback(
     user = result.scalar_one_or_none()
 
     if not user:
-        result = await session.execute(select(User).where(User.email == profile["email"]))
+        result = await session.execute(select(User).where(func.lower(func.trim(User.email)) == str(profile["email"]).strip().lower()))
         user = result.scalar_one_or_none()
 
+    if user and not user.is_active:
+        raise HTTPException(403, "Inactive account")
     if not user:
         user = User(
             email=profile["email"],
@@ -3461,6 +3492,8 @@ async def social_callback(
     identity = _verified_identity(identity)
     user.identity_data = identity
 
+    await session.flush()
+    await link_verified_portal_provider(session, provider, profile, settings.portal_sso_app_slug)
     await session.commit()
     await session.refresh(user)
 
