@@ -67,3 +67,15 @@ Linked aliases are grouped while distinct same-name accounts remain visible.
 No production authenticated browser tests were run. Focused tests and both
 TypeScript checks passed; earlier failed expectations and their corrections
 remain recorded in adjacent test logs. No gradual/canary rollout was performed.
+
+## Registered accounts without activity
+
+The protected directory response now includes basic active website-user IDs
+and display names for the configured portal, scoped to its owner. It excludes
+unrelated tenants, inactive accounts, email addresses and other contact details.
+OrgPortal combines these names with its existing directory sources before alias
+grouping, search and pagination. No contact page, activity event or persistent
+copy is created. A basic profile fallback exposes only that existing display
+name when a registered account has no public contact page. Contact-page opt-in
+and organization permissions retain their existing behavior. This fixes accounts
+that were absent because they had no OrgPortal activity/profile records.

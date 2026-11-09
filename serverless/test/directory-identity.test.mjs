@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {sha256Hex} from '../src/crypto.ts';
-import {portalDirectoryAliases,linkVerifiedPortalProvider} from '../src/directoryIdentity.ts';
+import {portalDirectoryAliases,portalDirectoryPeople,linkVerifiedPortalProvider} from '../src/directoryIdentity.ts';
 import app from '../src/index.ts';
 function fixture(){
  const sql=new DatabaseSync(':memory:');
@@ -50,8 +50,18 @@ test('private directory mapping requires an active service PAT belonging to the 
   const token='pidp_pat_synthetic';f.sql.prepare('INSERT INTO user_api_tokens(id,owner_id,name,token_hash,scope)VALUES(?,?,?,?,?)').run('pat','owner','directory',await sha256Hex(token),'service');
   const call=(raw)=>app.request('https://id.example/service/directory-identities',{method:'POST',headers:{Authorization:'Bearer '+raw}},f.env);
   assert.equal((await call('wrong')).status,403);
-  const ok=await call(token);assert.equal(ok.status,200);assert.equal(ok.headers.get('cache-control'),'no-store');assert.deepEqual(await ok.json(),{aliases:[]});
+  const ok=await call(token);assert.equal(ok.status,200);assert.equal(ok.headers.get('cache-control'),'no-store');assert.deepEqual(await ok.json(),{aliases:[],people:[{user_id:'member',user_name:'Portal member'},{user_id:'unrelated',user_name:'Portal member'}]});
   f.sql.exec("UPDATE user_api_tokens SET scope='org_mcp'");assert.equal((await call(token)).status,403);
   f.sql.exec("UPDATE user_api_tokens SET scope='service',owner_id='other'");assert.equal((await call(token)).status,403);
+ }finally{f.sql.close()}
+});
+
+test('registered portal accounts appear without activity; inactive and unrelated tenant accounts stay out',async()=>{
+ const f=fixture();try{
+  f.sql.exec("UPDATE website_users SET full_name='Cornelius Example' WHERE id='member'; UPDATE website_users SET is_active=0 WHERE id='unrelated'");
+  assert.deepEqual(await portalDirectoryPeople(f.env,'owner'),[{user_id:'member',user_name:'Cornelius Example'}]);
+  assert.deepEqual(await portalDirectoryPeople(f.env,'other'),[]);
+  f.sql.exec("UPDATE website_users SET full_name='private@example.test' WHERE id='member'");
+  assert.equal((await portalDirectoryPeople(f.env,'owner'))[0].user_name,'Portal member');
  }finally{f.sql.close()}
 });

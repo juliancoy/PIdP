@@ -1,4 +1,4 @@
-import { portalDirectoryAliases } from './directoryIdentity';
+import { portalDirectoryAliases, portalDirectoryPeople } from './directoryIdentity';
 import { authenticatedIdentityData, emailVerified, requireVerifiedEmail, sendVerification, consumeVerification } from './emailVerification';
 import { oauthStatisticsStage,recordOauthStatistics,oauthStatistics } from './oauthStatistics';
 import {browserSession,revokeBrowserSession} from './browserSessions';
@@ -1168,7 +1168,7 @@ app.post('/service/directory-identities', async c => {
  const site=await websiteBySlug(c.env.DB,c.env.PORTAL_SSO_APP_SLUG||'orgportal');
  if(!site||site.owner_id!==owner.id)fail(403,'Portal owner required');
  c.header('Cache-Control','no-store');
- return c.json({aliases:await portalDirectoryAliases(c.env,owner.id)});
+ return c.json({aliases:await portalDirectoryAliases(c.env,owner.id),people:await portalDirectoryPeople(c.env,owner.id)});
 });
 
 app.get("/service/websites", async (c) => {
