@@ -79,3 +79,17 @@ copy is created. A basic profile fallback exposes only that existing display
 name when a registered account has no public contact page. Contact-page opt-in
 and organization permissions retain their existing behavior. This fixes accounts
 that were absent because they had no OrgPortal activity/profile records.
+
+Registered-account source deployed 2026-11-09:
+PIdP source `1ca460723498fbc9daba061c19bce96ef83f0c31`, version
+`97f1949e-f0d3-49d2-ac49-50a97350520c` (previous `8c33e914-e3b2-4efc-9229-4a01ba233248`).
+OrgPortal source `f580b12a82e1efb8fa60530bfdd169ffae3560de`, version
+`fa3f727c-7093-4fb4-9b87-cd5b2c4f6c40` (previous `d943b6d1-2659-472d-b0dc-b001ba2fa9f8`).
+Both releases inherited live settings/bindings and used the same locally tested
+artifacts. No account changes, migrations or account creation were needed.
+Read-only anonymous verification confirms the previously absent existing
+registered account appears once and its basic profile, HTML and referenced
+JavaScript load. One initial check during propagation saw the old empty result;
+after health confirmed the new commit, the affected check passed. Existing
+unchanged identity-linking and uniqueness tests were reused from the recorded
+results. No authenticated production browser checks or canary rollout occurred.
