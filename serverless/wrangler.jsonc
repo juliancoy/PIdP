@@ -3,7 +3,7 @@
   "name": "pidp-codecollective",
   "main": "src/index.ts",
   "build": {
-    "command": "npm run build:metadata"
+    "command": "npm run check:oauth-config && npm run build:metadata"
   },
   "version_metadata": {
     "binding": "CF_VERSION_METADATA"

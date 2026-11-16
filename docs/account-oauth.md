@@ -191,6 +191,24 @@ The native-app design follows https://www.rfc-editor.org/rfc/rfc8252.
 
 ## Configuration and release
 
+Before uploading a Worker, run `npm run check:oauth-config` in `serverless`.
+Wrangler's build command also runs this check. It exercises discovery with the
+configured public resource additions and synthetic credentials, catching resource
+scopes that the candidate code does not implement. It does not read production
+secrets or create grants. For a built bundle, use
+`node --import tsx scripts/check-oauth-config.mjs --bundle /path/to/candidate.mjs`;
+`--config /path/to/config.json` can supply a JSON object containing `vars`.
+This check complements live discovery and authenticated account verification.
+
+On 2026-11-16, the November 9 production bundle was found to omit the already
+configured `genomics:data` scope. Configuration validation consequently returned
+`authorization_server_not_configured` for all OAuth clients. A verified one-line
+bundle repair restored the scope while inheriting all 39 bindings from the
+previous active version. Version `1fc1d5b5-4f3e-4c2e-aabd-10afb71bc592` serves the
+repair; the embedded build commit still identifies the original November 9
+bundle. Bundle fingerprints, local checks and live verification are recorded in
+`serverless/test/oauth-repair.test-log.jsonl`.
+
 Both implementations use `MCP_OAUTH_ISSUER`, `MCP_OAUTH_PRIVATE_JWK`,
 `MCP_OAUTH_PUBLIC_JWKS`, `MCP_OAUTH_CLIENTS_JSON` and `MCP_OAUTH_RESOURCES_JSON`.
 Use the existing secret manager. Never put signing keys or client/resource secrets

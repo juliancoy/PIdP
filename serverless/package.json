@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:metadata": "node scripts/build-metadata.mjs",
+    "check:oauth-config": "node --import tsx scripts/check-oauth-config.mjs",
     "pretypecheck": "npm run build:metadata",
     "pretest": "npm run build:metadata",
     "dev": "wrangler dev",
