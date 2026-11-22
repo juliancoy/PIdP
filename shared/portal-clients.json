@@ -4,35 +4,55 @@
     "accountApp": "orgportal",
     "callbacks": [
       "/auth/callback"
-    ]
+    ],
+    "deployment": {
+      "orgPortalSite": true,
+      "websiteLogin": true
+    }
   },
   "https://lifetech.fyi": {
     "name": "LifeTech",
     "accountApp": "orgportal",
     "callbacks": [
       "/auth/callback"
-    ]
+    ],
+    "deployment": {
+      "orgPortalSite": true,
+      "websiteLogin": true
+    }
   },
   "https://medtech.social": {
     "name": "MedTech",
     "accountApp": "orgportal",
     "callbacks": [
       "/auth/callback"
-    ]
+    ],
+    "deployment": {
+      "orgPortalSite": true,
+      "websiteLogin": true
+    }
   },
   "https://timebank.codecollective.us": {
     "name": "Timebank",
     "accountApp": "orgportal",
     "callbacks": [
       "/auth/callback"
-    ]
+    ],
+    "deployment": {
+      "orgPortalSite": false,
+      "websiteLogin": true
+    }
   },
   "https://bmoretimebank.codecollective.us": {
     "name": "Baltimore Timebank",
     "accountApp": "orgportal",
     "callbacks": [
       "/auth/callback"
-    ]
+    ],
+    "deployment": {
+      "orgPortalSite": false,
+      "websiteLogin": true
+    }
   },
   "https://codecollective.us": {
     "name": "OrgPortal",
@@ -40,7 +60,11 @@
     "callbacks": [
       "/auth/callback"
     ],
-    "restartOrigin": "https://orgportal.cc"
+    "restartOrigin": "https://orgportal.cc",
+    "deployment": {
+      "orgPortalSite": false,
+      "websiteLogin": true
+    }
   },
   "https://www.codecollective.us": {
     "name": "OrgPortal",
@@ -48,13 +72,32 @@
     "callbacks": [
       "/auth/callback"
     ],
-    "restartOrigin": "https://orgportal.cc"
+    "restartOrigin": "https://orgportal.cc",
+    "deployment": {
+      "orgPortalSite": false,
+      "websiteLogin": true
+    }
   },
   "https://portal.deism.church": {
     "name": "Deism",
     "accountApp": "orgportal",
     "callbacks": [
       "/auth/callback"
-    ]
+    ],
+    "deployment": {
+      "orgPortalSite": true,
+      "websiteLogin": false
+    }
+  },
+  "https://techparty.us": {
+    "name": "Tech Party",
+    "accountApp": "orgportal",
+    "callbacks": [
+      "/auth/callback"
+    ],
+    "deployment": {
+      "orgPortalSite": true,
+      "websiteLogin": true
+    }
   }
 }

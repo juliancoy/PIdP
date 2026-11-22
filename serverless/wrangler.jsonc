@@ -34,7 +34,7 @@
     "ENV": "production",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
     "ALLOWED_ORIGINS": "https://codecollective.us,https://www.codecollective.us",
-    "PORTAL_AUTH_ORIGINS": "https://portal.deism.church,https://medtech.social,https://lifetech.fyi,https://codecollective.us,https://www.codecollective.us,https://timebank.codecollective.us,https://bmoretimebank.codecollective.us,https://orgportal.cc",
+    "PORTAL_AUTH_ORIGINS": "https://orgportal.cc,https://lifetech.fyi,https://medtech.social,https://timebank.codecollective.us,https://bmoretimebank.codecollective.us,https://codecollective.us,https://www.codecollective.us,https://portal.deism.church,https://techparty.us",
     "PORTAL_SSO_APP_SLUG": "orgportal",
     "PORTAL_SHARED_IDENTITY": "false",
     "ADMIN_EMAILS": "",

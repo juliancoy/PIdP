@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:metadata": "node scripts/build-metadata.mjs",
+    "build:metadata": "npm run check:portal-domains && node scripts/build-metadata.mjs",
     "check:oauth-config": "node --import tsx scripts/check-oauth-config.mjs",
     "pretypecheck": "npm run build:metadata",
     "pretest": "npm run build:metadata",
@@ -20,7 +20,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply pidp --remote",
     "test:portal-browser": "node --import tsx --test browser/portal-signin.mjs",
     "test:domain-rehearsal": "node --import tsx --test --test-force-exit browser/local-origin-isolation.mjs",
-    "test:identity-lab": "node --test identity-lab/clickthrough.mjs"
+    "test:identity-lab": "node --test identity-lab/clickthrough.mjs",
+    "check:portal-domains": "node ../scripts/sync-portal-domains.mjs --check"
   },
   "dependencies": {
     "@noble/hashes": "^2.4.0",
